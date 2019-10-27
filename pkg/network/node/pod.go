@@ -112,19 +112,23 @@ func getIPAMConfig(clusterNetworks []common.ParsedClusterNetworkEntry, localSubn
 		IPAM       *hostLocalIPAM `json:"ipam"`
 	}
 
-	_, mcnet, _ := net.ParseCIDR("224.0.0.0/4")
+	var defaultnet, mcnet *net.IPNet
+	if common.GetIPVersion(nodeNet.IP) == common.IPv4 {
+		_, defaultnet, _ = net.ParseCIDR("0.0.0.0/0")
+		_, mcnet, _ = net.ParseCIDR("224.0.0.0/4")
+	} else {
+		_, defaultnet, _ = net.ParseCIDR("::/0")
+		_, mcnet, _ = net.ParseCIDR("ff00::/8")
+	}
 
 	routes := []cnitypes.Route{
 		{
-			//Default route
-			Dst: net.IPNet{
-				IP:   net.IPv4zero,
-				Mask: net.IPMask(net.IPv4zero),
-			},
+			// Default route
+			Dst: *defaultnet,
 			GW: common.GenerateDefaultGateway(nodeNet),
 		},
 		{
-			//Multicast
+			// Multicast
 			Dst: *mcnet,
 		},
 	}

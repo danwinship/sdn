@@ -33,6 +33,7 @@ func ClusterNetworkListContains(clusterNetworks []ParsedClusterNetworkEntry, ipa
 
 type ParsedClusterNetwork struct {
 	PluginName      string
+	IPVersion       IPVersion
 	ClusterNetworks []ParsedClusterNetworkEntry
 	ServiceNetwork  *net.IPNet
 	VXLANPort       uint32
@@ -72,6 +73,10 @@ func ParseClusterNetwork(cn *networkv1.ClusterNetwork) (*ParsedClusterNetwork, e
 		utilruntime.HandleError(fmt.Errorf("Configured serviceNetworkCIDR value %q is invalid; treating it as %q", cn.ServiceNetwork, pcn.ServiceNetwork.String()))
 	}
 
+	// Validation will already have ensured that the whole ClusterNetwork uses the
+	// same IP version
+	pcn.IPVersion = GetIPVersion(pcn.ServiceNetwork.IP)
+
 	if cn.VXLANPort != nil {
 		pcn.VXLANPort = *cn.VXLANPort
 	} else {
@@ -80,6 +85,8 @@ func ParseClusterNetwork(cn *networkv1.ClusterNetwork) (*ParsedClusterNetwork, e
 
 	if cn.MTU != nil {
 		pcn.MTU = *cn.MTU
+	} else if pcn.IPVersion == IPv6 {
+		pcn.MTU = 1430
 	} else {
 		pcn.MTU = 1450
 	}
@@ -88,15 +95,15 @@ func ParseClusterNetwork(cn *networkv1.ClusterNetwork) (*ParsedClusterNetwork, e
 }
 
 func (pcn *ParsedClusterNetwork) ValidateNodeIP(nodeIP string) error {
-	if nodeIP == "" || nodeIP == "127.0.0.1" {
+	if nodeIP == "" || nodeIP == "127.0.0.1" || nodeIP == "::1" {
 		return fmt.Errorf("invalid node IP %q", nodeIP)
 	}
 
 	// Ensure each node's NodeIP is not contained by the cluster network,
 	// which could cause a routing loop. (rhbz#1295486)
-	ipaddr := net.ParseIP(nodeIP)
-	if ipaddr == nil {
-		return fmt.Errorf("failed to parse node IP %s", nodeIP)
+	ipaddr, err := ParseIPv(nodeIP, pcn.IPVersion)
+	if err != nil {
+		return fmt.Errorf("failed to parse node IP: %v", err)
 	}
 
 	if conflictingCIDR, found := ClusterNetworkListContains(pcn.ClusterNetworks, ipaddr); found {
@@ -128,31 +135,34 @@ func (pcn *ParsedClusterNetwork) CheckClusterObjects(subnets []networkv1.HostSub
 	var errList []error
 
 	for _, subnet := range subnets {
-		subnetIP, _, _ := net.ParseCIDR(subnet.Subnet)
-		if subnetIP == nil {
-			errList = append(errList, fmt.Errorf("failed to parse network address: %s", subnet.Subnet))
-		} else if _, contains := ClusterNetworkListContains(pcn.ClusterNetworks, subnetIP); !contains {
-			errList = append(errList, fmt.Errorf("existing node subnet: %s is not part of any cluster network CIDR", subnet.Subnet))
+		subnetIP, err := ParseCIDRv(subnet.Subnet, pcn.IPVersion)
+		if err != nil {
+			errList = append(errList, fmt.Errorf("HostSubnet %q has bad subnet %q: %v", subnet.Name, subnet.Subnet, err))
+		} else if _, contains := ClusterNetworkListContains(pcn.ClusterNetworks, subnetIP.IP); !contains {
+			errList = append(errList, fmt.Errorf("HostSubnet %q has subnet %q that is not in any cluster network CIDR", subnet.Name, subnet.Subnet))
 		}
 		if len(errList) >= 10 {
 			break
 		}
 	}
 	for _, pod := range pods {
-		if pod.Spec.HostNetwork {
+		if pod.Spec.HostNetwork || pod.Status.PodIP == "" {
 			continue
 		}
-		if _, contains := ClusterNetworkListContains(pcn.ClusterNetworks, net.ParseIP(pod.Status.PodIP)); !contains && pod.Status.PodIP != "" {
-			errList = append(errList, fmt.Errorf("existing pod %s:%s with IP %s is not part of cluster network", pod.Namespace, pod.Name, pod.Status.PodIP))
-			if len(errList) >= 10 {
-				break
-			}
+		podIP, err := ParseIPv(pod.Status.PodIP, pcn.IPVersion)
+		if err != nil {
+			errList = append(errList, fmt.Errorf("pod '%s/%s' has bad IP %q: %v", pod.Namespace, pod.Name, pod.Status.PodIP, err))
+		} else if _, contains := ClusterNetworkListContains(pcn.ClusterNetworks, podIP); !contains {
+			errList = append(errList, fmt.Errorf("existing pod '%s/%s' with IP %s is not part of cluster network", pod.Namespace, pod.Name, pod.Status.PodIP))
+		}
+		if len(errList) >= 10 {
+			break
 		}
 	}
 	for _, svc := range services {
 		svcIP := net.ParseIP(svc.Spec.ClusterIP)
 		if svcIP != nil && !pcn.ServiceNetwork.Contains(svcIP) {
-			errList = append(errList, fmt.Errorf("existing service %s:%s with IP %s is not part of service network %s", svc.Namespace, svc.Name, svc.Spec.ClusterIP, pcn.ServiceNetwork.String()))
+			errList = append(errList, fmt.Errorf("existing service '%s/%s' with IP %s is not part of service network %s", svc.Namespace, svc.Name, svc.Spec.ClusterIP, pcn.ServiceNetwork.String()))
 			if len(errList) >= 10 {
 				break
 			}
@@ -178,12 +188,15 @@ func GetParsedClusterNetwork(networkClient networkclient.Interface) (*ParsedClus
 
 // Generate the default gateway IP Address for a subnet
 func GenerateDefaultGateway(sna *net.IPNet) net.IP {
-	ip := sna.IP.To4()
-	return net.IPv4(ip[0], ip[1], ip[2], ip[3]|0x1)
+	baseIP := sna.IP.To4()
+	if baseIP == nil {
+		baseIP = append([]byte{}, sna.IP...)
+	}
+	baseIP[len(baseIP)-1] |= 0x1
+	return baseIP
 }
 
-// Return Host IP Networks
-// Ignores provided interfaces and filters loopback and non IPv4 addrs.
+// GetHostIPNetworks returns host IP networks, ignoring skipInterfaces and loopback
 func GetHostIPNetworks(skipInterfaces []string) ([]*net.IPNet, []net.IP, error) {
 	hostInterfaces, err := net.Interfaces()
 	if err != nil {
@@ -214,12 +227,12 @@ func GetHostIPNetworks(skipInterfaces []string) ([]*net.IPNet, []net.IP, error) 
 				errList = append(errList, err)
 				continue
 			}
-
-			// Skip loopback and non IPv4 addrs
-			if !ip.IsLoopback() && ip.To4() != nil {
-				hostIPNets = append(hostIPNets, ipNet)
-				hostIPs = append(hostIPs, ip)
+			if ip.IsLoopback() {
+				continue
 			}
+
+			hostIPNets = append(hostIPNets, ipNet)
+			hostIPs = append(hostIPs, ip)
 		}
 	}
 	return hostIPNets, hostIPs, kerrors.NewAggregate(errList)

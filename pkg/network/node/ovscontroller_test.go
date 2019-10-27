@@ -2,6 +2,8 @@
 
 package node
 
+// IPV6FIXME - add tests
+
 import (
 	"fmt"
 	"net"
@@ -11,6 +13,7 @@ import (
 	"testing"
 
 	networkapi "github.com/openshift/api/network/v1"
+	"github.com/openshift/sdn/pkg/network/common"
 	"github.com/openshift/sdn/pkg/network/node/ovs"
 
 	corev1 "k8s.io/api/core/v1"
@@ -20,14 +23,23 @@ import (
 	"github.com/containernetworking/plugins/pkg/utils/hwaddr"
 )
 
-func setupOVSController(t *testing.T) (ovs.Interface, *ovsController, []string) {
+func setupOVSController(t *testing.T, ipversion common.IPVersion) (ovs.Interface, *ovsController, []string) {
 	ovsif := ovs.NewFake(Br0)
-	oc := NewOVSController(ovsif, 0, true, "172.17.0.4")
-	oc.tunMAC = "c6:ac:2c:13:48:4b"
-	err := oc.SetupOVS([]string{"10.128.0.0/14"}, "172.30.0.0/16", "10.128.0.0/23", "10.128.0.1", 1450, 4789)
-	if err != nil {
-		t.Fatalf("Unexpected error setting up OVS: %v", err)
+	var oc *ovsController
+	if ipversion == common.IPv4 {
+		oc = NewOVSController(ovsif, 0, true, "172.17.0.4")
+		err := oc.SetupOVS([]string{"10.128.0.0/14"}, "172.30.0.0/16", "10.128.0.0/23", "10.128.0.1", 1450, 4789)
+		if err != nil {
+			t.Fatalf("Unexpected error setting up OVS: %v", err)
+		}
+	} else {
+		oc = NewOVSController(ovsif, 0, true, "2600:2600::1")
+		err := oc.SetupOVS([]string{"fd01::/48"}, "fd02::/112", "fd01:0:0:1::/64", "fd01:0:0:1::2", 1430, 4789)
+		if err != nil {
+			t.Fatalf("Unexpected error setting up OVS: %v", err)
+		}
 	}
+	oc.tunMAC = "c6:ac:2c:13:48:4b"
 
 	origFlows, err := ovsif.DumpFlows("")
 	if err != nil {
@@ -105,7 +117,7 @@ func assertFlowChanges(origFlows, newFlows []string, changes ...flowChange) erro
 }
 
 func TestOVSService(t *testing.T) {
-	ovsif, oc, origFlows := setupOVSController(t)
+	ovsif, oc, origFlows := setupOVSController(t, common.IPv4)
 
 	svc := corev1.Service{
 		TypeMeta: metav1.TypeMeta{
@@ -170,7 +182,7 @@ const (
 )
 
 func TestOVSPod(t *testing.T) {
-	ovsif, oc, origFlows := setupOVSController(t)
+	ovsif, oc, origFlows := setupOVSController(t, common.IPv4)
 
 	// Add
 	ofport, err := oc.SetUpPod(sandboxID, "veth1", net.ParseIP("10.128.0.2"), 42)
@@ -279,7 +291,7 @@ func TestGetPodDetails(t *testing.T) {
 	}
 
 	for _, tc := range testcases {
-		_, oc, _ := setupOVSController(t)
+		_, oc, _ := setupOVSController(t, common.IPv4)
 		tcOFPort, err := oc.SetUpPod(tc.sandboxID, "veth1", net.ParseIP(tc.ip), 42)
 		if err != nil {
 			t.Fatalf("Unexpected error adding pod rules: %v", err)
@@ -307,7 +319,7 @@ func TestGetPodDetails(t *testing.T) {
 }
 
 func TestOVSLocalMulticast(t *testing.T) {
-	ovsif, oc, origFlows := setupOVSController(t)
+	ovsif, oc, origFlows := setupOVSController(t, common.IPv4)
 
 	err := oc.UpdateLocalMulticastFlows(99, true, []int{4, 5, 6})
 	if err != nil {
@@ -475,7 +487,7 @@ func assertENPFlowAdditions(origFlows, newFlows []string, additions ...enpFlowAd
 }
 
 func TestOVSEgressNetworkPolicy(t *testing.T) {
-	ovsif, oc, origFlows := setupOVSController(t)
+	ovsif, oc, origFlows := setupOVSController(t, common.IPv4)
 
 	// SUCCESSFUL CASES
 
@@ -973,7 +985,7 @@ func TestFindUnusedVNIDs(t *testing.T) {
 	}
 
 	for i, tc := range testcases {
-		_, oc, _ := setupOVSController(t)
+		_, oc, _ := setupOVSController(t, common.IPv4)
 
 		otx := oc.NewTransaction()
 		for _, flow := range tc.flows {

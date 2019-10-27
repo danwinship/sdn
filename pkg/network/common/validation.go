@@ -10,41 +10,27 @@ import (
 	"k8s.io/kubernetes/pkg/apis/core/validation"
 
 	networkapi "github.com/openshift/api/network/v1"
-	"github.com/openshift/library-go/pkg/network/networkutils"
 )
-
-func validateCIDRv4(cidr string) (*net.IPNet, error) {
-	ipnet, err := networkutils.ParseCIDRMask(cidr)
-	if err != nil {
-		return nil, err
-	}
-	if ipnet.IP.To4() == nil {
-		return nil, fmt.Errorf("must be an IPv4 network")
-	}
-	return ipnet, nil
-}
-
-func validateIPv4(ip string) (net.IP, error) {
-	bytes := net.ParseIP(ip)
-	if bytes == nil {
-		return nil, fmt.Errorf("invalid IP address")
-	}
-	if bytes.To4() == nil {
-		return nil, fmt.Errorf("must be an IPv4 address")
-	}
-	return bytes, nil
-}
 
 // ValidateClusterNetwork tests if required fields in the ClusterNetwork are set, and ensures that the "default" ClusterNetwork can only be set to the correct values
 func ValidateClusterNetwork(clusterNet *networkapi.ClusterNetwork) error {
 	allErrs := validation.ValidateObjectMeta(&clusterNet.ObjectMeta, false, path.ValidatePathSegmentName, field.NewPath("metadata"))
-	var testedCIDRS []*net.IPNet
 
-	serviceIPNet, err := validateCIDRv4(clusterNet.ServiceNetwork)
+	// Figure out if this is an IPv4 or IPv6 cluster
+	firstClusterNetwork := ""
+	if len(clusterNet.ClusterNetworks) > 0 {
+		firstClusterNetwork = clusterNet.ClusterNetworks[0].CIDR
+	} else {
+		firstClusterNetwork = clusterNet.Network
+	}
+	version := ParseIPVersion(firstClusterNetwork)
+
+	serviceIPNet, err := ParseCIDRv(clusterNet.ServiceNetwork, version)
 	if err != nil {
 		allErrs = append(allErrs, field.Invalid(field.NewPath("serviceNetwork"), clusterNet.ServiceNetwork, err.Error()))
 	}
 
+	var testedCIDRS []*net.IPNet
 	if len(clusterNet.ClusterNetworks) == 0 {
 		// legacy ClusterNetwork; old fields must be set
 		if clusterNet.Network == "" {
@@ -52,7 +38,7 @@ func ValidateClusterNetwork(clusterNet *networkapi.ClusterNetwork) error {
 		} else if clusterNet.HostSubnetLength == 0 {
 			allErrs = append(allErrs, field.Required(field.NewPath("hostsubnetlength"), "hostsubnetlength must be set (if clusterNetworks is empty)"))
 		} else {
-			clusterIPNet, err := validateCIDRv4(clusterNet.Network)
+			clusterIPNet, err := ParseCIDRv(clusterNet.Network, version)
 			if err != nil {
 				allErrs = append(allErrs, field.Invalid(field.NewPath("network"), clusterNet.Network, err.Error()))
 			}
@@ -84,7 +70,7 @@ func ValidateClusterNetwork(clusterNet *networkapi.ClusterNetwork) error {
 	}
 
 	for i, cn := range clusterNet.ClusterNetworks {
-		clusterIPNet, err := validateCIDRv4(cn.CIDR)
+		clusterIPNet, err := ParseCIDRv(cn.CIDR, version)
 		if err != nil {
 			allErrs = append(allErrs, field.Invalid(field.NewPath("clusterNetworks").Index(i).Child("cidr"), cn.CIDR, err.Error()))
 			continue
@@ -121,7 +107,7 @@ func ValidateClusterNetwork(clusterNet *networkapi.ClusterNetwork) error {
 	}
 }
 
-func ValidateHostSubnet(hs *networkapi.HostSubnet) error {
+func ValidateHostSubnet(hs *networkapi.HostSubnet, version IPVersion) error {
 	allErrs := validation.ValidateObjectMeta(&hs.ObjectMeta, false, path.ValidatePathSegmentName, field.NewPath("metadata"))
 
 	if hs.Host != hs.Name {
@@ -134,24 +120,23 @@ func ValidateHostSubnet(hs *networkapi.HostSubnet) error {
 			allErrs = append(allErrs, field.Invalid(field.NewPath("subnet"), hs.Subnet, "field cannot be empty"))
 		}
 	} else {
-		_, err := validateCIDRv4(hs.Subnet)
+		_, err := ParseCIDRv(hs.Subnet, version)
 		if err != nil {
 			allErrs = append(allErrs, field.Invalid(field.NewPath("subnet"), hs.Subnet, err.Error()))
 		}
 	}
-	// In theory this has to be IPv4, but it's possible some clusters might be limping along with IPv6 values?
-	if net.ParseIP(hs.HostIP) == nil {
-		allErrs = append(allErrs, field.Invalid(field.NewPath("hostIP"), hs.HostIP, "invalid IP address"))
+	if _, err := ParseIPv(hs.HostIP, version); err != nil {
+		allErrs = append(allErrs, field.Invalid(field.NewPath("hostIP"), hs.HostIP, err.Error()))
 	}
 
 	for i, egressIP := range hs.EgressIPs {
-		if _, err := validateIPv4(egressIP); err != nil {
+		if _, err := ParseIPv(egressIP, version); err != nil {
 			allErrs = append(allErrs, field.Invalid(field.NewPath("egressIPs").Index(i), egressIP, err.Error()))
 		}
 	}
 
 	for i, egressCIDR := range hs.EgressCIDRs {
-		if _, err := validateCIDRv4(egressCIDR); err != nil {
+		if _, err := ParseCIDRv(egressCIDR, version); err != nil {
 			allErrs = append(allErrs, field.Invalid(field.NewPath("egressCIDRs").Index(i), egressCIDR, err.Error()))
 		}
 	}

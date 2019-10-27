@@ -494,7 +494,7 @@ func (eit *EgressIPTracker) Ping(ip string, timeout time.Duration) bool {
 	// If the caller used a public node IP, replace it with the SDN IP
 	ip = eit.lookupNodeIP(ip)
 
-	conn, err := net.DialTimeout("tcp", ip+":9", timeout)
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort(ip, "9"), timeout)
 	if conn != nil {
 		conn.Close()
 	}

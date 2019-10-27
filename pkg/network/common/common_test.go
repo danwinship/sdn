@@ -27,12 +27,22 @@ func TestGenerateGateway(t *testing.T) {
 	if gatewayIP.String() != "10.1.0.1" {
 		t.Fatalf("Did not get expected gateway IP Address (gatewayIP=%s)", gatewayIP.String())
 	}
+
+	_, ip6Net, err := net.ParseCIDR("fd01:0:0:1::/64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gatewayIP6 := GenerateDefaultGateway(ip6Net)
+	if gatewayIP6.String() != "fd01:0:0:1::1" {
+		t.Fatalf("Did not get expected gateway IP6 Address (gatewayIP6=%s)", gatewayIP6.String())
+	}
 }
 
 func TestCheckHostNetworks(t *testing.T) {
 	hostIPNets := []*net.IPNet{
 		mustParseCIDR("10.0.0.0/9"),
 		mustParseCIDR("172.20.0.0/16"),
+		mustParseCIDR("2600:5200::/64"),
 	}
 
 	tests := []struct {
@@ -62,6 +72,16 @@ func TestCheckHostNetworks(t *testing.T) {
 			expectError: false,
 		},
 		{
+			name: "valid ipv6",
+			networkInfo: &ParsedClusterNetwork{
+				ClusterNetworks: []ParsedClusterNetworkEntry{
+					{ClusterCIDR: mustParseCIDR("fd01::/48"), HostSubnetLength: 64},
+				},
+				ServiceNetwork: mustParseCIDR("fd02::/112"),
+			},
+			expectError: false,
+		},
+		{
 			name: "hostIPNet inside ClusterNetwork",
 			networkInfo: &ParsedClusterNetwork{
 				ClusterNetworks: []ParsedClusterNetworkEntry{
@@ -72,12 +92,32 @@ func TestCheckHostNetworks(t *testing.T) {
 			expectError: true,
 		},
 		{
+			name: "hostIPNet inside ClusterNetwork, ipv6",
+			networkInfo: &ParsedClusterNetwork{
+				ClusterNetworks: []ParsedClusterNetworkEntry{
+					{ClusterCIDR: mustParseCIDR("2600::/16"), HostSubnetLength: 64},
+				},
+				ServiceNetwork: mustParseCIDR("fd02::/112"),
+			},
+			expectError: true,
+		},
+		{
 			name: "ClusterNetwork inside hostIPNet",
 			networkInfo: &ParsedClusterNetwork{
 				ClusterNetworks: []ParsedClusterNetworkEntry{
 					{ClusterCIDR: mustParseCIDR("10.1.0.0/16"), HostSubnetLength: 8},
 				},
 				ServiceNetwork: mustParseCIDR("172.30.0.0/16"),
+			},
+			expectError: true,
+		},
+		{
+			name: "ClusterNetwork inside hostIPNet, ipv6",
+			networkInfo: &ParsedClusterNetwork{
+				ClusterNetworks: []ParsedClusterNetworkEntry{
+					{ClusterCIDR: mustParseCIDR("2600:5200:0:0:7800::/48"), HostSubnetLength: 32},
+				},
+				ServiceNetwork: mustParseCIDR("fd02::/112"),
 			},
 			expectError: true,
 		},
@@ -165,6 +205,7 @@ func Test_checkClusterObjects(t *testing.T) {
 					{ClusterCIDR: mustParseCIDR("10.128.0.0/14"), HostSubnetLength: 8},
 				},
 				ServiceNetwork: mustParseCIDR("172.30.0.0/16"),
+				IPVersion: IPv4,
 			},
 			errs: []string{},
 		},
@@ -175,6 +216,7 @@ func Test_checkClusterObjects(t *testing.T) {
 					{ClusterCIDR: mustParseCIDR("10.128.0.0/15"), HostSubnetLength: 8},
 				},
 				ServiceNetwork: mustParseCIDR("172.30.0.0/16"),
+				IPVersion: IPv4,
 			},
 			errs: []string{"10.130.0.0/23", "10.130.0.10"},
 		},
@@ -185,6 +227,7 @@ func Test_checkClusterObjects(t *testing.T) {
 					{ClusterCIDR: mustParseCIDR("10.128.0.0/14"), HostSubnetLength: 8},
 				},
 				ServiceNetwork: mustParseCIDR("172.30.0.0/24"),
+				IPVersion: IPv4,
 			},
 			errs: []string{"172.30.99.99"},
 		},
@@ -195,6 +238,7 @@ func Test_checkClusterObjects(t *testing.T) {
 					{ClusterCIDR: mustParseCIDR("1.2.3.0/24"), HostSubnetLength: 8},
 				},
 				ServiceNetwork: mustParseCIDR("4.5.6.0/24"),
+				IPVersion: IPv4,
 			},
 			errs: []string{"10.128.0.0/23", "10.129.0.0/23", "10.130.0.0/23", "10.128.0.2", "10.128.0.4", "10.128.0.6", "10.128.0.8", "10.129.0.3", "10.129.0.5", "10.129.0.7", "172.30.0.1", "too many errors"},
 		},

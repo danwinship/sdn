@@ -18,7 +18,7 @@ const (
 )
 
 type dnsValue struct {
-	// All IPv4 addresses for a given domain name
+	// All IP addresses for a given domain name
 	ips []net.IP
 	// Time-to-live value from non-authoritative/cached name server for the domain
 	ttl time.Duration
@@ -36,9 +36,11 @@ type DNS struct {
 	nameservers []string
 	// DNS port
 	port string
+	// IP version
+	ipversion IPVersion
 }
 
-func NewDNS(resolverConfigFile string) (*DNS, error) {
+func NewDNS(resolverConfigFile string, ipversion IPVersion) (*DNS, error) {
 	config, err := dns.ClientConfigFromFile(resolverConfigFile)
 	if err != nil || config == nil {
 		return nil, fmt.Errorf("cannot initialize the resolver: %v", err)
@@ -46,8 +48,9 @@ func NewDNS(resolverConfigFile string) (*DNS, error) {
 
 	return &DNS{
 		dnsMap:      map[string]dnsValue{},
-		nameservers: filterIPv4Servers(config.Servers),
+		nameservers: filterServers(config.Servers, ipversion),
 		port:        config.Port,
+		ipversion:   ipversion,
 	}, nil
 }
 
@@ -127,9 +130,13 @@ func (d *DNS) getIPsAndMinTTL(domain string) ([]net.IP, time.Duration, error) {
 	ttlSet := false
 	var ttlSeconds uint32
 
+	rtype := dns.TypeA
+	if d.ipversion == IPv6 {
+		rtype = dns.TypeAAAA
+	}
 	for _, server := range d.nameservers {
 		msg := new(dns.Msg)
-		msg.SetQuestion(dns.Fqdn(domain), dns.TypeA)
+		msg.SetQuestion(dns.Fqdn(domain), rtype)
 
 		dialServer := server
 		if _, _, err := net.SplitHostPort(server); err != nil {
@@ -154,14 +161,20 @@ func (d *DNS) getIPsAndMinTTL(domain string) ([]net.IP, time.Duration, error) {
 
 				switch t := a.(type) {
 				case *dns.A:
-					ips = append(ips, t.A)
+					if d.ipversion == IPv4 {
+						ips = append(ips, t.A)
+					}
+				case *dns.AAAA:
+					if d.ipversion == IPv6 {
+						ips = append(ips, t.AAAA)
+					}
 				}
 			}
 		}
 	}
 
 	if !ttlSet || (len(ips) == 0) {
-		return nil, defaultTTL, fmt.Errorf("IPv4 addr not found for domain: %q, nameservers: %v", domain, d.nameservers)
+		return nil, defaultTTL, fmt.Errorf("%s addr not found for domain: %q, nameservers: %v", d.ipversion, domain, d.nameservers)
 	}
 
 	ttl, err := time.ParseDuration(fmt.Sprintf("%ds", ttlSeconds))
@@ -215,22 +228,20 @@ func ipsEqual(oldips, newips []net.IP) bool {
 	return true
 }
 
-func filterIPv4Servers(servers []string) []string {
-	ipv4Servers := []string{}
+func filterServers(servers []string, ipversion IPVersion) []string {
+	filteredServers := []string{}
 	for _, server := range servers {
 		ipString := server
 		if host, _, err := net.SplitHostPort(server); err == nil {
 			ipString = host
 		}
 
-		if ip := net.ParseIP(ipString); ip != nil {
-			if ip.To4() != nil {
-				ipv4Servers = append(ipv4Servers, server)
-			}
+		if ParseIPVersion(ipString) == ipversion {
+			filteredServers = append(filteredServers, server)
 		}
 	}
 
-	return ipv4Servers
+	return filteredServers
 }
 
 func removeDuplicateIPs(ips []net.IP) []net.IP {

@@ -76,16 +76,11 @@ type OsdnProxy struct {
 // Called by higher layers to create the proxy plugin instance
 func New(networkClient networkclient.Interface, kClient kubernetes.Interface,
 	networkInformers networkinformers.SharedInformerFactory) (*OsdnProxy, error) {
-	egressDNS, err := common.NewEgressDNS()
-	if err != nil {
-		return nil, err
-	}
 	return &OsdnProxy{
 		kClient:          kClient,
 		networkClient:    networkClient,
 		networkInformers: networkInformers,
 		ids:              make(map[string]uint32),
-		egressDNS:        egressDNS,
 		firewall:         make(map[string]*proxyFirewallItem),
 		allEndpoints:     make(map[ktypes.UID]*proxyEndpoints),
 	}, nil
@@ -101,6 +96,11 @@ func (proxy *OsdnProxy) Start(proxier kubeproxy.Provider, waitChan chan<- bool) 
 	}
 	proxy.baseProxy = proxier
 	proxy.waitChan = waitChan
+
+	proxy.egressDNS, err = common.NewEgressDNS(proxy.networkInfo.IPVersion)
+	if err != nil {
+		return err
+	}
 
 	policies, err := proxy.networkClient.NetworkV1().EgressNetworkPolicies(metav1.NamespaceAll).List(metav1.ListOptions{})
 	if err != nil {
@@ -203,7 +203,7 @@ func (proxy *OsdnProxy) updateEgressNetworkPolicy(policy networkv1.EgressNetwork
 				// ovscontroller.go already logs a warning about this
 				selector = "0.0.0.0/0"
 			}
-			_, cidr, err := net.ParseCIDR(selector)
+			cidr, err := common.ParseCIDRv(selector, proxy.networkInfo.IPVersion)
 			if err != nil {
 				// should have been caught by validation
 				utilruntime.HandleError(fmt.Errorf("Illegal CIDR value %q in EgressNetworkPolicy rule for policy: %v", rule.To.CIDRSelector, policy.UID))

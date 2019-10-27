@@ -53,7 +53,7 @@ func (master *OsdnMaster) watchNodes() {
 func (master *OsdnMaster) handleAddOrUpdateNode(obj, _ interface{}, eventType watch.EventType) {
 	node := obj.(*kapi.Node)
 
-	nodeIP := getNodeInternalIP(node)
+	nodeIP := getNodeInternalIP(node, master.networkInfo.IPVersion)
 	if len(nodeIP) == 0 {
 		utilruntime.HandleError(fmt.Errorf("Node IP is not set for node %s, skipping %s event, node: %v", node.Name, eventType, node))
 		return
@@ -103,7 +103,7 @@ func (master *OsdnMaster) addNode(nodeName string, nodeUID string, nodeIP string
 	// Check if subnet needs to be created or updated
 	sub, err := master.networkClient.NetworkV1().HostSubnets().Get(nodeName, metav1.GetOptions{})
 	if err == nil {
-		if err = common.ValidateHostSubnet(sub); err != nil {
+		if err = common.ValidateHostSubnet(sub, master.networkInfo.IPVersion); err != nil {
 			utilruntime.HandleError(fmt.Errorf("Deleting invalid HostSubnet %q: %v", nodeName, err))
 			_ = master.networkClient.NetworkV1().HostSubnets().Delete(nodeName, &metav1.DeleteOptions{})
 			// fall through to create new subnet below
@@ -212,13 +212,17 @@ func (master *OsdnMaster) clearInitialNodeNetworkUnavailableCondition(origNode *
 	}
 }
 
-func getNodeInternalIP(node *kapi.Node) string {
+func getNodeInternalIP(node *kapi.Node, version common.IPVersion) string {
 	var nodeIP string
 	for _, addr := range node.Status.Addresses {
-		if addr.Type == kapi.NodeInternalIP {
-			nodeIP = addr.Address
-			break
+		if addr.Type != kapi.NodeInternalIP {
+			continue
 		}
+		if common.ParseIPVersion(addr.Address) != version {
+			continue
+		}
+		nodeIP = addr.Address
+		break
 	}
 	return nodeIP
 }
@@ -232,7 +236,7 @@ func (master *OsdnMaster) handleAddOrUpdateSubnet(obj, _ interface{}, eventType 
 	hs := obj.(*networkapi.HostSubnet)
 	klog.V(5).Infof("Watch %s event for HostSubnet %q", eventType, hs.Name)
 
-	if err := common.ValidateHostSubnet(hs); err != nil {
+	if err := common.ValidateHostSubnet(hs, master.networkInfo.IPVersion); err != nil {
 		utilruntime.HandleError(fmt.Errorf("Ignoring invalid HostSubnet %s: %v", common.HostSubnetToString(hs), err))
 		return
 	}

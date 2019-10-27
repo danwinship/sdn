@@ -537,6 +537,8 @@ func (np *networkPolicyPlugin) parseNetworkPolicy(npns *npNamespace, policy *net
 				if peer.IPBlock.Except != nil {
 					// Currently IPBlocks with except rules are skipped.
 					klog.Warningf("IPBlocks with except rules are not supported (NetworkPolicy [%s], Namespace [%s])", policy.Name, policy.Namespace)
+				} else if common.ParseIPVersion(peer.IPBlock.CIDR) != np.node.networkInfo.IPVersion {
+					klog.Warningf("Ignoring IPBlock with %s CIDR (NetworkPolicy [%s], Namespace [%s])", common.ParseIPVersion(peer.IPBlock.CIDR), policy.Name, policy.Namespace)
 				} else {
 					// Network Policy has ipBlocks, allow traffic from those ips.
 					peerFlows = append(peerFlows, fmt.Sprintf("ip, nw_src=%s, ", peer.IPBlock.CIDR))

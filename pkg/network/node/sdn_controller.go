@@ -28,7 +28,8 @@ func (plugin *OsdnNode) alreadySetUp() error {
 		return err
 	}
 
-	addrs, err := netlink.AddrList(l, netlink.FAMILY_V4)
+	family := plugin.networkInfo.IPVersion.AddressFamily()
+	addrs, err := netlink.AddrList(l, family)
 	if err != nil {
 		return err
 	}
@@ -43,7 +44,7 @@ func (plugin *OsdnNode) alreadySetUp() error {
 		return errors.New("local subnet gateway CIDR not found")
 	}
 
-	routes, err := netlink.RouteList(l, netlink.FAMILY_V4)
+	routes, err := netlink.RouteList(l, family)
 	if err != nil {
 		return err
 	}
@@ -74,12 +75,13 @@ func deleteLocalSubnetRoute(device, localSubnetCIDR string) {
 		Factor:   1.25,
 		Steps:    7,
 	}
+	family := common.ParseIPVersion(localSubnetCIDR).AddressFamily()
 	err := utilwait.ExponentialBackoff(backoff, func() (bool, error) {
 		l, err := netlink.LinkByName(device)
 		if err != nil {
 			return false, fmt.Errorf("could not get interface %s: %v", device, err)
 		}
-		routes, err := netlink.RouteList(l, netlink.FAMILY_V4)
+		routes, err := netlink.RouteList(l, family)
 		if err != nil {
 			return false, fmt.Errorf("could not get routes: %v", err)
 		}
@@ -101,14 +103,17 @@ func deleteLocalSubnetRoute(device, localSubnetCIDR string) {
 }
 
 func (plugin *OsdnNode) SetupSDN() (bool, map[string]podNetworkInfo, error) {
-	// Make sure IPv4 forwarding state is 1
-	sysctl := sysctl.New()
-	val, err := sysctl.GetSysctl("net/ipv4/ip_forward")
-	if err != nil {
-		return false, nil, fmt.Errorf("could not get IPv4 forwarding state: %s", err)
-	}
-	if val != 1 {
-		return false, nil, fmt.Errorf("net/ipv4/ip_forward=0, it must be set to 1")
+	if plugin.networkInfo.IPVersion == common.IPv4 {
+		// Make sure IPv4 forwarding state is 1
+		// IPV6FIXME - there is no IPv6 equivalent, right?
+		sysctl := sysctl.New()
+		val, err := sysctl.GetSysctl("net/ipv4/ip_forward")
+		if err != nil {
+			return false, nil, fmt.Errorf("could not get IPv4 forwarding state: %s", err)
+		}
+		if val != 1 {
+			return false, nil, fmt.Errorf("net/ipv4/ip_forward=0, it must be set to 1")
+		}
 	}
 
 	localSubnetCIDR := plugin.localSubnetCIDR

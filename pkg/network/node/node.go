@@ -18,7 +18,6 @@ import (
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
-	kubeutilnet "k8s.io/apimachinery/pkg/util/net"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/strategicpatch"
 	kwait "k8s.io/apimachinery/pkg/util/wait"
@@ -157,7 +156,7 @@ func New(c *OsdnNodeConfig) (*OsdnNode, error) {
 		masqBit = uint32(*c.MasqueradeBit)
 	}
 
-	egressDNS, err := common.NewEgressDNS()
+	egressDNS, err := common.NewEgressDNS(networkInfo.IPVersion)
 	if err != nil {
 		return nil, err
 	}
@@ -199,13 +198,18 @@ func (c *OsdnNodeConfig) setNodeIP(networkInfo *common.ParsedClusterNetwork) err
 
 	if len(c.SelfIP) == 0 {
 		var err error
-		c.SelfIP, err = GetNodeIP(c.Hostname)
+		c.SelfIP, err = GetNodeIP(c.Hostname, networkInfo.IPVersion)
 		if err != nil {
 			klog.Infof("Failed to determine node address from hostname %s; using default interface (%v)", c.Hostname, err)
 			var defaultIP net.IP
-			defaultIP, err = kubeutilnet.ChooseHostInterface()
+			// IPV6FIXME - need to fix this upstream
+			// defaultIP, err = kubeutilnet.ChooseHostInterface()
+			defaultIP, err = ChooseHostInterface(AddressFamily(networkInfo.IPVersion))
 			if err != nil {
 				return err
+			}
+			if common.GetIPVersion(defaultIP) != networkInfo.IPVersion {
+				return fmt.Errorf("auto-detected IP address %s is wrong IP version", defaultIP.String())
 			}
 			c.SelfIP = defaultIP.String()
 		}
@@ -230,7 +234,7 @@ func (c *OsdnNodeConfig) setNodeIP(networkInfo *common.ParsedClusterNetwork) err
 	return nil
 }
 
-func GetNodeIP(nodeName string) (string, error) {
+func GetNodeIP(nodeName string, version common.IPVersion) (string, error) {
 	ip := net.ParseIP(nodeName)
 	if ip == nil {
 		addrs, err := net.LookupIP(nodeName)
@@ -238,16 +242,16 @@ func GetNodeIP(nodeName string) (string, error) {
 			return "", fmt.Errorf("Failed to lookup IP address for node %s: %v", nodeName, err)
 		}
 		for _, addr := range addrs {
-			// Skip loopback and non IPv4 addrs
-			if addr.IsLoopback() || addr.To4() == nil {
-				klog.V(5).Infof("Skipping loopback/non-IPv4 addr: %q for node %s", addr.String(), nodeName)
+			// Skip loopback and wrong version addrs
+			if addr.IsLoopback() || common.GetIPVersion(addr) != version {
+				klog.V(5).Infof("Skipping loopback/non-%s addr: %q for node %s", version, addr.String(), nodeName)
 				continue
 			}
 			ip = addr
 			break
 		}
-	} else if ip.IsLoopback() || ip.To4() == nil {
-		klog.V(5).Infof("Skipping loopback/non-IPv4 addr: %q for node %s", ip.String(), nodeName)
+	} else if ip.IsLoopback() || common.GetIPVersion(ip) != version {
+		klog.V(5).Infof("Skipping loopback/non-%s addr: %q for node %s", version, ip.String(), nodeName)
 		ip = nil
 	}
 
@@ -267,8 +271,9 @@ func GetLinkDetails(ip string) (netlink.Link, *net.IPNet, error) {
 		return nil, nil, err
 	}
 
+	family := common.ParseIPVersion(ip).AddressFamily()
 	for _, link := range links {
-		addrs, err := netlink.AddrList(link, netlink.FAMILY_V4)
+		addrs, err := netlink.AddrList(link, family)
 		if err != nil {
 			klog.Warningf("Could not get addresses of interface %q: %v", link.Attrs().Name, err)
 			continue
@@ -292,8 +297,7 @@ func (node *OsdnNode) validateMTU() error {
 	klog.V(2).Infof("Checking default interface MTU")
 
 	// Get the interface with the default route
-	// TODO(cdc) handle v6-only nodes
-	routes, err := netlink.RouteList(nil, netlink.FAMILY_V4)
+	routes, err := netlink.RouteList(nil, node.networkInfo.IPVersion.AddressFamily())
 	if err != nil {
 		return fmt.Errorf("could not list routes while validating MTU: %v", err)
 	}
@@ -322,7 +326,12 @@ func (node *OsdnNode) validateMTU() error {
 		return fmt.Errorf("unable to determine MTU while performing validation")
 	}
 
-	needsTaint := mtu < int(node.networkInfo.MTU)+50
+	tunnelOverhead := 50
+	if node.networkInfo.IPVersion == common.IPv6 {
+		tunnelOverhead = 70
+	}
+
+	needsTaint := mtu < int(node.networkInfo.MTU)+tunnelOverhead
 	const MTUTaintKey string = "network.openshift.io/mtu-too-small"
 	mtuTooSmallTaint := &corev1.Taint{Key: MTUTaintKey, Value: "value", Effect: "NoSchedule"}
 	nodeObj, err := node.kClient.CoreV1().Nodes().Get(node.hostName, metav1.GetOptions{})

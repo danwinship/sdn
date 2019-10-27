@@ -13,6 +13,7 @@ import (
 	ktypes "k8s.io/apimachinery/pkg/types"
 
 	networkapi "github.com/openshift/api/network/v1"
+	"github.com/openshift/sdn/pkg/network/common"
 )
 
 // Checks the "testModeChan" of eip and ensures that the expected netlink event(s)
@@ -130,7 +131,7 @@ func assertNoOVSChanges(eip *egressIPWatcher, flows *[]string) error {
 }
 
 func setupEgressIPWatcher(t *testing.T) (*egressIPWatcher, []string) {
-	_, oc, _ := setupOVSController(t)
+	_, oc, _ := setupOVSController(t, common.IPv4)
 	if oc.localIP != "172.17.0.4" {
 		panic("details of fake ovsController changed")
 	}

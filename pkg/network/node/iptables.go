@@ -16,6 +16,8 @@ import (
 	utilwait "k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/kubernetes/pkg/util/iptables"
 	kexec "k8s.io/utils/exec"
+
+	"github.com/openshift/sdn/pkg/network/common"
 )
 
 type NodeIPTables struct {
@@ -32,8 +34,13 @@ type NodeIPTables struct {
 }
 
 func newNodeIPTables(clusterNetworkCIDR []string, syncPeriod time.Duration, masqueradeServices bool, vxlanPort uint32, masqueradeBit uint32) *NodeIPTables {
+	iptProto := iptables.ProtocolIpv4
+	if common.ParseIPVersion(clusterNetworkCIDR[0]) == common.IPv6 {
+		iptProto = iptables.ProtocolIpv6
+	}
+
 	return &NodeIPTables{
-		ipt:                iptables.New(kexec.New(), iptables.ProtocolIpv4),
+		ipt:                iptables.New(kexec.New(), iptProto),
 		clusterNetworkCIDR: clusterNetworkCIDR,
 		syncPeriod:         syncPeriod,
 		masqueradeServices: masqueradeServices,

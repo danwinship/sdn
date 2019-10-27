@@ -74,7 +74,96 @@ func TestAddDNS(t *testing.T) {
 		dns.HandleFunc(test.domainName, serverFn)
 		defer dns.HandleRemove(test.domainName)
 
-		n, err := NewDNS(configFileName)
+		n, err := NewDNS(configFileName, IPv4)
+		if err != nil {
+			t.Fatalf("Test case: %s failed, err: %v", test.testCase, err)
+		}
+
+		err = n.Add(test.domainName)
+		if test.expectFailure && err == nil {
+			t.Fatalf("Test case: %s failed, expected failure but got success", test.testCase)
+		} else if !test.expectFailure && err != nil {
+			t.Fatalf("Test case: %s failed, err: %v", test.testCase, err)
+		}
+
+		if test.expectFailure {
+			if _, ok := n.dnsMap[test.domainName]; ok {
+				t.Fatalf("Test case: %s failed, unexpected domain %q found in dns map", test.testCase, test.domainName)
+			}
+		} else {
+			d, ok := n.dnsMap[test.domainName]
+			if !ok {
+				t.Fatalf("Test case: %s failed, domain %q not found in dns map", test.testCase, test.domainName)
+			}
+			if !ipsEqual(d.ips, test.ips) {
+				t.Fatalf("Test case: %s failed, expected IPs: %v, got: %v for the domain %q", test.testCase, test.ips, d.ips, test.domainName)
+			}
+			if d.ttl.Seconds() != test.ttl {
+				t.Fatalf("Test case: %s failed, expected TTL: %g, got: %g for the domain %q", test.testCase, test.ttl, d.ttl.Seconds(), test.domainName)
+			}
+			if d.nextQueryTime.IsZero() {
+				t.Fatalf("Test case: %s failed, nextQueryTime for the domain %q is not set", test.testCase, test.domainName)
+			}
+		}
+	}
+}
+
+func TestAddDNSIPv6(t *testing.T) {
+	s, addr, err := runLocalUDPServer("[::]:0")
+	if err != nil {
+		t.Fatalf("unable to run test server: %v", err)
+	}
+	defer s.Shutdown()
+
+	configFileName, err := createResolveConfFile(addr)
+	if err != nil {
+		t.Fatalf("unable to create test resolver: %v", err)
+	}
+	defer os.Remove(configFileName)
+
+	type dnsTest struct {
+		testCase          string
+		domainName        string
+		dnsResolverOutput string
+		ips               []net.IP
+		ttl               float64
+		expectFailure     bool
+	}
+
+	ip := net.ParseIP("2600:5200::7800:1")
+	tests := []dnsTest{
+		{
+			testCase:          "Test valid domain name with resolver returning only AAAA record",
+			domainName:        "example.com",
+			dnsResolverOutput: "example.com. 600 IN AAAA 2600:5200::7800:1",
+			ips:               []net.IP{ip},
+			ttl:               600,
+			expectFailure:     false,
+		},
+		{
+			testCase:          "Test valid domain name with resolver returning both CNAME and AAAA records",
+			domainName:        "example.com",
+			dnsResolverOutput: "example.com. 200 IN CNAME foo.example.com.\nfoo.example.com. 600 IN AAAA 2600:5200::7800:1",
+			ips:               []net.IP{ip},
+			ttl:               200,
+			expectFailure:     false,
+		},
+		{
+			testCase:          "Test valid domain name with resolver returning both A and AAAA records",
+			domainName:        "example.com",
+			dnsResolverOutput: "example.com. 600 IN A 10.11.12.13\nexample.com. 600 IN AAAA 2600:5200::7800:1",
+			ips:               []net.IP{ip},
+			ttl:               600,
+			expectFailure:     false,
+		},
+	}
+
+	for _, test := range tests {
+		serverFn := dummyServer(test.dnsResolverOutput)
+		dns.HandleFunc(test.domainName, serverFn)
+		defer dns.HandleRemove(test.domainName)
+
+		n, err := NewDNS(configFileName, IPv6)
 		if err != nil {
 			t.Fatalf("Test case: %s failed, err: %v", test.testCase, err)
 		}
@@ -175,7 +264,7 @@ func TestUpdateDNS(t *testing.T) {
 		dns.HandleFunc(test.domainName, serverFn)
 		defer dns.HandleRemove(test.domainName)
 
-		n, err := NewDNS(configFileName)
+		n, err := NewDNS(configFileName, IPv4)
 		if err != nil {
 			t.Fatalf("Test case: %s failed, err: %v", test.testCase, err)
 		}

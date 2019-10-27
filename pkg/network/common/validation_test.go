@@ -35,6 +35,15 @@ func TestValidateClusterNetwork(t *testing.T) {
 			expectedErrors: 0,
 		},
 		{
+			name: "Good IPv6 one",
+			cn: &networkapi.ClusterNetwork{
+				ObjectMeta:      metav1.ObjectMeta{Name: "any"},
+				ClusterNetworks: []networkapi.ClusterNetworkEntry{{CIDR: "fd01::/48", HostSubnetLength: 64}},
+				ServiceNetwork:  "fd02::/112",
+			},
+			expectedErrors: 0,
+		},
+		{
 			name: "old network set incorrectly",
 			cn: &networkapi.ClusterNetwork{
 				ObjectMeta:       metav1.ObjectMeta{Name: "any"},
@@ -175,20 +184,20 @@ func TestValidateClusterNetwork(t *testing.T) {
 			expectedErrors: 1,
 		},
 		{
-			name: "IPv6 ClusterNetwork",
-			cn: &networkapi.ClusterNetwork{
-				ObjectMeta:      metav1.ObjectMeta{Name: "any"},
-				ClusterNetworks: []networkapi.ClusterNetworkEntry{{CIDR: "fe80:1234::/64", HostSubnetLength: 8}},
-				ServiceNetwork:  "172.30.0.0/16",
-			},
-			expectedErrors: 1,
-		},
-		{
-			name: "IPv6 ServiceNetwork",
+			name: "IPv4 ClusterNetwork, IPv6 ServiceNetwork",
 			cn: &networkapi.ClusterNetwork{
 				ObjectMeta:      metav1.ObjectMeta{Name: "any"},
 				ClusterNetworks: []networkapi.ClusterNetworkEntry{{CIDR: "10.20.0.0/16", HostSubnetLength: 8}},
 				ServiceNetwork:  "fe80:1234::/64",
+			},
+			expectedErrors: 1,
+		},
+		{
+			name: "IPv6 ClusterNetwork, IPv4 ServiceNewtork",
+			cn: &networkapi.ClusterNetwork{
+				ObjectMeta:      metav1.ObjectMeta{Name: "any"},
+				ClusterNetworks: []networkapi.ClusterNetworkEntry{{CIDR: "fe80:1234::/64", HostSubnetLength: 8}},
+				ServiceNetwork:  "172.30.0.0/16",
 			},
 			expectedErrors: 1,
 		},
@@ -209,6 +218,7 @@ func TestValidateHostSubnet(t *testing.T) {
 	tests := []struct {
 		name           string
 		hs             *networkapi.HostSubnet
+		version        IPVersion
 		expectedErrors int
 	}{
 		{
@@ -221,6 +231,20 @@ func TestValidateHostSubnet(t *testing.T) {
 				HostIP: "10.20.30.40",
 				Subnet: "8.8.8.0/24",
 			},
+			version: IPv4,
+			expectedErrors: 0,
+		},
+		{
+			name: "good ipv6",
+			hs: &networkapi.HostSubnet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "abc.def.com",
+				},
+				Host:   "abc.def.com",
+				HostIP: "2600::1",
+				Subnet: "fd01:0:0:1::/64",
+			},
+			version: IPv6,
 			expectedErrors: 0,
 		},
 		{
@@ -232,6 +256,7 @@ func TestValidateHostSubnet(t *testing.T) {
 				Host:   "abc.def.com",
 				HostIP: "10.20.30.40",
 			},
+			version: IPv4,
 			expectedErrors: 1,
 		},
 		{
@@ -246,12 +271,26 @@ func TestValidateHostSubnet(t *testing.T) {
 				Host:   "abc.def.com",
 				HostIP: "10.20.30.40",
 			},
+			version: IPv4,
 			expectedErrors: 0,
+		},
+		{
+			name: "ipv6 when expecting ipv4",
+			hs: &networkapi.HostSubnet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "abc.def.com",
+				},
+				Host:   "abc.def.com",
+				HostIP: "2600::1",
+				Subnet: "fd01:0:0:1::/64",
+			},
+			version: IPv4,
+			expectedErrors: 2,
 		},
 	}
 
 	for _, tc := range tests {
-		err := ValidateHostSubnet(tc.hs)
+		err := ValidateHostSubnet(tc.hs, tc.version)
 
 		if err == nil && tc.expectedErrors > 0 {
 			t.Errorf("Test case %s expected errors, but passed", tc.name)

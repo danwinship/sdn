@@ -36,8 +36,8 @@ type EgressDNS struct {
 	Updates chan EgressDNSUpdates
 }
 
-func NewEgressDNS() (*EgressDNS, error) {
-	dnsInfo, err := NewDNS("/etc/resolv.conf")
+func NewEgressDNS(ipversion IPVersion) (*EgressDNS, error) {
+	dnsInfo, err := NewDNS("/etc/resolv.conf", ipversion)
 	if err != nil {
 		utilruntime.HandleError(err)
 		return nil, err
@@ -164,9 +164,12 @@ func (e *EgressDNS) GetIPs(dnsName string) []net.IP {
 
 func (e *EgressDNS) GetNetCIDRs(dnsName string) []net.IPNet {
 	cidrs := []net.IPNet{}
+	addrlen := 32
+	if e.dns.ipversion == IPv6 {
+		addrlen = 128
+	}
 	for _, ip := range e.GetIPs(dnsName) {
-		// IPv4 CIDR
-		cidrs = append(cidrs, net.IPNet{IP: ip, Mask: net.CIDRMask(32, 32)})
+		cidrs = append(cidrs, net.IPNet{IP: ip, Mask: net.CIDRMask(addrlen, addrlen)})
 	}
 	return cidrs
 }

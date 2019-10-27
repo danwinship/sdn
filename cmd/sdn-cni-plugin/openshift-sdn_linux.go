@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/openshift/sdn/pkg/network/common"
 	"github.com/openshift/sdn/pkg/network/node/cniserver"
 
 	"github.com/containernetworking/cni/pkg/skel"
@@ -125,7 +126,10 @@ var iptablesCommands = [][]string{
 	{"-A", "OUTPUT", "-p", "tcp", "-m", "tcp", "--dport", "22624", "-j", "REJECT"},
 	{"-A", "FORWARD", "-p", "tcp", "-m", "tcp", "--dport", "22623", "-j", "REJECT"},
 	{"-A", "FORWARD", "-p", "tcp", "-m", "tcp", "--dport", "22624", "-j", "REJECT"},
+}
 
+// IPV6FIXME: there is no IPv6 metadata address, right?
+var iptables4OnlyCommands = [][]string{
 	// Block cloud provider metadata IP except DNS
 	{"-A", "OUTPUT", "-p", "tcp", "-m", "tcp", "-d", "169.254.169.254", "!", "--dport", "53", "-j", "REJECT"},
 	{"-A", "OUTPUT", "-p", "udp", "-m", "udp", "-d", "169.254.169.254", "!", "--dport", "53", "-j", "REJECT"},
@@ -160,7 +164,7 @@ func (p *cniPlugin) CmdAdd(args *skel.CmdArgs) error {
 		return err
 	}
 
-	if err != nil || len(result.IPs) != 1 || result.IPs[0].Version != "4" {
+	if err != nil || len(result.IPs) != 1 {
 		return fmt.Errorf("Unexpected IPAM result: %v", err)
 	}
 
@@ -184,8 +188,15 @@ func (p *cniPlugin) CmdAdd(args *skel.CmdArgs) error {
 
 	err = ns.WithNetNSPath(args.Netns, func(hostNS ns.NetNS) error {
 		// Set up eth0
-		if err := ip.SetHWAddrByIP(args.IfName, result.IPs[0].Address.IP, nil); err != nil {
-			return fmt.Errorf("failed to set pod interface MAC address: %v", err)
+		// IPV6FIXME - ip.SetHWAddrByIP() doesn't support IPv6... But we're
+		// unlikely to recycle IPs with any plausibly-sized IPv6 subnet, so it
+		// shouldn't matter?
+		if common.GetIPVersion(result.IPs[0].Address.IP) == common.IPv4 {
+			hwaddrIP := result.IPs[0].Address.IP
+			hwaddrIP = hwaddrIP[len(hwaddrIP)-4:]
+			if err := ip.SetHWAddrByIP(args.IfName, hwaddrIP, nil); err != nil {
+				return fmt.Errorf("failed to set pod interface MAC address: %v", err)
+			}
 		}
 		if err := ipam.ConfigureIface(args.IfName, result); err != nil {
 			return fmt.Errorf("failed to configure container IPAM: %v", err)
@@ -247,6 +258,16 @@ func (p *cniPlugin) CmdAdd(args *skel.CmdArgs) error {
 
 		// Block access to certain things
 		for _, args := range iptablesCommands {
+			out, err := exec.Command("iptables", args...).CombinedOutput()
+			if err != nil {
+				return fmt.Errorf("could not set up pod iptables rules: %s", string(out))
+			}
+			out, err = exec.Command("ip6tables", args...).CombinedOutput()
+			if err != nil {
+				return fmt.Errorf("could not set up pod iptables rules: %s", string(out))
+			}
+		}
+		for _, args := range iptables4OnlyCommands {
 			out, err := exec.Command("iptables", args...).CombinedOutput()
 			if err != nil {
 				return fmt.Errorf("could not set up pod iptables rules: %s", string(out))
