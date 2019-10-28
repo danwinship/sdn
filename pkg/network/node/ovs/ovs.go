@@ -3,6 +3,7 @@ package ovs
 import (
 	"bytes"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -393,6 +394,46 @@ func (ovsif *ovsExec) NewTransaction() Transaction {
 	return &ovsExecTx{ovsif: ovsif, flows: []string{}}
 }
 
+var ipv6Match1 = regexp.MustCompile(`(nw|tun)_(src|dst)=[[:xdigit:]]*:[[:xdigit:]]*:`)
+var ipv6Match2 = regexp.MustCompile(`:[[:xdigit:]]*:[[:xdigit:]]*->tun_dst`)
+var ipv4Match1 = regexp.MustCompile(`(nw|tun)_(src|dst)=[[:digit:]]*\.[[:digit:]]*\.`)
+var ipv4Match2 = regexp.MustCompile(`\.[[:digit:]]*\.[[:digit:]]*->tun_dst`)
+
+// fixFlow fixes a flow for IPv6, if needed
+func (ovsif *ovsExec) fixFlow(flow string) []string {
+	flow6 := flow
+
+	if ipv4Match1.MatchString(flow) || ipv4Match2.MatchString(flow) {
+		flow6 = ""
+	} else if ipv6Match1.MatchString(flow6) || ipv6Match2.MatchString(flow6) {
+		flow = ""
+
+		if strings.Contains(flow6, ", arp,") {
+			// Explicitly-IPv6 + ARP = bogus
+			return nil
+		}
+		flow6 = strings.ReplaceAll(flow6, "nw_src=", "ipv6_src=")
+		flow6 = strings.ReplaceAll(flow6, "nw_dst=", "ipv6_dst=")
+		flow6 = strings.ReplaceAll(flow6, "tun_src=", "tun_ipv6_src=")
+		flow6 = strings.ReplaceAll(flow6, "->tun_dst", "->tun_ipv6_dst")
+	}
+
+	if flow6 != "" {
+		flow6 = strings.ReplaceAll(flow6, ", ip,", ", ipv6,")
+		flow6 = strings.ReplaceAll(flow6, ", udp,", ", udp6,")
+		flow6 = strings.ReplaceAll(flow6, ", tcp,", ", tcp6,")
+		flow6 = strings.ReplaceAll(flow6, ", sctp,", ", sctp6,")
+	}
+
+	if flow != "" && flow6 != "" && flow != flow6 {
+		return []string{flow, flow6}
+	} else if flow6 != "" {
+		return []string{flow6}
+	} else {
+		return []string{flow}
+	}
+}
+
 // bundle executes all given flows as a single atomic transaction
 func (ovsif *ovsExec) bundle(flows []string) error {
 	if len(flows) == 0 {
@@ -413,14 +454,18 @@ func (tx *ovsExecTx) AddFlow(flow string, args ...interface{}) {
 	if len(args) > 0 {
 		flow = fmt.Sprintf(flow, args...)
 	}
-	tx.flows = append(tx.flows, fmt.Sprintf("flow add %s", flow))
+	for _, flow := range tx.ovsif.fixFlow(flow) {
+		tx.flows = append(tx.flows, fmt.Sprintf("flow add %s", flow))
+	}
 }
 
 func (tx *ovsExecTx) DeleteFlows(flow string, args ...interface{}) {
 	if len(args) > 0 {
 		flow = fmt.Sprintf(flow, args...)
 	}
-	tx.flows = append(tx.flows, fmt.Sprintf("flow delete %s", flow))
+	for _, flow := range tx.ovsif.fixFlow(flow) {
+		tx.flows = append(tx.flows, fmt.Sprintf("flow delete %s", flow))
+	}
 }
 
 func (tx *ovsExecTx) Commit() error {
