@@ -18,6 +18,7 @@ import (
 	"github.com/openshift/sdn/pkg/network/common"
 	"github.com/openshift/sdn/pkg/network/node/cniserver"
 
+	"github.com/containernetworking/cni/pkg/invoke"
 	"github.com/containernetworking/cni/pkg/skel"
 	"github.com/containernetworking/cni/pkg/types"
 	"github.com/containernetworking/cni/pkg/types/current"
@@ -118,6 +119,78 @@ func (p *cniPlugin) testCmdAdd(args *skel.CmdArgs) (types.Result, error) {
 		return nil, err
 	}
 	return convertToRequestedVersion(args.StdinData, result)
+}
+
+var ipv4HackPodsByPlatform = map[string]map[string]string{
+	"aws": map[string]string{
+		"openshift-authentication-operator":   "authentication-operator",
+		"openshift-cloud-credential-operator": "cloud-credential-operator",
+		"openshift-console":                   "console",
+		"openshift-dns":                       "dns-default",
+		"openshift-image-registry":            "cluster-image-registry-operator",
+		"openshift-ingress-operator":          "ingress-operator",
+		"openshift-machine-api":               "machine-api-controllers",
+	},
+	"azure": map[string]string{
+		// default upstream DNS server is IPv4-only (FIXME?)
+		"openshift-dns": "dns-default",
+	},
+}
+
+func maybeAddIPv4Hack(args *skel.CmdArgs, result *current.Result) error {
+	// Only need IPv4 hack on single-stack IPv6
+	if len(result.IPs) != 1 || result.IPs[0].Version != "6" {
+		return nil
+	}
+
+	// Find hack pods for cloud platform
+	bytes, err := ioutil.ReadFile("/proc/cmdline")
+	if err != nil {
+		return nil
+	}
+	var ipv4HackPods map[string]string
+	for _, arg := range strings.Split(strings.TrimSpace(string(bytes)), " ") {
+		if strings.HasPrefix(arg, "ignition.platform.id=") {
+			id := strings.Split(arg, "=")
+			ipv4HackPods = ipv4HackPodsByPlatform[id[1]]
+			break
+		}
+	}
+	if ipv4HackPods == nil {
+		return nil
+	}
+
+	cniArgs := os.Getenv("CNI_ARGS")
+	mapArgs := make(map[string]string)
+	for _, arg := range strings.Split(cniArgs, ";") {
+		parts := strings.Split(arg, "=")
+		if len(parts) != 2 {
+			continue
+		}
+		mapArgs[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
+	}
+
+	namespace := mapArgs["K8S_POD_NAMESPACE"]
+	name := mapArgs["K8S_POD_NAME"]
+	if namespace == "" || name == "" {
+		return nil
+	}
+
+	prefix := ipv4HackPods[namespace]
+	if prefix == "" || !strings.HasPrefix(name, prefix) {
+		return nil
+	}
+
+	v4Args := &invoke.Args{
+		Command:     "ADD",
+		ContainerID: args.ContainerID,
+		NetNS:       args.Netns,
+		IfName:      "eth4",
+		Path:        "/var/lib/cni/bin",
+	}
+	v4Config := []byte(`{"cniVersion": "0.3.0", "name": "ipv4-hack", "type": "bridge", "bridge": "ipv4-hack", "isDefaultGateway": true, "ipMasq": true, "ipam": { "type": "host-local", "subnet": "10.192.0.0/24" } }`)
+	os.Setenv("CNI_IFNAME", "eth4")
+	return invoke.ExecPluginWithoutResult("/var/lib/cni/bin/bridge", v4Config, v4Args)
 }
 
 var iptablesCommands = [][]string{
@@ -278,6 +351,11 @@ func (p *cniPlugin) CmdAdd(args *skel.CmdArgs) error {
 	})
 	if err != nil {
 		return err
+	}
+
+	err = maybeAddIPv4Hack(args, result)
+	if err != nil {
+		return fmt.Errorf("failed to add hack IPv4 interface: %v", err)
 	}
 
 	convertedResult, err := convertToRequestedVersion(req.Config, result)
