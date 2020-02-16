@@ -134,6 +134,10 @@ var ipv4HackPodsByPlatform = map[string]map[string]string{
 	"azure": map[string]string{
 		// default upstream DNS server is IPv4-only (FIXME?)
 		"openshift-dns": "dns-default",
+
+		// FIXME: hack to work around bad IPv4 host-etcd endpoints from installer
+		"openshift-apiserver":     "apiserver",
+		"openshift-etcd-operator": "etcd-operator",
 	},
 }
 
