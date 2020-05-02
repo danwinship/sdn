@@ -90,21 +90,30 @@ type Interface interface {
 
 // Transaction manages a single set of OVS flow modifications
 type Transaction interface {
-	// AddFlow prepares adding a flow to the bridge.
-	// Given flow is cached but not executed at this time.
-	// The arguments are passed to fmt.Sprintf().
+	// AddFlow prepares to add a flow to the bridge. (It is not actually added until
+	// the transaction is committed.)
+	//
+	// The arguments are passed to fmt.Sprintf(). The flow should be written using IPv4
+	// field names, even if using IPv6 addresses.
 	AddFlow(flow string, args ...interface{})
 
-	// DeleteFlows prepares deleting all matching flows from the bridge.
-	// Given flow is cached but not executed at this time.
-	// The arguments are passed to fmt.Sprintf().
+	// DeleteFlows prepares to delete all matching flows from the bridge. (They are not
+	// actually deleted until the transaction is committed.)
+	//
+	// The arguments are passed to fmt.Sprintf(). The flow should be written using IPv4
+	// field names, even if using IPv6 addresses.
 	DeleteFlows(flow string, args ...interface{})
 
+	// AddGroup prepares to add a group to the group table. (It is not actually added
+	// until the transaction is committed.)
 	AddGroup(groupID uint32, groupType string, buckets []string)
+
+	// DeleteGroup prepares to delete a group from the group table. (It is not
+	// actually deleted until the transaction is committed.)
 	DeleteGroup(groupID uint32)
 
-	// Commit executes all cached flows as a single atomic transaction and
-	// returns any error that occurred during the transaction.
+	// Commit executes all cached flows as a single atomic transaction and returns any
+	// error that occurred during the transaction.
 	Commit() error
 }
 
@@ -123,10 +132,12 @@ var ovsBackoff utilwait.Backoff = utilwait.Backoff{
 type ovsExec struct {
 	execer exec.Interface
 	bridge string
+	ipv4   bool
+	ipv6   bool
 }
 
 // New returns a new ovs.Interface
-func New(execer exec.Interface, bridge string) (Interface, error) {
+func New(execer exec.Interface, bridge string, ipv4 bool, ipv6 bool) (Interface, error) {
 	if _, err := execer.LookPath(OVS_OFCTL); err != nil {
 		return nil, fmt.Errorf("OVS is not installed")
 	}
@@ -134,7 +145,12 @@ func New(execer exec.Interface, bridge string) (Interface, error) {
 		return nil, fmt.Errorf("OVS is not installed")
 	}
 
-	return &ovsExec{execer: execer, bridge: bridge}, nil
+	return &ovsExec{
+		execer: execer,
+		bridge: bridge,
+		ipv4:   ipv4,
+		ipv6:   ipv6,
+	}, nil
 }
 
 func (ovsif *ovsExec) execWithStdin(cmd string, stdinArgs []string, args ...string) (string, error) {
@@ -431,14 +447,18 @@ func (tx *ovsExecTx) AddFlow(flow string, args ...interface{}) {
 	if len(args) > 0 {
 		flow = fmt.Sprintf(flow, args...)
 	}
-	tx.mods = append(tx.mods, fmt.Sprintf("flow add %s", flow))
+	for _, flow := range fixIPFlow(flow, tx.ovsif.ipv4, tx.ovsif.ipv6) {
+		tx.mods = append(tx.mods, fmt.Sprintf("flow add %s", flow))
+	}
 }
 
 func (tx *ovsExecTx) DeleteFlows(flow string, args ...interface{}) {
 	if len(args) > 0 {
 		flow = fmt.Sprintf(flow, args...)
 	}
-	tx.mods = append(tx.mods, fmt.Sprintf("flow delete %s", flow))
+	for _, flow := range fixIPFlow(flow, tx.ovsif.ipv4, tx.ovsif.ipv6) {
+		tx.mods = append(tx.mods, fmt.Sprintf("flow delete %s", flow))
+	}
 }
 
 func (tx *ovsExecTx) AddGroup(groupID uint32, groupType string, buckets []string) {

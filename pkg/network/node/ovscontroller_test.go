@@ -20,7 +20,7 @@ import (
 )
 
 func setupOVSController(t *testing.T) (ovs.Interface, *ovsController, []string) {
-	ovsif := ovs.NewFake(Br0)
+	ovsif := ovs.NewFake(Br0, true, false)
 	oc := NewOVSController(ovsif, "172.17.0.4")
 	oc.tunMAC = "c6:ac:2c:13:48:4b"
 	err := oc.SetupOVS([]string{"10.128.0.0/14"}, "172.30.0.0/16", "10.128.0.0/23", "10.128.0.1", 1450, 4789)
@@ -654,7 +654,7 @@ func TestAlreadySetUp(t *testing.T) {
 	}
 
 	for i, tc := range testcases {
-		ovsif := ovs.NewFake(Br0)
+		ovsif := ovs.NewFake(Br0, true, false)
 		if err := ovsif.AddBridge("fail_mode=secure", "protocols=OpenFlow13"); err != nil {
 			t.Fatalf("(%d) unexpected error from AddBridge: %v", i, err)
 		}

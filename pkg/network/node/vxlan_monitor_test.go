@@ -40,7 +40,7 @@ func peekUpdate(updates chan struct{}, evm *egressVXLANMonitor) []egressVXLANNod
 }
 
 func TestEgressVXLANMonitor(t *testing.T) {
-	ovsif := ovs.NewFake(Br0)
+	ovsif := ovs.NewFake(Br0, true, false)
 	ovsif.AddBridge()
 
 	inCounts := make(map[string]int)

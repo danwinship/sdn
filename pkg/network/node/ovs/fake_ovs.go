@@ -24,14 +24,24 @@ type ovsFake struct {
 	bridge string
 
 	ports map[string]ovsPortInfo
+
 	// map of groupID to OVS group, makes it easier to add and delete groups
 	groups map[string]OVSGroup
-	flows  ovsFlows
+
+	flows ovsFlows
+
+	ipv4  bool
+	ipv6  bool
 }
 
 // NewFake returns a new ovs.Interface
-func NewFake(bridge string) Interface {
-	return &ovsFake{bridge: bridge, groups: make(map[string]OVSGroup)}
+func NewFake(bridge string, ipv4, ipv6 bool) Interface {
+	return &ovsFake{
+		bridge: bridge,
+		groups: make(map[string]OVSGroup),
+		ipv4:   ipv4,
+		ipv6:   ipv6,
+	}
 }
 
 func (fake *ovsFake) AddBridge(properties ...string) error {
@@ -282,7 +292,9 @@ func (tx *ovsFakeTx) AddFlow(flow string, args ...interface{}) {
 	if len(args) > 0 {
 		flow = fmt.Sprintf(flow, args...)
 	}
-	tx.flows = append(tx.flows, fmt.Sprintf("add %s", flow))
+	for _, flow := range fixIPFlow(flow, tx.fake.ipv4, tx.fake.ipv6) {
+		tx.flows = append(tx.flows, fmt.Sprintf("add %s", flow))
+	}
 }
 
 func (fake *ovsFake) addFlowHelper(flow string) error {
@@ -309,7 +321,9 @@ func (tx *ovsFakeTx) DeleteFlows(flow string, args ...interface{}) {
 	if len(args) > 0 {
 		flow = fmt.Sprintf(flow, args...)
 	}
-	tx.flows = append(tx.flows, fmt.Sprintf("delete %s", flow))
+	for _, flow := range fixIPFlow(flow, tx.fake.ipv4, tx.fake.ipv6) {
+		tx.flows = append(tx.flows, fmt.Sprintf("delete %s", flow))
+	}
 }
 
 func (fake *ovsFake) deleteFlowsHelper(flow string) error {

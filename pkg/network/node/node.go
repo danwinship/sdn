@@ -125,7 +125,7 @@ func New(c *OsdnNodeConfig) (*OsdnNode, error) {
 
 	klog.Infof("Initializing SDN node %q (%s)", c.NodeName, c.NodeIP)
 
-	ovsif, err := ovs.New(kexec.New(), Br0)
+	ovsif, err := ovs.New(kexec.New(), Br0, true, false)
 	if err != nil {
 		return nil, err
 	}

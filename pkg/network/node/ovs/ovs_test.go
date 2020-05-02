@@ -74,7 +74,7 @@ func ensureInputFlows(t *testing.T, fakeCmd *fakeexec.FakeCmd, flows []string) {
 func TestTransactionSuccess(t *testing.T) {
 	fexec := normalSetup()
 
-	ovsif, err := New(fexec, "br0")
+	ovsif, err := New(fexec, "br0", true, false)
 	if err != nil {
 		t.Fatalf("Unexpected error from ovs.New(): %v", err)
 	}
@@ -156,7 +156,7 @@ func TestDumpFlows(t *testing.T) {
  cookie=0x0, duration=13284.67s, table=0, n_packets=782815611, n_bytes=179416494325, priority=50 actions=output:2
 `, nil)
 
-	ovsif, err := New(fexec, "br0")
+	ovsif, err := New(fexec, "br0", true, false)
 	if err != nil {
 		t.Fatalf("Unexpected error from ovs.New(): %v", err)
 	}
@@ -177,7 +177,7 @@ func TestDumpFlows(t *testing.T) {
 
 func TestOVSMissing(t *testing.T) {
 	fexec := missingSetup()
-	ovsif, err := New(fexec, "br0")
+	ovsif, err := New(fexec, "br0", true, false)
 	if err == nil || ovsif != nil {
 		t.Fatalf("Unexpectedly did not get error")
 	}
@@ -188,7 +188,7 @@ func TestOVSMissing(t *testing.T) {
 
 func TestAddPort(t *testing.T) {
 	fexec := normalSetup()
-	ovsif, err := New(fexec, "br0")
+	ovsif, err := New(fexec, "br0", true, false)
 	if err != nil {
 		t.Fatalf("Unexpected error from ovs.New(): %v", err)
 	}
@@ -263,7 +263,7 @@ func TestAddPort(t *testing.T) {
 
 func TestFind(t *testing.T) {
 	fexec := normalSetup()
-	ovsif, err := New(fexec, "br0")
+	ovsif, err := New(fexec, "br0", true, false)
 	if err != nil {
 		t.Fatalf("Unexpected error from ovs.New(): %v", err)
 	}
@@ -335,4 +335,98 @@ ofport              : 3
 	if err == nil {
 		t.Fatalf("failed to get error when referring to 'external-ids'")
 	}
+}
+
+func TestAddFlowIPv6(t *testing.T) {
+	fexec := normalSetup()
+
+	ovsif, err := New(fexec, "br0", false, true)
+	if err != nil {
+		t.Fatalf("Unexpected error from ovs.New(): %v", err)
+	}
+
+	fakeCmd := addTestResult(t, fexec, "ovs-ofctl -O OpenFlow13 bundle br0 -", "", nil)
+	otx := ovsif.NewTransaction()
+	otx.AddFlow("table=0, priority=250, in_port=2, ip, nw_src=224.0.0.0/4, actions=drop")
+	otx.AddFlow("table=0, priority=250, in_port=2, ip, nw_src=ff00::/8, actions=drop")
+	otx.AddFlow("table=0, priority=200, in_port=1, ip, nw_src=fd01::/48, actions=move:NXM_NX_TUN_ID[0..31]->NXM_NX_REG0[],goto_table:10")
+	otx.AddFlow("table=0, priority=200, in_port=1, ip, nw_dst=fd01::/48, actions=move:NXM_NX_TUN_ID[0..31]->NXM_NX_REG0[],goto_table:10")
+	otx.AddFlow("table=100, priority=300, udp, udp_dst=4789, actions=drop")
+	otx.AddFlow("table=100, priority=200, tcp, tcp_dst=53, nw_dst=2600:5200::2, actions=output:2")
+	otx.AddFlow("table=90, priority=100, cookie=0x12345678, ip, nw_dst=fd01:0:0:2::/64, actions=load:42->NXM_NX_TUN_ID[0..31],set_field:2600:5200::3->tun_dst,output:1")
+	if err = otx.Commit(); err != nil {
+		t.Fatalf("Unexpected error from command: %v", err)
+	}
+	ensureTestResults(t, fexec)
+	expectedInputFlows := []string{
+		"flow add table=0, priority=250, in_port=2, ipv6, ipv6_src=ff00::/8, actions=drop",
+		"flow add table=0, priority=200, in_port=1, ipv6, ipv6_src=fd01::/48, actions=move:NXM_NX_TUN_ID[0..31]->NXM_NX_REG0[],goto_table:10",
+		"flow add table=0, priority=200, in_port=1, ipv6, ipv6_dst=fd01::/48, actions=move:NXM_NX_TUN_ID[0..31]->NXM_NX_REG0[],goto_table:10",
+		"flow add table=100, priority=300, udp6, udp_dst=4789, actions=drop",
+		"flow add table=100, priority=200, tcp6, tcp_dst=53, ipv6_dst=2600:5200::2, actions=output:2",
+		"flow add table=90, priority=100, cookie=0x12345678, ipv6, ipv6_dst=fd01:0:0:2::/64, actions=load:42->NXM_NX_TUN_ID[0..31],set_field:2600:5200::3->tun_ipv6_dst,output:1",
+	}
+	ensureInputFlows(t, fakeCmd, expectedInputFlows)
+}
+
+func TestAddFlowIPv4(t *testing.T) {
+	fexec := normalSetup()
+
+	ovsif, err := New(fexec, "br0", true, false)
+	if err != nil {
+		t.Fatalf("Unexpected error from ovs.New(): %v", err)
+	}
+
+	fakeCmd := addTestResult(t, fexec, "ovs-ofctl -O OpenFlow13 bundle br0 -", "", nil)
+	otx := ovsif.NewTransaction()
+	otx.AddFlow("table=0, priority=250, in_port=2, ip, nw_src=224.0.0.0/4, actions=drop")
+	otx.AddFlow("table=0, priority=250, in_port=2, ip, nw_src=ff00::/8, actions=drop")
+	otx.AddFlow("table=0, priority=200, in_port=1, ip, nw_src=fd01::/48, actions=move:NXM_NX_TUN_ID[0..31]->NXM_NX_REG0[],goto_table:10")
+	otx.AddFlow("table=0, priority=200, in_port=1, ip, nw_dst=fd01::/48, actions=move:NXM_NX_TUN_ID[0..31]->NXM_NX_REG0[],goto_table:10")
+	otx.AddFlow("table=100, priority=300, udp, udp_dst=4789, actions=drop")
+	otx.AddFlow("table=100, priority=200, tcp, tcp_dst=53, nw_dst=2600:5200::2, actions=output:2")
+	otx.AddFlow("table=90, priority=100, cookie=0x12345678, ip, nw_dst=fd01:0:0:2::/64, actions=load:42->NXM_NX_TUN_ID[0..31],set_field:2600:5200::3->tun_dst,output:1")
+	if err = otx.Commit(); err != nil {
+		t.Fatalf("Unexpected error from command: %v", err)
+	}
+	ensureTestResults(t, fexec)
+	expectedInputFlows := []string{
+		"flow add table=0, priority=250, in_port=2, ip, nw_src=224.0.0.0/4, actions=drop",
+		"flow add table=100, priority=300, udp, udp_dst=4789, actions=drop",
+	}
+	ensureInputFlows(t, fakeCmd, expectedInputFlows)
+}
+
+func TestAddFlowDualStack(t *testing.T) {
+	fexec := normalSetup()
+
+	ovsif, err := New(fexec, "br0", true, true)
+	if err != nil {
+		t.Fatalf("Unexpected error from ovs.New(): %v", err)
+	}
+
+	fakeCmd := addTestResult(t, fexec, "ovs-ofctl -O OpenFlow13 bundle br0 -", "", nil)
+	otx := ovsif.NewTransaction()
+	otx.AddFlow("table=0, priority=250, in_port=2, ip, nw_src=224.0.0.0/4, actions=drop")
+	otx.AddFlow("table=0, priority=250, in_port=2, ip, nw_src=ff00::/8, actions=drop")
+	otx.AddFlow("table=0, priority=200, in_port=1, ip, nw_src=fd01::/48, actions=move:NXM_NX_TUN_ID[0..31]->NXM_NX_REG0[],goto_table:10")
+	otx.AddFlow("table=0, priority=200, in_port=1, ip, nw_dst=fd01::/48, actions=move:NXM_NX_TUN_ID[0..31]->NXM_NX_REG0[],goto_table:10")
+	otx.AddFlow("table=100, priority=300, udp, udp_dst=4789, actions=drop")
+	otx.AddFlow("table=100, priority=200, tcp, tcp_dst=53, nw_dst=2600:5200::2, actions=output:2")
+	otx.AddFlow("table=90, priority=100, cookie=0x12345678, ip, nw_dst=fd01:0:0:2::/64, actions=load:42->NXM_NX_TUN_ID[0..31],set_field:2600:5200::3->tun_dst,output:1")
+	if err = otx.Commit(); err != nil {
+		t.Fatalf("Unexpected error from command: %v", err)
+	}
+	ensureTestResults(t, fexec)
+	expectedInputFlows := []string{
+		"flow add table=0, priority=250, in_port=2, ip, nw_src=224.0.0.0/4, actions=drop",
+		"flow add table=0, priority=250, in_port=2, ipv6, ipv6_src=ff00::/8, actions=drop",
+		"flow add table=0, priority=200, in_port=1, ipv6, ipv6_src=fd01::/48, actions=move:NXM_NX_TUN_ID[0..31]->NXM_NX_REG0[],goto_table:10",
+		"flow add table=0, priority=200, in_port=1, ipv6, ipv6_dst=fd01::/48, actions=move:NXM_NX_TUN_ID[0..31]->NXM_NX_REG0[],goto_table:10",
+		"flow add table=100, priority=300, udp, udp_dst=4789, actions=drop",
+		"flow add table=100, priority=300, udp6, udp_dst=4789, actions=drop",
+		"flow add table=100, priority=200, tcp6, tcp_dst=53, ipv6_dst=2600:5200::2, actions=output:2",
+		"flow add table=90, priority=100, cookie=0x12345678, ipv6, ipv6_dst=fd01:0:0:2::/64, actions=load:42->NXM_NX_TUN_ID[0..31],set_field:2600:5200::3->tun_ipv6_dst,output:1",
+	}
+	ensureInputFlows(t, fakeCmd, expectedInputFlows)
 }

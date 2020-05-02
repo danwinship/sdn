@@ -7,7 +7,7 @@ import (
 )
 
 func TestFakePorts(t *testing.T) {
-	ovsif := NewFake("br0")
+	ovsif := NewFake("br0", true, false)
 
 	if _, err := ovsif.AddPort("tun0", 1); err == nil {
 		t.Fatalf("unexpected lack of error adding port on non-existent bridge")
@@ -36,7 +36,7 @@ func TestFakePorts(t *testing.T) {
 }
 
 func TestTransaction(t *testing.T) {
-	ovsif := NewFake("br0")
+	ovsif := NewFake("br0", true, false)
 	if err := ovsif.AddBridge(); err != nil {
 		t.Fatalf("unexpected error adding bridge: %v", err)
 	}
@@ -124,7 +124,7 @@ func TestTransaction(t *testing.T) {
 }
 
 func TestFakeFind(t *testing.T) {
-	ovsif := NewFake("br0")
+	ovsif := NewFake("br0", true, false)
 	if err := ovsif.AddBridge(); err != nil {
 		t.Fatalf("unexpected error adding bridge: %v", err)
 	}
@@ -204,7 +204,7 @@ func checkDump(ovsif Interface, filter string, cmpFlows []string) error {
 }
 
 func TestFakeDumpFlows(t *testing.T) {
-	ovsif := NewFake("br0")
+	ovsif := NewFake("br0", true, false)
 	if err := ovsif.AddBridge(); err != nil {
 		t.Fatalf("unexpected error adding bridge: %v", err)
 	}
@@ -358,7 +358,7 @@ func matchActions(flows []string, actions ...string) bool {
 }
 
 func TestFlowMatchesMasked(t *testing.T) {
-	ovsif := NewFake("br0")
+	ovsif := NewFake("br0", true, false)
 	if err := ovsif.AddBridge(); err != nil {
 		t.Fatalf("unexpected error adding bridge: %v", err)
 	}
