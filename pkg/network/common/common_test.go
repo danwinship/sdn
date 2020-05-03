@@ -27,6 +27,15 @@ func TestGenerateGateway(t *testing.T) {
 	if gatewayIP.String() != "10.1.0.1" {
 		t.Fatalf("Did not get expected gateway IP Address (gatewayIP=%s)", gatewayIP.String())
 	}
+
+	_, ip6Net, err := net.ParseCIDR("fd01:0:0:1::/64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gatewayIP6 := GenerateDefaultGateway(ip6Net)
+	if gatewayIP6.String() != "fd01:0:0:1::1" {
+		t.Fatalf("Did not get expected gateway IP6 Address (gatewayIP6=%s)", gatewayIP6.String())
+	}
 }
 
 func TestCheckHostNetworks(t *testing.T) {

@@ -196,7 +196,7 @@ func GetLinkDetails(ip string) (netlink.Link, *net.IPNet, error) {
 	}
 
 	for _, link := range links {
-		addrs, err := netlink.AddrList(link, netlink.FAMILY_V4)
+		addrs, err := netlink.AddrList(link, netlink.FAMILY_ALL)
 		if err != nil {
 			klog.Warningf("Could not get addresses of interface %q: %v", link.Attrs().Name, err)
 			continue
@@ -219,9 +219,9 @@ func GetLinkDetails(ip string) (netlink.Link, *net.IPNet, error) {
 func (node *OsdnNode) validateMTU() error {
 	klog.V(2).Infof("Checking default interface MTU")
 
-	// Get the interface with the default route
-	// TODO(cdc) handle v6-only nodes
-	routes, err := netlink.RouteList(nil, netlink.FAMILY_V4)
+	// Get the interface with the default route. (We assume that on dual-stack nodes
+	// the IPv4 and IPv6 default routes are on the same interface.)
+	routes, err := netlink.RouteList(nil, netlink.FAMILY_ALL)
 	if err != nil {
 		return fmt.Errorf("could not list routes while validating MTU: %v", err)
 	}
@@ -250,7 +250,12 @@ func (node *OsdnNode) validateMTU() error {
 		return fmt.Errorf("unable to determine MTU while performing validation")
 	}
 
-	needsTaint := mtu < int(node.networkInfo.MTU)+50
+	tunnelOverhead := 50
+	if node.networkInfo.IPFamilies.AllowsIPv6() {
+		tunnelOverhead = 70
+	}
+
+	needsTaint := mtu < int(node.networkInfo.MTU)+tunnelOverhead
 	const MTUTaintKey string = "network.openshift.io/mtu-too-small"
 	mtuTooSmallTaint := &corev1.Taint{Key: MTUTaintKey, Value: "value", Effect: "NoSchedule"}
 	nodeObj, err := node.kClient.CoreV1().Nodes().Get(context.TODO(), node.hostName, metav1.GetOptions{})

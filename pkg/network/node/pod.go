@@ -330,7 +330,7 @@ func maybeAddMacvlan(pod *corev1.Pod, netns string) error {
 	var err error
 	if annotation == "true" {
 		// Find interface with the default route
-		routes, err := netlink.RouteList(nil, netlink.FAMILY_V4)
+		routes, err := netlink.RouteList(nil, netlink.FAMILY_ALL)
 		if err != nil {
 			return fmt.Errorf("failed to read routes: %v", err)
 		}

@@ -138,6 +138,8 @@ func ParseClusterNetwork(cn *networkv1.ClusterNetwork) (*ParsedClusterNetwork, e
 
 	if cn.MTU != nil {
 		pcn.MTU = *cn.MTU
+	} else if pcn.IPFamilies.AllowsIPv6() {
+		pcn.MTU = 1430
 	} else {
 		pcn.MTU = 1450
 	}
@@ -318,12 +320,12 @@ func GetParsedClusterNetwork(networkClient networkclient.Interface) (*ParsedClus
 
 // Generate the default gateway IP Address for a subnet
 func GenerateDefaultGateway(sna *net.IPNet) net.IP {
-	ip := sna.IP.To4()
-	return net.IPv4(ip[0], ip[1], ip[2], ip[3]|0x1)
+	baseIP := append([]byte{}, sna.IP...)
+	baseIP[len(baseIP)-1] |= 0x1
+	return baseIP
 }
 
-// Return Host IP Networks
-// Ignores provided interfaces and filters loopback and non IPv4 addrs.
+// GetHostIPNetworks returns host IP networks, ignoring skipInterfaces and loopback
 func GetHostIPNetworks(skipInterfaces []string) ([]*net.IPNet, []net.IP, error) {
 	hostInterfaces, err := net.Interfaces()
 	if err != nil {
@@ -354,12 +356,12 @@ func GetHostIPNetworks(skipInterfaces []string) ([]*net.IPNet, []net.IP, error) 
 				errList = append(errList, err)
 				continue
 			}
-
-			// Skip loopback and non IPv4 addrs
-			if !ip.IsLoopback() && ip.To4() != nil {
-				hostIPNets = append(hostIPNets, ipNet)
-				hostIPs = append(hostIPs, ip)
+			if ip.IsLoopback() {
+				continue
 			}
+
+			hostIPNets = append(hostIPNets, ipNet)
+			hostIPs = append(hostIPs, ip)
 		}
 	}
 	return hostIPNets, hostIPs, kerrors.NewAggregate(errList)

@@ -19,6 +19,7 @@ import (
 	kerrors "k8s.io/apimachinery/pkg/util/errors"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/sets"
+	utilnet "k8s.io/utils/net"
 )
 
 type ovsController struct {
@@ -94,9 +95,16 @@ func (oc *ovsController) SetupOVS(clusterNetworkCIDR []string, serviceNetworkCID
 		return err
 	}
 
+	var localSubnetGatewayMatch string
+	if utilnet.IsIPv6String(localSubnetGateway) {
+		localSubnetGatewayMatch = localSubnetGateway + "/128"
+	} else {
+		localSubnetGatewayMatch = localSubnetGateway + "/32"
+	}
+
 	otx := oc.ovs.NewTransaction()
 
-	// Table 0: initial dispatch based on in_port
+	// Table 0: preliminaries, and initial dispatch based on in_port
 	otx.AddFlow("table=0, priority=1000, ip, ct_state=-trk, actions=ct(table=0)")
 	// vxlan0
 	for _, clusterCIDR := range clusterNetworkCIDR {
@@ -111,6 +119,7 @@ func (oc *ovsController) SetupOVS(clusterNetworkCIDR []string, serviceNetworkCID
 		otx.AddFlow("table=0, priority=300, in_port=2, ip, nw_src=%s, nw_dst=%s, actions=goto_table:25", localSubnetCIDR, clusterCIDR)
 	}
 	otx.AddFlow("table=0, priority=250, in_port=2, ip, nw_dst=224.0.0.0/4, actions=drop")
+	otx.AddFlow("table=0, priority=250, in_port=2, ip, nw_dst=ff00::/8, actions=drop")
 	for _, clusterCIDR := range clusterNetworkCIDR {
 		otx.AddFlow("table=0, priority=200, in_port=2, arp, nw_src=%s, nw_dst=%s, actions=goto_table:30", localSubnetGateway, clusterCIDR)
 	}
@@ -154,8 +163,10 @@ func (oc *ovsController) SetupOVS(clusterNetworkCIDR []string, serviceNetworkCID
 
 	// Multicast coming from the VXLAN
 	otx.AddFlow("table=30, priority=50, in_port=1, ip, nw_dst=224.0.0.0/4, actions=goto_table:120")
+	otx.AddFlow("table=30, priority=50, in_port=1, ip, nw_dst=ff00::/8, actions=goto_table:120")
 	// Multicast coming from local pods
 	otx.AddFlow("table=30, priority=25, ip, nw_dst=224.0.0.0/4, actions=goto_table:110")
+	otx.AddFlow("table=30, priority=25, ip, nw_dst=ff00::/8, actions=goto_table:110")
 
 	otx.AddFlow("table=30, priority=0, ip, actions=goto_table:100")
 	otx.AddFlow("table=30, priority=0, arp, actions=drop")
@@ -175,7 +186,7 @@ func (oc *ovsController) SetupOVS(clusterNetworkCIDR []string, serviceNetworkCID
 	otx.AddFlow("table=70, priority=0, actions=drop")
 
 	// Table 80: IP policy enforcement; mostly managed by the osdnPolicy
-	otx.AddFlow("table=80, priority=300, ip, nw_src=%s/32, actions=output:NXM_NX_REG2[]", localSubnetGateway)
+	otx.AddFlow("table=80, priority=300, ip, nw_src=%s, actions=output:NXM_NX_REG2[]", localSubnetGatewayMatch)
 	// eg, "table=80, priority=100, reg0=${tenant_id}, reg1=${tenant_id}, actions=output:NXM_NX_REG2[]"
 	otx.AddFlow("table=80, priority=0, actions=drop")
 
@@ -510,7 +521,7 @@ func (oc *ovsController) UpdateEgressNetworkPolicyRules(policies []networkapi.Eg
 
 			for _, selector := range selectors {
 				var dst string
-				if selector == "0.0.0.0/0" {
+				if selector == "0.0.0.0/0" || selector == "::/0" {
 					dst = ""
 				} else if selector == "0.0.0.0/32" {
 					klog.Warningf("Correcting CIDRSelector '0.0.0.0/32' to '0.0.0.0/0' in EgressNetworkPolicy %s:%s", policies[0].Namespace, policies[0].Name)

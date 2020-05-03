@@ -27,7 +27,7 @@ func (plugin *OsdnNode) alreadySetUp() error {
 		return err
 	}
 
-	addrs, err := netlink.AddrList(l, netlink.FAMILY_V4)
+	addrs, err := netlink.AddrList(l, netlink.FAMILY_ALL)
 	if err != nil {
 		return err
 	}
@@ -42,7 +42,7 @@ func (plugin *OsdnNode) alreadySetUp() error {
 		return errors.New("local subnet gateway CIDR not found")
 	}
 
-	routes, err := netlink.RouteList(l, netlink.FAMILY_V4)
+	routes, err := netlink.RouteList(l, netlink.FAMILY_ALL)
 	if err != nil {
 		return err
 	}
@@ -78,7 +78,7 @@ func deleteLocalSubnetRoute(device, localSubnetCIDR string) {
 		if err != nil {
 			return false, fmt.Errorf("could not get interface %s: %v", device, err)
 		}
-		routes, err := netlink.RouteList(l, netlink.FAMILY_V4)
+		routes, err := netlink.RouteList(l, netlink.FAMILY_ALL)
 		if err != nil {
 			return false, fmt.Errorf("could not get routes: %v", err)
 		}
@@ -100,14 +100,16 @@ func deleteLocalSubnetRoute(device, localSubnetCIDR string) {
 }
 
 func (plugin *OsdnNode) SetupSDN() (bool, map[string]podNetworkInfo, error) {
-	// Make sure IPv4 forwarding state is 1
-	sysctl := sysctl.New()
-	val, err := sysctl.GetSysctl("net/ipv4/ip_forward")
-	if err != nil {
-		return false, nil, fmt.Errorf("could not get IPv4 forwarding state: %s", err)
-	}
-	if val != 1 {
-		return false, nil, fmt.Errorf("net/ipv4/ip_forward=0, it must be set to 1")
+	if plugin.networkInfo.IPFamilies.AllowsIPv4() {
+		// Make sure IPv4 forwarding state is 1
+		sysctl := sysctl.New()
+		val, err := sysctl.GetSysctl("net/ipv4/ip_forward")
+		if err != nil {
+			return false, nil, fmt.Errorf("could not get IPv4 forwarding state: %s", err)
+		}
+		if val != 1 {
+			return false, nil, fmt.Errorf("net/ipv4/ip_forward=0, it must be set to 1")
+		}
 	}
 
 	localSubnetCIDR := plugin.localSubnetCIDR

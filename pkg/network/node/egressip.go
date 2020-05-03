@@ -11,6 +11,7 @@ import (
 	"k8s.io/klog/v2"
 
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	utilnet "k8s.io/utils/net"
 
 	networkinformers "github.com/openshift/client-go/network/informers/externalversions"
 	"github.com/openshift/sdn/pkg/network/common"
@@ -75,7 +76,7 @@ func (eip *egressIPWatcher) Synced() {
 		utilruntime.HandleError(fmt.Errorf("Could not check for stale egress IPs: %v", err))
 		return
 	}
-	addrs, err := netlink.AddrList(link, netlink.FAMILY_V4)
+	addrs, err := netlink.AddrList(link, netlink.FAMILY_ALL)
 	if err != nil {
 		utilruntime.HandleError(fmt.Errorf("Could not check for stale egress IPs: %v", err))
 		return
@@ -199,17 +200,19 @@ func (eip *egressIPWatcher) assignEgressIP(egressIP, mark string) error {
 			return fmt.Errorf("could not add egress IP %q to %s: %v", egressIPNet, localEgressLink.Attrs().Name, err)
 		}
 	}
-	// Use arping to try to update other hosts ARP caches, in case this IP was
-	// previously active on another node. (Based on code from "ifup".)
-	go func() {
-		out, err := exec.Command("/sbin/arping", "-q", "-A", "-c", "1", "-I", localEgressLink.Attrs().Name, egressIP).CombinedOutput()
-		if err != nil {
-			klog.Warningf("Failed to send ARP claim for egress IP %q: %v (%s)", egressIP, err, string(out))
-			return
-		}
-		time.Sleep(2 * time.Second)
-		_ = exec.Command("/sbin/arping", "-q", "-U", "-c", "1", "-I", localEgressLink.Attrs().Name, egressIP).Run()
-	}()
+	if !utilnet.IsIPv6(addr.IP) {
+		// Use arping to try to update other hosts ARP caches, in case this IP was
+		// previously active on another node. (Based on code from "ifup".)
+		go func() {
+			out, err := exec.Command("/sbin/arping", "-q", "-A", "-c", "1", "-I", localEgressLink.Attrs().Name, egressIP).CombinedOutput()
+			if err != nil {
+				klog.Warningf("Failed to send ARP claim for egress IP %q: %v (%s)", egressIP, err, string(out))
+				return
+			}
+			time.Sleep(2 * time.Second)
+			_ = exec.Command("/sbin/arping", "-q", "-U", "-c", "1", "-I", localEgressLink.Attrs().Name, egressIP).Run()
+		}()
+	}
 
 	if err := eip.iptables.AddEgressIPRules(egressIP, mark); err != nil {
 		return fmt.Errorf("could not add egress IP iptables rule: %v", err)
