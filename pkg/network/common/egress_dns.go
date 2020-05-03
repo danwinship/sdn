@@ -45,8 +45,8 @@ type EgressDNS struct {
 	stopCh chan struct{}
 }
 
-func NewEgressDNS(ipv4, ipv6 bool) (*EgressDNS, error) {
-	dnsInfo, err := NewDNS("/etc/resolv.conf", ipv4, ipv6)
+func NewEgressDNS(ipFamilies IPSupport) (*EgressDNS, error) {
+	dnsInfo, err := NewDNS("/etc/resolv.conf", ipFamilies)
 	if err != nil {
 		utilruntime.HandleError(err)
 		return nil, err

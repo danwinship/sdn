@@ -77,7 +77,7 @@ type OsdnProxy struct {
 // Called by higher layers to create the proxy plugin instance
 func New(networkClient networkclient.Interface, kClient kubernetes.Interface,
 	networkInformers networkinformers.SharedInformerFactory) (*OsdnProxy, error) {
-	egressDNS, err := common.NewEgressDNS(true, false)
+	egressDNS, err := common.NewEgressDNS(common.IPv4Support)
 	if err != nil {
 		return nil, err
 	}

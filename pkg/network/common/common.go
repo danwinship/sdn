@@ -9,6 +9,7 @@ import (
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	kerrors "k8s.io/apimachinery/pkg/util/errors"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	utilnet "k8s.io/utils/net"
 
 	networkv1 "github.com/openshift/api/network/v1"
 	networkclient "github.com/openshift/client-go/network/clientset/versioned"
@@ -26,6 +27,49 @@ func ClusterNetworkListContains(clusterNetworks []ParsedClusterNetworkEntry, ipa
 		}
 	}
 	return nil, false
+}
+
+// IPSupport is used to track whether IPv4, IPv6, or both is supported. It maps from
+// the result of utilnet.IsIPv6() to whether it's supported...
+type IPSupport map[bool]bool
+
+// These are mostly for tests
+var IPv4Support = IPSupport{false: true, true: false}
+var IPv6Support = IPSupport{false: false, true: true}
+var DualStackSupport = IPSupport{false: true, true: true}
+
+// AllowsIPv4 is true if ipv allows IPv4
+func (ipv IPSupport) AllowsIPv4() bool {
+	return ipv[false]
+}
+
+// AllowsIPv6 is true if ipv allows IPv6
+func (ipv IPSupport) AllowsIPv6() bool {
+	return ipv[true]
+}
+
+// ParseIP parses ipString, which must be of an appropriate IP family for ipv
+func (ipv IPSupport) ParseIP(ipString string) (net.IP, error) {
+	ip := net.ParseIP(ipString)
+	if ip == nil {
+		return nil, fmt.Errorf("invalid IP address %q", ipString)
+	}
+	if !ipv[utilnet.IsIPv6(ip)] {
+		return nil, fmt.Errorf("invalid IP family for address %q", ipString)
+	}
+	return ip, nil
+}
+
+// ParseCIDR parses cidrString, which must be of an appropriate IP family for ipv
+func (ipv IPSupport) ParseCIDR(cidrString string) (*net.IPNet, error) {
+	cidr, err := networkutils.ParseCIDRMask(cidrString)
+	if err != nil {
+		return nil, err
+	}
+	if !ipv[utilnet.IsIPv6CIDR(cidr)] {
+		return nil, fmt.Errorf("invalid IP family for subnet %q", cidrString)
+	}
+	return cidr, nil
 }
 
 type ParsedClusterNetwork struct {

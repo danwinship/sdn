@@ -136,7 +136,7 @@ func New(c *OsdnNodeConfig) (*OsdnNode, error) {
 		masqBit = uint32(*c.MasqueradeBit)
 	}
 
-	egressDNS, err := common.NewEgressDNS(true, false)
+	egressDNS, err := common.NewEgressDNS(common.IPv4Support)
 	if err != nil {
 		return nil, err
 	}

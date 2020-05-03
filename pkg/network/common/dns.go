@@ -55,8 +55,7 @@ type DNS struct {
 	nameservers []string
 
 	// IP Families to return results for
-	ipv4 bool
-	ipv6 bool
+	ipFamilies IPSupport
 
 	// query timeout; overridden by tests
 	timeout time.Duration
@@ -67,8 +66,8 @@ type DNSResponseNotification struct {
 	Changed bool
 }
 
-func NewDNS(resolverConfigFile string, ipv4, ipv6 bool) (*DNS, error) {
-	if !ipv4 && !ipv6 {
+func NewDNS(resolverConfigFile string, ipFamilies IPSupport) (*DNS, error) {
+	if !ipFamilies.AllowsIPv4() && !ipFamilies.AllowsIPv6() {
 		return nil, fmt.Errorf("must support at least one of IPv4 or IPv6")
 	}
 
@@ -79,9 +78,8 @@ func NewDNS(resolverConfigFile string, ipv4, ipv6 bool) (*DNS, error) {
 
 	return &DNS{
 		dnsMap:      map[string]dnsValue{},
-		nameservers: fixupNameservers(config.Servers, config.Port, ipv4, ipv6),
-		ipv4:        ipv4,
-		ipv6:        ipv6,
+		nameservers: fixupNameservers(config.Servers, config.Port, ipFamilies),
+		ipFamilies:  ipFamilies,
 		timeout:     5 * time.Second,
 	}, nil
 }
@@ -245,10 +243,10 @@ func (d *DNS) doOneQuery(server, domain string, rtype uint16) ([]net.IP, int, er
 }
 
 func (d *DNS) queryServer(nameserver, domain string) ([]net.IP, int, error) {
-	if d.ipv4 && !d.ipv6 {
+	if d.ipFamilies.AllowsIPv4() && !d.ipFamilies.AllowsIPv6() {
 		// Single-stack IPv4
 		return d.doOneQuery(nameserver, domain, dns.TypeA)
-	} else if d.ipv6 && !d.ipv4 {
+	} else if d.ipFamilies.AllowsIPv6() && !d.ipFamilies.AllowsIPv4() {
 		// Single-stack IPv6
 		return d.doOneQuery(nameserver, domain, dns.TypeAAAA)
 	}
@@ -357,10 +355,7 @@ func ipsEqual(oldips, newips []net.IP) bool {
 // fixupNameservers ensures that each nameserver has an associated port number, and removes
 // nameservers that don't match the cluster address family (unless that would leave us with
 // no nameservers).
-func fixupNameservers(nameservers []string, defaultPort string, ipv4, ipv6 bool) []string {
-	// ipSupported maps from the return value of utilnet.IsIPv6String() to whether we support it
-	ipSupported := map[bool]bool{false: ipv4, true: ipv6}
-
+func fixupNameservers(nameservers []string, defaultPort string, ipFamilies IPSupport) []string {
 	var goodServers, badServers []string
 	for _, server := range nameservers {
 		ipString := server
@@ -370,7 +365,7 @@ func fixupNameservers(nameservers []string, defaultPort string, ipv4, ipv6 bool)
 			server = net.JoinHostPort(server, defaultPort)
 		}
 
-		if ipSupported[utilnet.IsIPv6String(ipString)] {
+		if ipFamilies[utilnet.IsIPv6String(ipString)] {
 			goodServers = append(goodServers, server)
 		} else {
 			badServers = append(badServers, server)

@@ -19,8 +19,7 @@ func TestFixupNameservers(t *testing.T) {
 		testCase    string
 		nameservers []string
 		defaultPort string
-		ipv4        bool
-		ipv6        bool
+		ipFamilies  IPSupport
 		output      []string
 	}
 
@@ -29,38 +28,34 @@ func TestFixupNameservers(t *testing.T) {
 			testCase:    "Single-stack IPv4, mixed resolvers",
 			nameservers: []string{"1.2.3.4", "5.6.7.8:5353", "fd00::1234", "[fd00::5678]:5353"},
 			defaultPort: "53",
-			ipv4:        true,
-			ipv6:        false,
+			ipFamilies:  IPv4Support,
 			output:      []string{"1.2.3.4:53", "5.6.7.8:5353"},
 		},
 		{
 			testCase:    "Single-stack IPv6, mixed resolvers",
 			nameservers: []string{"1.2.3.4", "5.6.7.8:5353", "fd00::1234", "[fd00::5678]:5353"},
 			defaultPort: "53",
-			ipv4:        false,
-			ipv6:        true,
+			ipFamilies:  IPv6Support,
 			output:      []string{"[fd00::1234]:53", "[fd00::5678]:5353"},
 		},
 		{
 			testCase:    "Single-stack IPv6, IPv4-only resolvers",
 			nameservers: []string{"1.2.3.4", "5.6.7.8:5353"},
 			defaultPort: "53",
-			ipv4:        false,
-			ipv6:        true,
+			ipFamilies:  IPv6Support,
 			output:      []string{"1.2.3.4:53", "5.6.7.8:5353"},
 		},
 		{
 			testCase:    "Dual stack, mixed resolvers",
 			nameservers: []string{"1.2.3.4", "5.6.7.8:5353", "fd00::1234", "[fd00::5678]:5353"},
 			defaultPort: "53",
-			ipv4:        true,
-			ipv6:        true,
+			ipFamilies:  DualStackSupport,
 			output:      []string{"1.2.3.4:53", "5.6.7.8:5353", "[fd00::1234]:53", "[fd00::5678]:5353"},
 		},
 	}
 
 	for _, test := range tests {
-		output := fixupNameservers(test.nameservers, test.defaultPort, test.ipv4, test.ipv6)
+		output := fixupNameservers(test.nameservers, test.defaultPort, test.ipFamilies)
 		if !reflect.DeepEqual(output, test.output) {
 			t.Fatalf("Bad results for %q: expected %v, got %v", test.testCase, test.output, output)
 		}
@@ -134,7 +129,7 @@ func TestAddDNS(t *testing.T) {
 		dns.HandleFunc(test.domainName, serverFn)
 		defer dns.HandleRemove(test.domainName)
 
-		n, err := NewDNS(configFileName, true, false)
+		n, err := NewDNS(configFileName, IPv4Support)
 		if err != nil {
 			t.Fatalf("Test case: %s failed, err: %v", test.testCase, err)
 		}
@@ -224,7 +219,7 @@ func TestAddDNSIPv6(t *testing.T) {
 		dns.HandleFunc(test.domainName, serverFn)
 		defer dns.HandleRemove(test.domainName)
 
-		n, err := NewDNS(configFileName, false, true)
+		n, err := NewDNS(configFileName, IPv6Support)
 		if err != nil {
 			t.Fatalf("Test case: %s failed, err: %v", test.testCase, err)
 		}
@@ -349,7 +344,7 @@ func TestAddDNSDualStack(t *testing.T) {
 		dns.HandleFunc(test.domainName, serverFn)
 		defer dns.HandleRemove(test.domainName)
 
-		n, err := NewDNS(configFileName, true, true)
+		n, err := NewDNS(configFileName, DualStackSupport)
 		if err != nil {
 			t.Fatalf("Test case: %s failed, err: %v", test.testCase, err)
 		}
@@ -453,7 +448,7 @@ func TestUpdateDNS(t *testing.T) {
 		dns.HandleFunc(test.domainName, serverFn)
 		defer dns.HandleRemove(test.domainName)
 
-		n, err := NewDNS(configFileName, true, false)
+		n, err := NewDNS(configFileName, IPv4Support)
 		if err != nil {
 			t.Fatalf("Test case: %s failed, err: %v", test.testCase, err)
 		}
