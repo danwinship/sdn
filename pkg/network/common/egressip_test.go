@@ -1287,3 +1287,219 @@ func TestEgressCIDRAllocationOffline(t *testing.T) {
 	}
 	updateAllocations(eit, allocation)
 }
+
+func TestEgressIPv6(t *testing.T) {
+	eit, w := setupEgressIPTracker(t)
+
+	updateHostSubnetEgress(eit, &networkv1.HostSubnet{
+		HostIP: "2600:5200::3",
+	})
+	updateHostSubnetEgress(eit, &networkv1.HostSubnet{
+		HostIP: "2600:5200::4",
+	})
+	eit.DeleteNetNamespaceEgress(42)
+	eit.DeleteNetNamespaceEgress(43)
+
+	// No namespaces use egress yet, so should be no changes
+	err := w.assertNoChanges()
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+
+	// Assign NetNamespace.EgressIP first, then HostSubnet.EgressIP
+	updateNetNamespaceEgress(eit, &networkv1.NetNamespace{
+		NetID:     42,
+		EgressIPs: []networkv1.NetNamespaceEgressIP{"2600:5200::100"},
+	})
+	err = w.assertChanges(
+		"namespace 42 dropped",
+	)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+
+	updateHostSubnetEgress(eit, &networkv1.HostSubnet{
+		HostIP:    "2600:5200::3",
+		EgressIPs: []networkv1.HostSubnetEgressIP{"2600:5200::100"}, // Added :100
+	})
+	err = w.assertChanges(
+		"claim 2600:5200::100 on 2600:5200::3 for namespace 42",
+		"namespace 42 via 2600:5200::100 on 2600:5200::3",
+	)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+
+	// Assign HostSubnet.EgressIP first, then NetNamespace.EgressIP
+	updateHostSubnetEgress(eit, &networkv1.HostSubnet{
+		HostIP:    "2600:5200::3",
+		EgressIPs: []networkv1.HostSubnetEgressIP{"2600:5200::100", "2600:5200::101"}, // Added :101
+	})
+	updateHostSubnetEgress(eit, &networkv1.HostSubnet{
+		HostIP:    "2600:5200::5",
+		EgressIPs: []networkv1.HostSubnetEgressIP{"2600:5200::105"},
+	})
+	err = w.assertNoChanges()
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+
+	updateNetNamespaceEgress(eit, &networkv1.NetNamespace{
+		NetID:     43,
+		EgressIPs: []networkv1.NetNamespaceEgressIP{"2600:5200::105"},
+	})
+	err = w.assertChanges(
+		"claim 2600:5200::105 on 2600:5200::5 for namespace 43",
+		"namespace 43 via 2600:5200::105 on 2600:5200::5",
+	)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+
+	// Change NetNamespace.EgressIP
+	updateNetNamespaceEgress(eit, &networkv1.NetNamespace{
+		NetID:     43,
+		EgressIPs: []networkv1.NetNamespaceEgressIP{"2600:5200::101"},
+	})
+	err = w.assertChanges(
+		"release 2600:5200::105 on 2600:5200::5",
+		"claim 2600:5200::101 on 2600:5200::3 for namespace 43",
+		"namespace 43 via 2600:5200::101 on 2600:5200::3",
+	)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+
+	// Assign another EgressIP...
+	updateNetNamespaceEgress(eit, &networkv1.NetNamespace{
+		NetID:     44,
+		EgressIPs: []networkv1.NetNamespaceEgressIP{"2600:5200::104"},
+	})
+	err = w.assertChanges(
+		"namespace 44 dropped",
+	)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+
+	updateHostSubnetEgress(eit, &networkv1.HostSubnet{
+		HostIP:    "2600:5200::4",
+		EgressIPs: []networkv1.HostSubnetEgressIP{"2600:5200::102", "2600:5200::104"}, // Added :102, :104
+	})
+	err = w.assertChanges(
+		"claim 2600:5200::104 on 2600:5200::4 for namespace 44",
+		"namespace 44 via 2600:5200::104 on 2600:5200::4",
+	)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+
+	// Change Namespace EgressIP
+	updateNetNamespaceEgress(eit, &networkv1.NetNamespace{
+		NetID:     44,
+		EgressIPs: []networkv1.NetNamespaceEgressIP{"2600:5200::102"},
+	})
+	err = w.assertChanges(
+		"release 2600:5200::104 on 2600:5200::4",
+		"claim 2600:5200::102 on 2600:5200::4 for namespace 44",
+		"namespace 44 via 2600:5200::102 on 2600:5200::4",
+	)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+
+	// Assign HostSubnet.EgressIP first, then NetNamespace.EgressIP
+	updateHostSubnetEgress(eit, &networkv1.HostSubnet{
+		HostIP:    "2600:5200::4",
+		EgressIPs: []networkv1.HostSubnetEgressIP{"2600:5200::102", "2600:5200::103"}, // Added :103, Dropped :104
+	})
+	err = w.assertNoChanges()
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+
+	updateNetNamespaceEgress(eit, &networkv1.NetNamespace{
+		NetID:     45,
+		EgressIPs: []networkv1.NetNamespaceEgressIP{"2600:5200::103"},
+	})
+	err = w.assertChanges(
+		"claim 2600:5200::103 on 2600:5200::4 for namespace 45",
+		"namespace 45 via 2600:5200::103 on 2600:5200::4",
+	)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+
+	// Drop namespace EgressIP
+	eit.DeleteNetNamespaceEgress(44)
+	err = w.assertChanges(
+		"release 2600:5200::102 on 2600:5200::4",
+		"namespace 44 normal",
+	)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+
+	// Add namespace EgressIP back again after having removed it...
+	updateNetNamespaceEgress(eit, &networkv1.NetNamespace{
+		NetID:     44,
+		EgressIPs: []networkv1.NetNamespaceEgressIP{"2600:5200::102"},
+	})
+	err = w.assertChanges(
+		"claim 2600:5200::102 on 2600:5200::4 for namespace 44",
+		"namespace 44 via 2600:5200::102 on 2600:5200::4",
+	)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+
+	// Drop node EgressIPs
+	updateHostSubnetEgress(eit, &networkv1.HostSubnet{
+		HostIP:    "2600:5200::3",
+		EgressIPs: []networkv1.HostSubnetEgressIP{"2600:5200::100"}, // Dropped :101
+	})
+	err = w.assertChanges(
+		"release 2600:5200::101 on 2600:5200::3",
+		"namespace 43 dropped",
+	)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+
+	updateHostSubnetEgress(eit, &networkv1.HostSubnet{
+		HostIP:    "2600:5200::4",
+		EgressIPs: []networkv1.HostSubnetEgressIP{"2600:5200::102"}, // Dropped :103
+	})
+	err = w.assertChanges(
+		"release 2600:5200::103 on 2600:5200::4",
+		"namespace 45 dropped",
+	)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+
+	// Add them back, swapped
+	updateHostSubnetEgress(eit, &networkv1.HostSubnet{
+		HostIP:    "2600:5200::3",
+		EgressIPs: []networkv1.HostSubnetEgressIP{"2600:5200::100", "2600:5200::103"}, // Added :103
+	})
+	err = w.assertChanges(
+		"claim 2600:5200::103 on 2600:5200::3 for namespace 45",
+		"namespace 45 via 2600:5200::103 on 2600:5200::3",
+	)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+
+	updateHostSubnetEgress(eit, &networkv1.HostSubnet{
+		HostIP:    "2600:5200::4",
+		EgressIPs: []networkv1.HostSubnetEgressIP{"2600:5200::101", "2600:5200::102"}, // Added :101
+	})
+	err = w.assertChanges(
+		"claim 2600:5200::101 on 2600:5200::4 for namespace 43",
+		"namespace 43 via 2600:5200::101 on 2600:5200::4",
+	)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+}

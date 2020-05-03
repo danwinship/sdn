@@ -33,6 +33,7 @@ func TestCheckHostNetworks(t *testing.T) {
 	hostIPNets := []*net.IPNet{
 		mustParseCIDR("10.0.0.0/9"),
 		mustParseCIDR("172.20.0.0/16"),
+		mustParseCIDR("2600:5200::/64"),
 	}
 
 	tests := []struct {
@@ -62,6 +63,16 @@ func TestCheckHostNetworks(t *testing.T) {
 			expectError: false,
 		},
 		{
+			name: "valid ipv6",
+			networkInfo: &ParsedClusterNetwork{
+				ClusterNetworks: []ParsedClusterNetworkEntry{
+					{ClusterCIDR: mustParseCIDR("fd01::/48"), HostSubnetLength: 64},
+				},
+				ServiceNetwork: mustParseCIDR("fd02::/112"),
+			},
+			expectError: false,
+		},
+		{
 			name: "hostIPNet inside ClusterNetwork",
 			networkInfo: &ParsedClusterNetwork{
 				ClusterNetworks: []ParsedClusterNetworkEntry{
@@ -72,12 +83,32 @@ func TestCheckHostNetworks(t *testing.T) {
 			expectError: true,
 		},
 		{
+			name: "hostIPNet inside ClusterNetwork, ipv6",
+			networkInfo: &ParsedClusterNetwork{
+				ClusterNetworks: []ParsedClusterNetworkEntry{
+					{ClusterCIDR: mustParseCIDR("2600::/16"), HostSubnetLength: 64},
+				},
+				ServiceNetwork: mustParseCIDR("fd02::/112"),
+			},
+			expectError: true,
+		},
+		{
 			name: "ClusterNetwork inside hostIPNet",
 			networkInfo: &ParsedClusterNetwork{
 				ClusterNetworks: []ParsedClusterNetworkEntry{
 					{ClusterCIDR: mustParseCIDR("10.1.0.0/16"), HostSubnetLength: 8},
 				},
 				ServiceNetwork: mustParseCIDR("172.30.0.0/16"),
+			},
+			expectError: true,
+		},
+		{
+			name: "ClusterNetwork inside hostIPNet, ipv6",
+			networkInfo: &ParsedClusterNetwork{
+				ClusterNetworks: []ParsedClusterNetworkEntry{
+					{ClusterCIDR: mustParseCIDR("2600:5200:0:0:7800::/48"), HostSubnetLength: 32},
+				},
+				ServiceNetwork: mustParseCIDR("fd02::/112"),
 			},
 			expectError: true,
 		},
