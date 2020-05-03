@@ -54,7 +54,7 @@ func (master *OsdnMaster) watchNodes() {
 func (master *OsdnMaster) handleAddOrUpdateNode(obj, _ interface{}, eventType watch.EventType) {
 	node := obj.(*kapi.Node)
 
-	nodeIP := getNodeInternalIP(node)
+	nodeIP := getNodeInternalIP(node, master.networkInfo.IPFamilies)
 	if len(nodeIP) == 0 {
 		utilruntime.HandleError(fmt.Errorf("Node IP is not set for node %s, skipping %s event, node: %v", node.Name, eventType, node))
 		return
@@ -213,13 +213,17 @@ func (master *OsdnMaster) clearInitialNodeNetworkUnavailableCondition(origNode *
 	}
 }
 
-func getNodeInternalIP(node *kapi.Node) string {
+func getNodeInternalIP(node *kapi.Node, ipFamilies common.IPSupport) string {
 	var nodeIP string
 	for _, addr := range node.Status.Addresses {
-		if addr.Type == kapi.NodeInternalIP {
-			nodeIP = addr.Address
-			break
+		if addr.Type != kapi.NodeInternalIP {
+			continue
 		}
+		if _, err := ipFamilies.ParseIP(addr.Address); err != nil {
+			continue
+		}
+		nodeIP = addr.Address
+		break
 	}
 	return nodeIP
 }

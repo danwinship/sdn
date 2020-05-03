@@ -125,7 +125,7 @@ func New(c *OsdnNodeConfig) (*OsdnNode, error) {
 
 	klog.Infof("Initializing SDN node %q (%s)", c.NodeName, c.NodeIP)
 
-	ovsif, err := ovs.New(kexec.New(), Br0, true, false)
+	ovsif, err := ovs.New(kexec.New(), Br0, networkInfo.IPFamilies.AllowsIPv4(), networkInfo.IPFamilies.AllowsIPv6())
 	if err != nil {
 		return nil, err
 	}
@@ -136,7 +136,7 @@ func New(c *OsdnNodeConfig) (*OsdnNode, error) {
 		masqBit = uint32(*c.MasqueradeBit)
 	}
 
-	egressDNS, err := common.NewEgressDNS(common.IPv4Support)
+	egressDNS, err := common.NewEgressDNS(networkInfo.IPFamilies)
 	if err != nil {
 		return nil, err
 	}

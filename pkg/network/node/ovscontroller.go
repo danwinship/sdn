@@ -22,9 +22,9 @@ import (
 )
 
 type ovsController struct {
-	ovs     ovs.Interface
-	localIP string
-	tunMAC  string
+	ovs        ovs.Interface
+	localIP    string
+	tunMAC     string
 }
 
 const (

@@ -76,6 +76,7 @@ func cidrsOverlap(cidr1, cidr2 *net.IPNet) bool {
 }
 
 type ParsedClusterNetwork struct {
+	IPFamilies      IPSupport
 	ClusterNetworks []ParsedClusterNetworkEntry
 	ServiceNetwork  *net.IPNet
 	VXLANPort       uint32
@@ -90,10 +91,11 @@ type ParsedClusterNetworkEntry struct {
 func ParseClusterNetwork(cn *networkv1.ClusterNetwork) (*ParsedClusterNetwork, error) {
 	pcn := &ParsedClusterNetwork{
 		ClusterNetworks: make([]ParsedClusterNetworkEntry, 0, len(cn.ClusterNetworks)),
+		IPFamilies:      make(IPSupport),
 	}
 
 	for _, entry := range cn.ClusterNetworks {
-		cidr, err := validateCIDRv4(entry.CIDR)
+		cidr, err := networkutils.ParseCIDRMask(entry.CIDR)
 		if err != nil {
 			return nil, fmt.Errorf("bad cluster CIDR value %q: %v", entry.CIDR, err)
 		}
@@ -114,10 +116,11 @@ func ParseClusterNetwork(cn *networkv1.ClusterNetwork) (*ParsedClusterNetwork, e
 		}
 
 		pcn.ClusterNetworks = append(pcn.ClusterNetworks, ParsedClusterNetworkEntry{ClusterCIDR: cidr, HostSubnetLength: entry.HostSubnetLength})
+		pcn.IPFamilies[utilnet.IsIPv6CIDR(cidr)] = true
 	}
 
 	var err error
-	pcn.ServiceNetwork, err = validateCIDRv4(cn.ServiceNetwork)
+	pcn.ServiceNetwork, err = pcn.IPFamilies.ParseCIDR(cn.ServiceNetwork)
 	if err != nil {
 		return nil, fmt.Errorf("bad service CIDR value %q: %v", cn.ServiceNetwork, err)
 	}
@@ -143,17 +146,18 @@ func ParseClusterNetwork(cn *networkv1.ClusterNetwork) (*ParsedClusterNetwork, e
 }
 
 func (pcn *ParsedClusterNetwork) ValidateNodeIP(nodeIP string) error {
-	if nodeIP == "" || nodeIP == "127.0.0.1" {
+	if nodeIP == "" || nodeIP == "127.0.0.1" || nodeIP == "::1" {
 		return fmt.Errorf("invalid node IP %q", nodeIP)
+	}
+
+	// Make sure nodeIP is valid, and acceptable for the cluster's IP families
+	ipaddr, err := pcn.IPFamilies.ParseIP(nodeIP)
+	if err != nil {
+		return fmt.Errorf("failed to parse node IP: %v", err)
 	}
 
 	// Ensure each node's NodeIP is not contained by the cluster network,
 	// which could cause a routing loop. (rhbz#1295486)
-	ipaddr := net.ParseIP(nodeIP)
-	if ipaddr == nil {
-		return fmt.Errorf("failed to parse node IP %s", nodeIP)
-	}
-
 	if conflictingCIDR, found := ClusterNetworkListContains(pcn.ClusterNetworks, ipaddr); found {
 		return fmt.Errorf("node IP %s conflicts with cluster network %s", nodeIP, conflictingCIDR.String())
 	}
@@ -183,31 +187,34 @@ func (pcn *ParsedClusterNetwork) CheckClusterObjects(subnets []networkv1.HostSub
 	var errList []error
 
 	for _, subnet := range subnets {
-		subnetIP, _, _ := net.ParseCIDR(subnet.Subnet)
-		if subnetIP == nil {
-			errList = append(errList, fmt.Errorf("failed to parse network address: %s", subnet.Subnet))
-		} else if _, contains := ClusterNetworkListContains(pcn.ClusterNetworks, subnetIP); !contains {
-			errList = append(errList, fmt.Errorf("existing node subnet: %s is not part of any cluster network CIDR", subnet.Subnet))
+		subnetIP, err := pcn.IPFamilies.ParseCIDR(subnet.Subnet)
+		if err != nil {
+			errList = append(errList, fmt.Errorf("HostSubnet %q has bad subnet %q: %v", subnet.Name, subnet.Subnet, err))
+		} else if _, contains := ClusterNetworkListContains(pcn.ClusterNetworks, subnetIP.IP); !contains {
+			errList = append(errList, fmt.Errorf("HostSubnet %q has subnet %q that is not in any cluster network CIDR", subnet.Name, subnet.Subnet))
 		}
 		if len(errList) >= 10 {
 			break
 		}
 	}
 	for _, pod := range pods {
-		if pod.Spec.HostNetwork {
+		if pod.Spec.HostNetwork || pod.Status.PodIP == "" {
 			continue
 		}
-		if _, contains := ClusterNetworkListContains(pcn.ClusterNetworks, net.ParseIP(pod.Status.PodIP)); !contains && pod.Status.PodIP != "" {
-			errList = append(errList, fmt.Errorf("existing pod %s:%s with IP %s is not part of cluster network", pod.Namespace, pod.Name, pod.Status.PodIP))
-			if len(errList) >= 10 {
-				break
-			}
+		podIP, err := pcn.IPFamilies.ParseIP(pod.Status.PodIP)
+		if err != nil {
+			errList = append(errList, fmt.Errorf("pod '%s/%s' has bad IP %q: %v", pod.Namespace, pod.Name, pod.Status.PodIP, err))
+		} else if _, contains := ClusterNetworkListContains(pcn.ClusterNetworks, podIP); !contains {
+			errList = append(errList, fmt.Errorf("existing pod '%s/%s' with IP %s is not part of cluster network", pod.Namespace, pod.Name, pod.Status.PodIP))
+		}
+		if len(errList) >= 10 {
+			break
 		}
 	}
 	for _, svc := range services {
 		svcIP := net.ParseIP(svc.Spec.ClusterIP)
 		if svcIP != nil && !pcn.ServiceNetwork.Contains(svcIP) {
-			errList = append(errList, fmt.Errorf("existing service %s:%s with IP %s is not part of service network %s", svc.Namespace, svc.Name, svc.Spec.ClusterIP, pcn.ServiceNetwork.String()))
+			errList = append(errList, fmt.Errorf("existing service '%s/%s' with IP %s is not part of service network %s", svc.Namespace, svc.Name, svc.Spec.ClusterIP, pcn.ServiceNetwork.String()))
 			if len(errList) >= 10 {
 				break
 			}
@@ -232,7 +239,7 @@ func (pcn *ParsedClusterNetwork) ParseHostSubnet(hs *networkv1.HostSubnet, parse
 	phs := &ParsedHostSubnet{}
 	var err error
 
-	phs.HostIP, err = validateIPv4(hs.HostIP)
+	phs.HostIP, err = pcn.IPFamilies.ParseIP(hs.HostIP)
 	if err != nil {
 		return nil, fmt.Errorf("bad HostIP value %q: %v", hs.HostIP, err)
 	}
@@ -243,7 +250,7 @@ func (pcn *ParsedClusterNetwork) ParseHostSubnet(hs *networkv1.HostSubnet, parse
 			return nil, fmt.Errorf("missing Subnet value")
 		}
 	} else {
-		phs.Subnet, err = validateCIDRv4(hs.Subnet)
+		phs.Subnet, err = pcn.IPFamilies.ParseCIDR(hs.Subnet)
 		if err != nil {
 			return nil, fmt.Errorf("bad Subnet value %q: %v", hs.Subnet, err)
 		}
@@ -253,7 +260,7 @@ func (pcn *ParsedClusterNetwork) ParseHostSubnet(hs *networkv1.HostSubnet, parse
 		if hs.EgressIPs != nil {
 			phs.EgressIPs = make([]net.IP, len(hs.EgressIPs))
 			for i, egressIP := range hs.EgressIPs {
-				phs.EgressIPs[i], err = validateIPv4(string(egressIP))
+				phs.EgressIPs[i], err = pcn.IPFamilies.ParseIP(string(egressIP))
 				if err != nil {
 					return nil, fmt.Errorf("bad EgressIPs value %q: %v", egressIP, err)
 				}
@@ -263,7 +270,7 @@ func (pcn *ParsedClusterNetwork) ParseHostSubnet(hs *networkv1.HostSubnet, parse
 		if hs.EgressCIDRs != nil {
 			phs.EgressCIDRs = make([]*net.IPNet, len(hs.EgressCIDRs))
 			for i, egressCIDR := range hs.EgressCIDRs {
-				phs.EgressCIDRs[i], err = validateCIDRv4(string(egressCIDR))
+				phs.EgressCIDRs[i], err = pcn.IPFamilies.ParseCIDR(string(egressCIDR))
 				if err != nil {
 					return nil, fmt.Errorf("bad EgressCIDRs value %q: %v", egressCIDR, err)
 				}
@@ -291,7 +298,7 @@ func (pcn *ParsedClusterNetwork) ParseNetNamespace(netns *networkv1.NetNamespace
 		var err error
 		pnetns.EgressIPs = make([]net.IP, len(netns.EgressIPs))
 		for i, egressIP := range netns.EgressIPs {
-			pnetns.EgressIPs[i], err = validateIPv4(string(egressIP))
+			pnetns.EgressIPs[i], err = pcn.IPFamilies.ParseIP(string(egressIP))
 			if err != nil {
 				return nil, fmt.Errorf("bad EgressIPs value %q: %v", egressIP, err)
 			}
