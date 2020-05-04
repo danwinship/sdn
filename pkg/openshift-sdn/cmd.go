@@ -19,6 +19,7 @@ import (
 	"k8s.io/kubernetes/pkg/util/interrupt"
 	"k8s.io/kubernetes/pkg/util/iptables"
 	kexec "k8s.io/utils/exec"
+	utilnet "k8s.io/utils/net"
 
 	"github.com/openshift/library-go/pkg/serviceability"
 	sdnnode "github.com/openshift/sdn/pkg/network/node"
@@ -137,7 +138,11 @@ func (sdn *OpenShiftSDN) Init() error {
 		return fmt.Errorf("failed to build informers: %v", err)
 	}
 
-	sdn.ipt = iptables.New(kexec.New(), iptables.ProtocolIPv4)
+	if utilnet.IsIPv6String(sdn.nodeIP) {
+		sdn.ipt = iptables.New(kexec.New(), iptables.ProtocolIPv6)
+	} else {
+		sdn.ipt = iptables.New(kexec.New(), iptables.ProtocolIPv4)
+	}
 
 	// Configure SDN
 	err = sdn.initSDN()

@@ -76,6 +76,9 @@ func (ns *dummyHostNS) Close() error {
 	panic("should not be reached")
 }
 
+// Note that this doesn't test any code that actually parses/uses IPs, so there's no point
+// in extending it to test IPv6/dual-stack as it's currently written.
+
 func TestOpenshiftSdnCNIPlugin(t *testing.T) {
 	tmpDir, err := utiltesting.MkTmpdir("cniserver")
 	if err != nil {
@@ -84,7 +87,10 @@ func TestOpenshiftSdnCNIPlugin(t *testing.T) {
 	defer os.RemoveAll(tmpDir)
 
 	path := filepath.Join(tmpDir, cniserver.CNIServerSocketName)
-	server := cniserver.NewCNIServer(tmpDir, &cniserver.Config{MTU: 1500, ServiceNetworkCIDR: "172.30.0.0/16"})
+	server := cniserver.NewCNIServer(tmpDir, &cniserver.Config{
+		MTU: 1500,
+		ServiceNetworkCIDRs: []string{"172.30.0.0/16"},
+	})
 	if err := server.Start(serverHandleCNI); err != nil {
 		t.Fatalf("error starting CNI server: %v", err)
 	}

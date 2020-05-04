@@ -26,6 +26,7 @@ import (
 	"k8s.io/klog/v2"
 	kcontainer "k8s.io/kubernetes/pkg/kubelet/container"
 	kbandwidth "k8s.io/kubernetes/pkg/util/bandwidth"
+	utilnet "k8s.io/utils/net"
 
 	"github.com/containernetworking/cni/pkg/invoke"
 	cnitypes "github.com/containernetworking/cni/pkg/types"
@@ -114,19 +115,23 @@ func getIPAMConfig(clusterNetworks []common.ParsedClusterNetworkEntry, localSubn
 		IPAM       *hostLocalIPAM `json:"ipam"`
 	}
 
-	_, mcnet, _ := net.ParseCIDR("224.0.0.0/4")
+	var defaultnet, mcnet *net.IPNet
+	if utilnet.IsIPv6(nodeNet.IP) {
+		_, defaultnet, _ = net.ParseCIDR("::/0")
+		_, mcnet, _ = net.ParseCIDR("ff00::/8")
+	} else {
+		_, defaultnet, _ = net.ParseCIDR("0.0.0.0/0")
+		_, mcnet, _ = net.ParseCIDR("224.0.0.0/4")
+	}
 
 	routes := []cnitypes.Route{
 		{
-			//Default route
-			Dst: net.IPNet{
-				IP:   net.IPv4zero,
-				Mask: net.IPMask(net.IPv4zero),
-			},
+			// Default route
+			Dst: *defaultnet,
 			GW: common.GenerateDefaultGateway(nodeNet),
 		},
 		{
-			//Multicast
+			// Multicast
 			Dst: *mcnet,
 		},
 	}
@@ -160,7 +165,10 @@ func (m *podManager) Start(rundir string, localSubnetCIDR string, clusterNetwork
 
 	go m.processCNIRequests()
 
-	m.cniServer = cniserver.NewCNIServer(rundir, &cniserver.Config{MTU: m.mtu, ServiceNetworkCIDR: serviceNetworkCIDR})
+	m.cniServer = cniserver.NewCNIServer(rundir, &cniserver.Config{
+		MTU: m.mtu,
+		ServiceNetworkCIDRs: []string{serviceNetworkCIDR},
+	})
 	return m.cniServer.Start(m.handleCNIRequest)
 }
 
