@@ -163,7 +163,7 @@ func (plugin *OsdnNode) FinishSetupSDN() error {
 func (plugin *OsdnNode) setup(localSubnetCIDR, localSubnetGateway string) error {
 	serviceNetworkCIDR := plugin.networkInfo.ServiceNetwork.String()
 
-	if err := plugin.oc.SetupOVS(plugin.clusterCIDRs, serviceNetworkCIDR, localSubnetCIDR, localSubnetGateway, plugin.networkInfo.MTU, plugin.networkInfo.VXLANPort); err != nil {
+	if err := plugin.oc.SetupOVS(plugin.clusterCIDRs, []string{serviceNetworkCIDR}, []string{localSubnetCIDR}, []string{localSubnetGateway}, plugin.networkInfo.MTU, plugin.networkInfo.VXLANPort); err != nil {
 		return err
 	}
 

@@ -31,11 +31,12 @@ func assertHostSubnetFlowChanges(hsw *hostSubnetWatcher, flows *[]string, change
 	return nil
 }
 
-func setupHostSubnetWatcher(t *testing.T) (*hostSubnetWatcher, []string) {
-	_, oc, _ := setupOVSController(t)
+func setupHostSubnetWatcher(t *testing.T, ipFamilies common.IPSupport) (*hostSubnetWatcher, []string) {
+	_, oc, _ := setupOVSController(t, ipFamilies)
 
-	networkInfo, err := common.ParseClusterNetwork(
-		&networkapi.ClusterNetwork{
+	var cn *networkapi.ClusterNetwork
+	if ipFamilies.AllowsIPv4() {
+		cn = &networkapi.ClusterNetwork{
 			ClusterNetworks: []networkapi.ClusterNetworkEntry{
 				{
 					CIDR:             "10.128.0.0/14",
@@ -43,13 +44,25 @@ func setupHostSubnetWatcher(t *testing.T) (*hostSubnetWatcher, []string) {
 				},
 			},
 			ServiceNetwork: "172.30.0.0/16",
-		},
-	)
+		}
+	} else {
+		cn = &networkapi.ClusterNetwork{
+			ClusterNetworks: []networkapi.ClusterNetworkEntry{
+				{
+					CIDR:             "fd01::/48",
+					HostSubnetLength: 64,
+				},
+			},
+			ServiceNetwork: "fd02::/112",
+		}
+	}
+
+	networkInfo, err := common.ParseClusterNetwork(cn)
 	if err != nil {
 		t.Fatalf("unexpected error parsing network info: %v", err)
 	}
 
-	hsw := newHostSubnetWatcher(oc, oc.localIP, networkInfo)
+	hsw := newHostSubnetWatcher(oc, oc.localIPs[0], networkInfo)
 
 	flows, err := hsw.oc.ovs.DumpFlows("")
 	if err != nil {
@@ -75,7 +88,7 @@ func makeHostSubnet(name, hostIP, subnet string) *networkapi.HostSubnet {
 }
 
 func TestHostSubnetWatcher(t *testing.T) {
-	hsw, flows := setupHostSubnetWatcher(t)
+	hsw, flows := setupHostSubnetWatcher(t, common.IPv4Support)
 
 	hs1 := makeHostSubnet("node1", "192.168.0.2", "10.128.0.0/23")
 	hs2 := makeHostSubnet("node2", "192.168.1.2", "10.129.0.0/23")
@@ -204,8 +217,123 @@ func TestHostSubnetWatcher(t *testing.T) {
 	}
 }
 
+func TestHostSubnetWatcherIPv6(t *testing.T) {
+	hsw, flows := setupHostSubnetWatcher(t, common.IPv6Support)
+
+	hs1 := makeHostSubnet("node1", "2600:5200::2", "fd01:0:0:1::/64")
+	hs2 := makeHostSubnet("node2", "2600:5200::3", "fd01:0:0:2::/64")
+
+	err := hsw.updateHostSubnet(hs1)
+	if err != nil {
+		t.Fatalf("Unexpected error adding HostSubnet: %v", err)
+	}
+	err = assertHostSubnetFlowChanges(hsw, &flows,
+		flowChange{
+			kind:  flowAdded,
+			match: []string{"table=10", "tun_ipv6_src=2600:5200::2"},
+		},
+		flowChange{
+			kind:  flowAdded,
+			match: []string{"table=90", "ipv6", "ipv6_dst=fd01:0:0:1::/64", "2600:5200::2->tun_ipv6_dst"},
+		},
+		flowChange{
+			kind:    flowRemoved,
+			match:   []string{"table=111", "goto_table:120"},
+			noMatch: []string{"->tun_ipv6_dst"},
+		},
+		flowChange{
+			kind:  flowAdded,
+			match: []string{"table=111", "2600:5200::2->tun_ipv6_dst"},
+		},
+	)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+
+	err = hsw.updateHostSubnet(hs2)
+	if err != nil {
+		t.Fatalf("Unexpected error adding HostSubnet: %v", err)
+	}
+	err = assertHostSubnetFlowChanges(hsw, &flows,
+		flowChange{
+			kind:  flowAdded,
+			match: []string{"table=10", "tun_ipv6_src=2600:5200::3"},
+		},
+		flowChange{
+			kind:  flowAdded,
+			match: []string{"table=90", "ipv6", "ipv6_dst=fd01:0:0:2::/64", "2600:5200::3->tun_ipv6_dst"},
+		},
+		flowChange{
+			kind:    flowRemoved,
+			match:   []string{"table=111", "2600:5200::2->tun_ipv6_dst"},
+			noMatch: []string{"2600:5200::3->tun_ipv6_dst"},
+		},
+		flowChange{
+			kind:  flowAdded,
+			match: []string{"table=111", "2600:5200::2->tun_ipv6_dst", "2600:5200::3->tun_ipv6_dst"},
+		},
+	)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+
+	err = hsw.deleteHostSubnet(hs1)
+	if err != nil {
+		t.Fatalf("Unexpected error deleting HostSubnet: %v", err)
+	}
+	err = assertHostSubnetFlowChanges(hsw, &flows,
+		flowChange{
+			kind:  flowRemoved,
+			match: []string{"table=10", "tun_ipv6_src=2600:5200::2"},
+		},
+		flowChange{
+			kind:  flowRemoved,
+			match: []string{"table=90", "ipv6", "ipv6_dst=fd01:0:0:1::/64", "2600:5200::2->tun_ipv6_dst"},
+		},
+		flowChange{
+			kind:  flowRemoved,
+			match: []string{"table=111", "2600:5200::2->tun_ipv6_dst", "2600:5200::3->tun_ipv6_dst"},
+		},
+		flowChange{
+			kind:    flowAdded,
+			match:   []string{"table=111", "2600:5200::3->tun_ipv6_dst"},
+			noMatch: []string{"2600:5200::2"},
+		},
+	)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+
+	err = hsw.deleteHostSubnet(hs2)
+	if err != nil {
+		t.Fatalf("Unexpected error deleting HostSubnet: %v", err)
+	}
+	err = assertHostSubnetFlowChanges(hsw, &flows,
+		flowChange{
+			kind:  flowRemoved,
+			match: []string{"table=10", "tun_ipv6_src=2600:5200::3"},
+		},
+		flowChange{
+			kind:  flowRemoved,
+			match: []string{"table=90", "ipv6", "ipv6_dst=fd01:0:0:2::/64", "2600:5200::3->tun_ipv6_dst"},
+		},
+		flowChange{
+			kind:  flowRemoved,
+			match: []string{"table=111", "2600:5200::3->tun_ipv6_dst"},
+		},
+		flowChange{
+			kind:    flowAdded,
+			match:   []string{"table=111", "goto_table:120"},
+			noMatch: []string{"tun_ipv6_dst"},
+		},
+	)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+}
+
 func TestHostSubnetReassignment(t *testing.T) {
-	hsw, flows := setupHostSubnetWatcher(t)
+	hsw, flows := setupHostSubnetWatcher(t, common.IPv4Support)
 
 	hs1orig := makeHostSubnet("node1", "192.168.0.2", "10.128.0.0/23")
 	hs2orig := makeHostSubnet("node2", "192.168.1.2", "10.129.0.0/23")

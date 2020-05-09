@@ -168,8 +168,8 @@ func compareGroups(groups []string, expectedGroups []string) (bool, error) {
 }
 
 func setupEgressIPWatcher(t *testing.T) (*egressIPWatcher, []string) {
-	_, oc, _ := setupOVSController(t)
-	if oc.localIP != "172.17.0.4" {
+	_, oc, _ := setupOVSController(t, common.IPv4Support)
+	if len(oc.localIPs) != 1 || oc.localIPs[0] != "172.17.0.4" {
 		panic("details of fake ovsController changed")
 	}
 	pcn := &common.ParsedClusterNetwork{}

@@ -2,6 +2,8 @@
 
 package node
 
+// IPV6FIXME - add tests
+
 import (
 	"fmt"
 	"net"
@@ -11,6 +13,7 @@ import (
 	"testing"
 
 	networkapi "github.com/openshift/api/network/v1"
+	"github.com/openshift/sdn/pkg/network/common"
 	"github.com/openshift/sdn/pkg/network/node/ovs"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -19,18 +22,40 @@ import (
 	"github.com/containernetworking/plugins/pkg/utils/hwaddr"
 )
 
-func setupOVSController(t *testing.T) (ovs.Interface, *ovsController, []string) {
-	ovsif := ovs.NewFake(Br0, true, false)
-	oc := NewOVSController(ovsif, "172.17.0.4")
-	oc.tunMAC = "c6:ac:2c:13:48:4b"
-	err := oc.SetupOVS([]string{"10.128.0.0/14"}, "172.30.0.0/16", "10.128.0.0/23", "10.128.0.1", 1450, 4789)
+func setupOVSController(t *testing.T, ipFamilies common.IPSupport) (ovs.Interface, *ovsController, []string) {
+	ovsif := ovs.NewFake(Br0, ipFamilies.AllowsIPv4(), ipFamilies.AllowsIPv6())
+	var nodeIPs, clusterCIDRs, serviceCIDRs, localSubnetCIDRs, localSubnetGateways []string
+	var mtu uint32
+
+	if ipFamilies.AllowsIPv4() {
+		nodeIPs = append(nodeIPs, "172.17.0.4")
+		clusterCIDRs = append(clusterCIDRs, "10.128.0.0/14")
+		serviceCIDRs = append(serviceCIDRs, "172.30.0.0/16")
+		localSubnetCIDRs = append(localSubnetCIDRs, "10.128.0.0/23")
+		localSubnetGateways = append(localSubnetGateways, "10.128.0.1")
+		mtu = 1450
+	}
+	if ipFamilies.AllowsIPv6() {
+		nodeIPs = append(nodeIPs, "2600:2600::1")
+		clusterCIDRs = append(clusterCIDRs, "fd01::/48")
+		serviceCIDRs = append(serviceCIDRs, "fd02::/112")
+		localSubnetCIDRs = append(localSubnetCIDRs, "fd01:0:0:1::/64")
+		localSubnetGateways = append(localSubnetGateways, "fd01:0:0:1::1")
+		mtu = 1430 // overrides v4-only value
+	}
+
+	oc := NewOVSController(ovsif, nodeIPs)
+	err := oc.SetupOVS(clusterCIDRs, serviceCIDRs, localSubnetCIDRs, localSubnetGateways, mtu, 4789)
 	if err != nil {
 		t.Fatalf("Unexpected error setting up OVS: %v", err)
 	}
+
 	err = oc.FinishSetupOVS()
 	if err != nil {
 		t.Fatalf("Unexpected error setting up OVS: %v", err)
 	}
+
+	oc.tunMAC = "c6:ac:2c:13:48:4b"
 
 	origFlows, err := ovsif.DumpFlows("")
 	if err != nil {
@@ -112,10 +137,10 @@ const (
 )
 
 func TestOVSPod(t *testing.T) {
-	ovsif, oc, origFlows := setupOVSController(t)
+	ovsif, oc, origFlows := setupOVSController(t, common.IPv4Support)
 
 	// Add
-	ofport, err := oc.SetUpPod(sandboxID, "veth1", net.ParseIP("10.128.0.2"), 42)
+	ofport, err := oc.SetUpPod(sandboxID, "veth1", []net.IP{net.ParseIP("10.128.0.2")}, 42)
 	if err != nil {
 		t.Fatalf("Unexpected error adding pod rules: %v", err)
 	}
@@ -221,13 +246,13 @@ func TestGetPodDetails(t *testing.T) {
 	}
 
 	for _, tc := range testcases {
-		_, oc, _ := setupOVSController(t)
-		tcOFPort, err := oc.SetUpPod(tc.sandboxID, "veth1", net.ParseIP(tc.ip), 42)
+		_, oc, _ := setupOVSController(t, common.IPv4Support)
+		tcOFPort, err := oc.SetUpPod(tc.sandboxID, "veth1", []net.IP{net.ParseIP(tc.ip)}, 42)
 		if err != nil {
 			t.Fatalf("Unexpected error adding pod rules: %v", err)
 		}
 
-		ofport, ip, err := oc.getPodDetailsBySandboxID(tc.sandboxID)
+		ofport, ips, err := oc.getPodDetailsBySandboxID(tc.sandboxID)
 		if err != nil {
 			if tc.errStr != "" {
 				if !strings.Contains(err.Error(), tc.errStr) {
@@ -242,14 +267,14 @@ func TestGetPodDetails(t *testing.T) {
 		if ofport != tcOFPort {
 			t.Fatalf("unexpected ofport %d (expected %d)", ofport, tcOFPort)
 		}
-		if ip.String() != tc.ip {
-			t.Fatalf("unexpected ip %q (expected %q)", ip.String(), tc.ip)
+		if len(ips) != 1 || ips[0].String() != tc.ip {
+			t.Fatalf("unexpected ips %v (expected %q)", ips, tc.ip)
 		}
 	}
 }
 
 func TestOVSLocalMulticast(t *testing.T) {
-	ovsif, oc, origFlows := setupOVSController(t)
+	ovsif, oc, origFlows := setupOVSController(t, common.IPv4Support)
 
 	err := oc.UpdateLocalMulticastFlows(99, true, []int{4, 5, 6})
 	if err != nil {
@@ -417,7 +442,7 @@ func assertENPFlowAdditions(origFlows, newFlows []string, additions ...enpFlowAd
 }
 
 func TestOVSEgressNetworkPolicy(t *testing.T) {
-	ovsif, oc, origFlows := setupOVSController(t)
+	ovsif, oc, origFlows := setupOVSController(t, common.IPv4Support)
 
 	// SUCCESSFUL CASES
 
@@ -658,7 +683,7 @@ func TestAlreadySetUp(t *testing.T) {
 		if err := ovsif.AddBridge("fail_mode=secure", "protocols=OpenFlow13"); err != nil {
 			t.Fatalf("(%d) unexpected error from AddBridge: %v", i, err)
 		}
-		oc := NewOVSController(ovsif, "172.17.0.4")
+		oc := NewOVSController(ovsif, []string{"172.17.0.4"})
 		/* In order to test AlreadySetUp the vxlan port has to be added, we are not testing AddPort here */
 		_, err := ovsif.AddPort("vxlan0", 1, "type=vxlan", `options:remote_ip="flow"`, `options:key="flow"`, fmt.Sprintf("options:dst_port=%d", 4789))
 		if err != nil {
@@ -760,7 +785,7 @@ func TestFindUnusedVNIDs(t *testing.T) {
 	}
 
 	for i, tc := range testcases {
-		_, oc, _ := setupOVSController(t)
+		_, oc, _ := setupOVSController(t, common.IPv4Support)
 
 		otx := oc.NewTransaction()
 		for _, flow := range tc.flows {
@@ -830,7 +855,7 @@ func TestFindPolicyVNIDs(t *testing.T) {
 	}
 
 	for i, tc := range testcases {
-		_, oc, _ := setupOVSController(t)
+		_, oc, _ := setupOVSController(t, common.IPv4Support)
 
 		otx := oc.NewTransaction()
 		for _, flow := range tc.flows {
@@ -868,11 +893,11 @@ var expectedFlows = []string{
 	" cookie=0, table=0, priority=400, in_port=2, ip, nw_src=10.128.0.1, actions=goto_table:30",
 	" cookie=0, table=0, priority=300, in_port=2, ip, nw_src=10.128.0.0/23, nw_dst=10.128.0.0/14, actions=goto_table:25",
 	" cookie=0, table=0, priority=250, in_port=2, ip, nw_dst=224.0.0.0/4, actions=drop",
+	" cookie=0, table=0, priority=200, in_port=2, ip, actions=goto_table:30",
 	" cookie=0, table=0, priority=200, in_port=1, arp, arp_spa=10.128.0.0/14, arp_tpa=10.128.0.0/23, actions=move:NXM_NX_TUN_ID[0..31]->NXM_NX_REG0[],goto_table:10",
 	" cookie=0, table=0, priority=200, in_port=1, ip, nw_src=10.128.0.0/14, actions=move:NXM_NX_TUN_ID[0..31]->NXM_NX_REG0[],goto_table:10",
 	" cookie=0, table=0, priority=200, in_port=1, ip, nw_dst=10.128.0.0/14, actions=move:NXM_NX_TUN_ID[0..31]->NXM_NX_REG0[],goto_table:10",
 	" cookie=0, table=0, priority=200, in_port=2, arp, arp_spa=10.128.0.1, arp_tpa=10.128.0.0/14, actions=goto_table:30",
-	" cookie=0, table=0, priority=200, in_port=2, ip, actions=goto_table:30",
 	" cookie=0, table=0, priority=150, in_port=1, actions=drop",
 	" cookie=0, table=0, priority=150, in_port=2, actions=drop",
 	" cookie=0, table=0, priority=100, arp, actions=goto_table:20",
@@ -920,20 +945,20 @@ var expectedFlows = []string{
 	" cookie=0, table=101, priority=0, actions=output:2",
 	" cookie=0, table=110, reg0=99, actions=goto_table:111",
 	" cookie=0, table=110, priority=0, actions=drop",
-	" cookie=0, table=111, priority=100, actions=move:NXM_NX_REG0[]->NXM_NX_TUN_ID[0..31],set_field:10.0.123.45->tun_dst,output:1,set_field:10.0.45.123->tun_dst,output:1,goto_table:120",
+	" cookie=0, table=111, priority=0, actions=move:NXM_NX_REG0[]->NXM_NX_TUN_ID[0..31],set_field:10.0.123.45->tun_dst,output:1,set_field:10.0.45.123->tun_dst,output:1,goto_table:120",
 	" cookie=0, table=120, priority=100, reg0=99, actions=output:4,output:5,output:6",
 	" cookie=0, table=120, priority=0, actions=drop",
-	" cookie=0, table=253, actions=note:02.0A",
+	" cookie=0, table=253, actions=note:02.0B",
 }
 
 // Ensure that we do not change the OVS flows without bumping ruleVersion
 func TestRuleVersion(t *testing.T) {
-	ovsif, oc, _ := setupOVSController(t)
+	ovsif, oc, _ := setupOVSController(t, common.IPv4Support)
 
 	// Now call each oc method that adds flows
 
 	// Pod-related flows
-	_, err := oc.SetUpPod(sandboxID, "veth1", net.ParseIP("10.128.0.2"), 42)
+	_, err := oc.SetUpPod(sandboxID, "veth1", []net.IP{net.ParseIP("10.128.0.2")}, 42)
 	if err != nil {
 		t.Fatalf("Unexpected error adding pod rules: %v", err)
 	}

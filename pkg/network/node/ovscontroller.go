@@ -22,10 +22,93 @@ import (
 	utilnet "k8s.io/utils/net"
 )
 
+// openshift-sdn OVS flows
+
+// Table 0: preliminaries, and initial dispatch based on in_port
+//   acceptable incoming VXLAN traffic (in_port=1) goes to table 10 for validation
+//   outbound service traffic returning from iptables goes to table 25
+//   acceptable incoming tun0 traffic (in_port=2) goes to table 30 (general routing)
+//   traffic from any other port is assumed to be from a container and goes to table 20
+
+// Table 10: VXLAN ingress filtering
+//   per-remote-node rules are filled in by AddHostSubnetRules()
+//   any VXLAN traffic from a non-node IP is dropped
+
+// Table 20: from OpenShift container
+//   filled in by setupPodFlows
+//   validates IP/MAC, assigns VNID to reg0
+//   accepted traffic goes to table 21
+
+// Table 21: from OpenShift container, part 2
+//   NetworkPolicy mode uses this for connection tracking
+//   all traffic then goes to table 30
+
+// Table 25: IP from OpenShift container via Service IP
+//   filled in by setupPodFlows
+//   catches traffic which was originally sent from a local container to a service IP which
+//     has been sent through iptables and now returned into the pod network with a rewritten
+//     destination IP. Reloads the VNID to reg0 then passes to table 30
+
+// Table 30: general routing
+//   ARP/IP to local subnet gateway IP is output on tun0
+//   ARP to local containers goes to table 40
+//   ARP to remote containers goes to table 50
+//   IP to service IPs goes to table 60
+//   IP to local containers goes to table 70
+//   multicast from local pods goes to table 110
+//   multicast from the VXLAN goes to table 120
+
+// Table 40: ARP to local container
+//   filled in by setupPodFlows
+//   traffic is output to container port
+
+// Table 50: ARP to remote container
+//   filled in by AddHostSubnetRules()
+//   traffic is output to vxlan0 with correct tun_dst
+
+// Table 60: Multitenant IP to service from pod
+//   was used in Multitenant mode. Now unused
+
+// Table 70: IP to local container
+//   filled in by setupPodFlows
+//   loads the VNID and port number of the destination pod into reg1 and reg2 then
+//     goes to table 80
+
+// Table 80: IP policy enforcement
+//   rules implementing NetworkPolicies
+//   accepted traffic is output to the port in reg2
+
+// Table 90: IP to remote container
+//   filled in by AddHostSubnetRules()
+//   traffic is output to vxlan0 with correct tun_dst
+
+// Table 100: egress routing
+//   edited by SetNamespaceEgress*()
+//   traffic destined for an egress IP is forwarded to the correct node
+//   other traffic goes to table 101
+
+// Table 101: egress network policy dispatch
+//   edited by UpdateEgressNetworkPolicy()
+//   rules implementing EgressNetworkPolicies
+//   unmatched/allowed traffic is output to tun0
+
+// Table 110: outbound multicast filtering
+//   updated by UpdateLocalMulticastFlows()
+//   per-Namespace rules for namespaces that accept multicast, forwarding to table 111
+//   unmatched traffic is dropped
+
+// Table 111: multicast delivery from local pods to the VXLAN
+//   only one rule, updated by UpdateVXLANMulticastRule
+//   send to every other node then goes to table 120
+
+// Table 120: multicast delivery to local pods
+//   updated by UpdateLocalMulticastFlows()
+//   per-Namespace rules to output multicast packets to each pod port in that namespace
+
 type ovsController struct {
-	ovs        ovs.Interface
-	localIP    string
-	tunMAC     string
+	ovs      ovs.Interface
+	localIPs []string
+	tunMAC   string
 }
 
 const (
@@ -37,13 +120,13 @@ const (
 	pluginID = 2
 
 	// rule versioning; increment each time flow rules change
-	ruleVersion = 10
+	ruleVersion = 11
 
 	ruleVersionTable = 253
 )
 
-func NewOVSController(ovsif ovs.Interface, localIP string) *ovsController {
-	return &ovsController{ovs: ovsif, localIP: localIP}
+func NewOVSController(ovsif ovs.Interface, localIPs []string) *ovsController {
+	return &ovsController{ovs: ovsif, localIPs: localIPs}
 }
 
 func (oc *ovsController) getVersionNote() string {
@@ -71,7 +154,7 @@ func (oc *ovsController) AlreadySetUp(vxlanPort uint32) bool {
 	return false
 }
 
-func (oc *ovsController) SetupOVS(clusterNetworkCIDR []string, serviceNetworkCIDR, localSubnetCIDR, localSubnetGateway string, mtu uint32, vxlanPort uint32) error {
+func (oc *ovsController) SetupOVS(clusterNetworkCIDRs, serviceNetworkCIDRs, localSubnetCIDRs, localSubnetGateways []string, mtu uint32, vxlanPort uint32) error {
 	err := oc.ovs.DeleteBridge()
 	if err != nil {
 		return err
@@ -95,75 +178,120 @@ func (oc *ovsController) SetupOVS(clusterNetworkCIDR []string, serviceNetworkCID
 		return err
 	}
 
-	var localSubnetGatewayMatch string
-	if utilnet.IsIPv6String(localSubnetGateway) {
+	otx := oc.ovs.NewTransaction()
+	oc.addCoreFlows(otx, vxlanPort)
+
+	for i, localSubnetCIDR := range localSubnetCIDRs {
+		isIPv6 := utilnet.IsIPv6CIDRString(localSubnetCIDR)
+
+		matchingClusterCIDRs := make([]string, 0, 1)
+		for _, cidr := range clusterNetworkCIDRs {
+			if utilnet.IsIPv6CIDRString(cidr) == isIPv6 {
+				matchingClusterCIDRs = append(matchingClusterCIDRs, cidr)
+			}
+		}
+		oc.addBaseFlowsForIPFamily(otx, matchingClusterCIDRs, serviceNetworkCIDRs[i], localSubnetCIDRs[i], localSubnetGateways[i])
+	}
+
+	return otx.Commit()
+}
+
+func (oc *ovsController) addCoreFlows(otx ovs.Transaction, vxlanPort uint32) {
+	// Initial rule to load conntrack info
+	otx.AddFlow("table=0, priority=1000, ip, ct_state=-trk, actions=ct(table=0)")
+
+	// Every table ends with either "drop anything that wasn't recognized" or "send
+	// anything that wasn't recognized to another table"
+	otx.AddFlow("table=0, priority=0, actions=drop")
+	otx.AddFlow("table=10, priority=0, actions=drop")
+	otx.AddFlow("table=20, priority=0, actions=drop")
+	otx.AddFlow("table=21, priority=0, actions=goto_table:30")
+	otx.AddFlow("table=25, priority=0, actions=drop")
+	otx.AddFlow("table=30, priority=0, arp, actions=drop")
+	otx.AddFlow("table=30, priority=0, ip, actions=goto_table:100")
+	otx.AddFlow("table=40, priority=0, actions=drop")
+	otx.AddFlow("table=50, priority=0, actions=drop")
+	otx.AddFlow("table=70, priority=0, actions=drop")
+	otx.AddFlow("table=80, priority=0, actions=drop")
+	otx.AddFlow("table=90, priority=0, actions=drop")
+	otx.AddFlow("table=100, priority=0, actions=goto_table:101")
+	otx.AddFlow("table=101, priority=0, actions=output:2")
+	otx.AddFlow("table=110, priority=0, actions=drop")
+	otx.AddFlow("table=111, priority=0, actions=goto_table:120")
+	otx.AddFlow("table=120, priority=0, actions=drop")
+
+	// Table 0 (initial dispatch) has different rules depending on in_port
+	// (FIXME: this could be split into multiple tables)
+	otx.AddFlow("table=0, priority=150, in_port=1, actions=drop")
+	otx.AddFlow("table=0, priority=200, in_port=2, ip, actions=goto_table:30")
+	otx.AddFlow("table=0, priority=150, in_port=2, actions=drop")
+	otx.AddFlow("table=0, priority=100, arp, actions=goto_table:20")
+	otx.AddFlow("table=0, priority=100, ip, actions=goto_table:20")
+
+	// Table 100 (egress routing) starts with a security-related rule
+	otx.AddFlow("table=100, priority=300, udp, udp_dst=%d, actions=drop", vxlanPort)
+
+	// Special rule to always allow DNS to the node, bypassing EgressNetworkPolicy
+	for _, localIP := range oc.localIPs {
+		otx.AddFlow("table=100, priority=200, tcp, tcp_dst=53, nw_dst=%s, actions=output:2", localIP)
+		otx.AddFlow("table=100, priority=200, udp, udp_dst=53, nw_dst=%s, actions=output:2", localIP)
+	}
+
+	// Likewise always allow replies through
+	otx.AddFlow("table=100, priority=150, ct_state=+rpl, actions=goto_table:101")
+}
+
+func (oc *ovsController) addBaseFlowsForIPFamily(otx ovs.Transaction, clusterNetworkCIDRs []string, serviceNetworkCIDR, localSubnetCIDR, localSubnetGateway string) {
+	isIPv6 := utilnet.IsIPv6String(localSubnetGateway)
+	var multicastCIDR, localSubnetGatewayMatch string
+	if isIPv6 {
+		multicastCIDR = "ff00::/8"
 		localSubnetGatewayMatch = localSubnetGateway + "/128"
 	} else {
+		multicastCIDR = "224.0.0.0/4"
 		localSubnetGatewayMatch = localSubnetGateway + "/32"
 	}
 
-	otx := oc.ovs.NewTransaction()
-
-	// Table 0: preliminaries, and initial dispatch based on in_port
-	otx.AddFlow("table=0, priority=1000, ip, ct_state=-trk, actions=ct(table=0)")
-	// vxlan0
-	for _, clusterCIDR := range clusterNetworkCIDR {
+	// On vxlan0, accept incoming ARP packets for local pods, and incoming IP packets either to or from
+	// anywhere in the cluster. (Notably, packets being sent to an egress IP will not have a destination
+	// within the cluster, but are valid as long as they came from within the cluster.)
+	for _, clusterCIDR := range clusterNetworkCIDRs {
 		otx.AddFlow("table=0, priority=200, in_port=1, arp, nw_src=%s, nw_dst=%s, actions=move:NXM_NX_TUN_ID[0..31]->NXM_NX_REG0[],goto_table:10", clusterCIDR, localSubnetCIDR)
 		otx.AddFlow("table=0, priority=200, in_port=1, ip, nw_src=%s, actions=move:NXM_NX_TUN_ID[0..31]->NXM_NX_REG0[],goto_table:10", clusterCIDR)
 		otx.AddFlow("table=0, priority=200, in_port=1, ip, nw_dst=%s, actions=move:NXM_NX_TUN_ID[0..31]->NXM_NX_REG0[],goto_table:10", clusterCIDR)
 	}
-	otx.AddFlow("table=0, priority=150, in_port=1, actions=drop")
-	// tun0
+
+	// If we receive a packet from tun0 whose source IP is a local pod IP, that means we previously
+	// sent it out tun0 to run through Service iptables rules, and now we need to send it to table 25
+	// to reload its VNID
 	otx.AddFlow("table=0, priority=400, in_port=2, ip, nw_src=%s, actions=goto_table:30", localSubnetGateway)
-	for _, clusterCIDR := range clusterNetworkCIDR {
+	for _, clusterCIDR := range clusterNetworkCIDRs {
 		otx.AddFlow("table=0, priority=300, in_port=2, ip, nw_src=%s, nw_dst=%s, actions=goto_table:25", localSubnetCIDR, clusterCIDR)
 	}
-	otx.AddFlow("table=0, priority=250, in_port=2, ip, nw_dst=224.0.0.0/4, actions=drop")
-	otx.AddFlow("table=0, priority=250, in_port=2, ip, nw_dst=ff00::/8, actions=drop")
-	for _, clusterCIDR := range clusterNetworkCIDR {
+	// Otherwise, from tun0, we reject multicast IPs, and accept ARP requests from the
+	// local node for cluster network IPs. (Other IPs will be accepted, and other ARPs
+	// rejected, by the rules from addCoreFlows.)
+	otx.AddFlow("table=0, priority=250, in_port=2, ip, nw_dst=%s, actions=drop", multicastCIDR)
+	for _, clusterCIDR := range clusterNetworkCIDRs {
 		otx.AddFlow("table=0, priority=200, in_port=2, arp, nw_src=%s, nw_dst=%s, actions=goto_table:30", localSubnetGateway, clusterCIDR)
 	}
-	otx.AddFlow("table=0, priority=200, in_port=2, ip, actions=goto_table:30")
-	otx.AddFlow("table=0, priority=150, in_port=2, actions=drop")
-	// else, from a container
-	otx.AddFlow("table=0, priority=100, arp, actions=goto_table:20")
-	otx.AddFlow("table=0, priority=100, ip, actions=goto_table:20")
-	otx.AddFlow("table=0, priority=0, actions=drop")
-
-	// Table 10: VXLAN ingress filtering; filled in by AddHostSubnetRules()
-	// eg, "table=10, priority=100, tun_src=${remote_node_ip}, actions=goto_table:30"
-	otx.AddFlow("table=10, priority=0, actions=drop")
-
-	// Table 20: from OpenShift container; validate IP/MAC, assign tenant-id; filled in by setupPodFlows
-	// eg, "table=20, priority=100, in_port=${ovs_port}, arp, nw_src=${ipaddr}, arp_sha=${macaddr}, actions=load:${tenant_id}->NXM_NX_REG0[], goto_table:21"
-	//     "table=20, priority=100, in_port=${ovs_port}, ip, nw_src=${ipaddr}, actions=load:${tenant_id}->NXM_NX_REG0[], goto_table:21"
-	// (${tenant_id} is always 0 for single-tenant)
-	otx.AddFlow("table=20, priority=0, actions=drop")
-
-	// Table 21: from OpenShift container; NetworkPolicy plugin uses this for connection tracking
-	otx.AddFlow("table=21, priority=0, actions=goto_table:30")
-
-	// Table 25: IP from OpenShift container via Service IP; reload tenant-id; filled in by setupPodFlows
-	// eg, "table=25, priority=100, ip, nw_src=${ipaddr}, actions=load:${tenant_id}->NXM_NX_REG0[], goto_table:30"
-	otx.AddFlow("table=25, priority=0, actions=drop")
 
 	// Table 30: general routing
 	otx.AddFlow("table=30, priority=300, arp, nw_dst=%s, actions=output:2", localSubnetGateway)
 	otx.AddFlow("table=30, priority=200, arp, nw_dst=%s, actions=goto_table:40", localSubnetCIDR)
-	for _, clusterCIDR := range clusterNetworkCIDR {
+	for _, clusterCIDR := range clusterNetworkCIDRs {
 		otx.AddFlow("table=30, priority=100, arp, nw_dst=%s, actions=goto_table:50", clusterCIDR)
 	}
 	otx.AddFlow("table=30, priority=300, ip, nw_dst=%s, actions=output:2", localSubnetGateway)
 	otx.AddFlow("table=30, priority=100, ip, nw_dst=%s, actions=output:2", serviceNetworkCIDR)
 	otx.AddFlow("table=30, priority=250, ip, nw_dst=%s, ct_state=+rpl, actions=ct(nat,table=70)", localSubnetCIDR)
 	otx.AddFlow("table=30, priority=200, ip, nw_dst=%s, actions=goto_table:70", localSubnetCIDR)
-	for _, clusterCIDR := range clusterNetworkCIDR {
+	for _, clusterCIDR := range clusterNetworkCIDRs {
 		otx.AddFlow("table=30, priority=100, ip, nw_dst=%s, actions=goto_table:90", clusterCIDR)
 	}
 
 	// Multicast coming from the VXLAN
-	otx.AddFlow("table=30, priority=50, in_port=1, ip, nw_dst=224.0.0.0/4, actions=goto_table:120")
-	otx.AddFlow("table=30, priority=50, in_port=1, ip, nw_dst=ff00::/8, actions=goto_table:120")
+	otx.AddFlow("table=30, priority=50, in_port=1, ip, nw_dst=%s, actions=goto_table:120", multicastCIDR)
 	// Multicast coming from local pods
 	otx.AddFlow("table=30, priority=25, ip, nw_dst=224.0.0.0/4, actions=goto_table:110")
 	otx.AddFlow("table=30, priority=25, ip, nw_dst=ff00::/8, actions=goto_table:110")
@@ -185,40 +313,8 @@ func (oc *ovsController) SetupOVS(clusterNetworkCIDR []string, serviceNetworkCID
 	// eg, "table=70, priority=100, ip, nw_dst=${ipaddr}, actions=load:${tenant_id}->NXM_NX_REG1[], load:${ovs_port}->NXM_NX_REG2[], goto_table:80"
 	otx.AddFlow("table=70, priority=0, actions=drop")
 
-	// Table 80: IP policy enforcement; mostly managed by the osdnPolicy
+	// Special rule to always allow connections from the node to the pod, bypassing NetworkPolicy
 	otx.AddFlow("table=80, priority=300, ip, nw_src=%s, actions=output:NXM_NX_REG2[]", localSubnetGatewayMatch)
-	// eg, "table=80, priority=100, reg0=${tenant_id}, reg1=${tenant_id}, actions=output:NXM_NX_REG2[]"
-	otx.AddFlow("table=80, priority=0, actions=drop")
-
-	// Table 90: IP to remote container; filled in by AddHostSubnetRules()
-	// eg, "table=90, priority=100, ip, nw_dst=${remote_subnet_cidr}, actions=move:NXM_NX_REG0[]->NXM_NX_TUN_ID[0..31], set_field:${remote_node_ip}->tun_dst,output:1"
-	otx.AddFlow("table=90, priority=0, actions=drop")
-
-	// Table 100: egress routing; edited by SetNamespaceEgress*()
-	otx.AddFlow("table=100, priority=300, udp, udp_dst=%d, actions=drop", vxlanPort)
-	otx.AddFlow("table=100, priority=200, tcp, tcp_dst=53, nw_dst=%s, actions=output:2", oc.localIP)
-	otx.AddFlow("table=100, priority=200, udp, udp_dst=53, nw_dst=%s, actions=output:2", oc.localIP)
-	otx.AddFlow("table=100, priority=150, ct_state=+rpl, actions=goto_table:101")
-	// eg, "table=100, priority=100, reg0=${tenant_id}, ip, actions=set_field:${tun0_mac}->eth_dst,set_field:${egress_mark}->pkt_mark,goto_table:101"
-	otx.AddFlow("table=100, priority=0, actions=goto_table:101")
-
-	// Table 101: egress network policy dispatch; edited by UpdateEgressNetworkPolicy()
-	// eg, "table=101, reg0=${tenant_id}, priority=2, ip, nw_dst=${external_cidr}, actions=drop
-	otx.AddFlow("table=101, priority=0, actions=output:2")
-
-	// Table 110: outbound multicast filtering, updated by UpdateLocalMulticastFlows()
-	// eg, "table=110, priority=100, reg0=${tenant_id}, actions=goto_table:111
-	otx.AddFlow("table=110, priority=0, actions=drop")
-
-	// Table 111: multicast delivery from local pods to the VXLAN; only one rule, updated by UpdateVXLANMulticastRules()
-	// eg, "table=111, priority=100, actions=move:NXM_NX_REG0[]->NXM_NX_TUN_ID[0..31],set_field:${remote_node_ip_1}->tun_dst,output:1,set_field:${remote_node_ip_2}->tun_dst,output:1,goto_table:120"
-	otx.AddFlow("table=111, priority=100, actions=goto_table:120")
-
-	// Table 120: multicast delivery to local pods (either from VXLAN or local pods); updated by UpdateLocalMulticastFlows()
-	// eg, "table=120, priority=100, reg0=${tenant_id}, actions=output:${ovs_port_1},output:${ovs_port_2}"
-	otx.AddFlow("table=120, priority=0, actions=drop")
-
-	return otx.Commit()
 }
 
 // Perform the final step of SDN setup; this is done after everything else, so if the SDN
@@ -235,7 +331,7 @@ func (oc *ovsController) FinishSetupOVS() error {
 
 type podNetworkInfo struct {
 	vethName string
-	ip       string
+	ips      []string
 	ofport   int
 }
 
@@ -258,12 +354,19 @@ func (oc *ovsController) GetPodNetworkInfo() (map[string]podNetworkInfo, error) 
 			utilruntime.HandleError(fmt.Errorf("Could not parse external_ids %q: %v", row["external_ids"], err))
 			continue
 		}
-		if ids["ip"] == "" || ids["sandbox"] == "" {
+		if ids["ips"] == "" || ids["sandbox"] == "" {
 			utilruntime.HandleError(fmt.Errorf("ovs-vsctl output missing one or more external_ids: %v", ids))
 			continue
 		}
-		if net.ParseIP(ids["ip"]) == nil {
-			utilruntime.HandleError(fmt.Errorf("Could not parse IP %q for sandbox %q", ids["ip"], ids["sandbox"]))
+		ips := strings.Split(ids["ips"], " ")
+		for _, ip := range ips {
+			if net.ParseIP(ip) == nil {
+				utilruntime.HandleError(fmt.Errorf("Could not parse IP %q for sandbox %q", ip, ids["sandbox"]))
+				ips = nil
+				break
+			}
+		}
+		if ips == nil {
 			continue
 		}
 
@@ -275,7 +378,7 @@ func (oc *ovsController) GetPodNetworkInfo() (map[string]podNetworkInfo, error) 
 
 		results[ids["sandbox"]] = podNetworkInfo{
 			vethName: row["name"],
-			ip:       ids["ip"],
+			ips:      ips,
 			ofport:   ofport,
 		}
 	}
@@ -287,9 +390,13 @@ func (oc *ovsController) NewTransaction() ovs.Transaction {
 	return oc.ovs.NewTransaction()
 }
 
-func (oc *ovsController) ensureOvsPort(hostVeth, sandboxID, podIP string) (int, error) {
+func (oc *ovsController) ensureOvsPort(hostVeth, sandboxID string, podIPs []net.IP) (int, error) {
+	ipStrings := make([]string, len(podIPs))
+	for i := range podIPs {
+		ipStrings[i] = podIPs[i].String()
+	}
 	ofport, err := oc.ovs.AddPort(hostVeth, -1,
-		fmt.Sprintf(`external_ids=sandbox="%s",ip="%s"`, sandboxID, podIP),
+		fmt.Sprintf(`external_ids=sandbox="%s",ips="%s"`, sandboxID, strings.Join(ipStrings, " ")),
 	)
 	if err != nil {
 		// If hostVeth doesn't exist, ovs-vsctl will return an error, but will
@@ -303,11 +410,16 @@ func (oc *ovsController) setupPodFlows(ofport int, podIP net.IP, vnid uint32) er
 	otx := oc.ovs.NewTransaction()
 
 	ipstr := podIP.String()
-	podIP = podIP.To4()
-	ipmac := fmt.Sprintf("00:00:%02x:%02x:%02x:%02x/00:00:ff:ff:ff:ff", podIP[0], podIP[1], podIP[2], podIP[3])
+
+	// IPV6FIXME - sdn-cni-plugin is currently leaving the MAC random for IPv6
+	ipmacMatch := ""
+	if !utilnet.IsIPv6(podIP) {
+		podIP = podIP.To4()
+		ipmacMatch = fmt.Sprintf(", arp_sha=00:00:%02x:%02x:%02x:%02x/00:00:ff:ff:ff:ff", podIP[0], podIP[1], podIP[2], podIP[3])
+	}
 
 	// ARP/IP traffic from container
-	otx.AddFlow("table=20, priority=100, in_port=%d, arp, nw_src=%s, arp_sha=%s, actions=load:%d->NXM_NX_REG0[], goto_table:21", ofport, ipstr, ipmac, vnid)
+	otx.AddFlow("table=20, priority=100, in_port=%d, arp, nw_src=%s%s, actions=load:%d->NXM_NX_REG0[], goto_table:21", ofport, ipstr, ipmacMatch, vnid)
 	otx.AddFlow("table=20, priority=100, in_port=%d, ip, nw_src=%s, actions=load:%d->NXM_NX_REG0[], goto_table:21", ofport, ipstr, vnid)
 	otx.AddFlow("table=25, priority=100, ip, nw_src=%s, actions=load:%d->NXM_NX_REG0[], goto_table:30", ipstr, vnid)
 
@@ -331,12 +443,18 @@ func (oc *ovsController) cleanupPodFlows(podIP net.IP) error {
 	return otx.Commit()
 }
 
-func (oc *ovsController) SetUpPod(sandboxID, hostVeth string, podIP net.IP, vnid uint32) (int, error) {
-	ofport, err := oc.ensureOvsPort(hostVeth, sandboxID, podIP.String())
+func (oc *ovsController) SetUpPod(sandboxID, hostVeth string, podIPs []net.IP, vnid uint32) (int, error) {
+	ofport, err := oc.ensureOvsPort(hostVeth, sandboxID, podIPs)
 	if err != nil {
 		return -1, err
 	}
-	return ofport, oc.setupPodFlows(ofport, podIP, vnid)
+	for _, podIP := range podIPs {
+		err = oc.setupPodFlows(ofport, podIP, vnid)
+		if err != nil {
+			return -1, err
+		}
+	}
+	return ofport, nil
 }
 
 // Returned list can also be used for port names
@@ -399,7 +517,7 @@ func (oc *ovsController) SetPodBandwidth(hostVeth, sandboxID string, ingressBPS,
 	return nil
 }
 
-func (oc *ovsController) getPodDetailsBySandboxID(sandboxID string) (int, net.IP, error) {
+func (oc *ovsController) getPodDetailsBySandboxID(sandboxID string) (int, []net.IP, error) {
 	rows, err := oc.ovs.Find("interface", []string{"ofport", "external_ids"}, "external_ids:sandbox="+sandboxID)
 	if err != nil {
 		return 0, nil, err
@@ -419,41 +537,53 @@ func (oc *ovsController) getPodDetailsBySandboxID(sandboxID string) (int, net.IP
 	ids, err := ovs.ParseExternalIDs(rows[0]["external_ids"])
 	if err != nil {
 		return 0, nil, fmt.Errorf("could not parse external_ids %q: %v", rows[0]["external_ids"], err)
-	} else if ids["ip"] == "" {
-		return 0, nil, fmt.Errorf("external_ids %#v does not contain IP", ids)
+	} else if ids["ips"] == "" {
+		return 0, nil, fmt.Errorf("external_ids %#v does not contain IPs", ids)
 	}
-	podIP := net.ParseIP(ids["ip"])
-	if podIP == nil {
-		return 0, nil, fmt.Errorf("failed to parse IP %q", ids["ip"])
+	var podIPs []net.IP
+	for _, ipstr := range strings.Split(ids["ips"], " ") {
+		podIP := net.ParseIP(ipstr)
+		if podIP == nil {
+			return 0, nil, fmt.Errorf("failed to parse IP %q", ipstr)
+		}
+		podIPs = append(podIPs, podIP)
 	}
 
-	return ofport, podIP, nil
+	return ofport, podIPs, nil
 }
 
 func (oc *ovsController) UpdatePod(sandboxID string, vnid uint32) error {
-	ofport, podIP, err := oc.getPodDetailsBySandboxID(sandboxID)
+	ofport, podIPs, err := oc.getPodDetailsBySandboxID(sandboxID)
 	if err != nil {
 		return err
 	} else if ofport == -1 {
 		return fmt.Errorf("can't update pod %q with missing veth interface", sandboxID)
 	}
-	err = oc.cleanupPodFlows(podIP)
-	if err != nil {
-		return err
+	for _, podIP := range podIPs {
+		err = oc.cleanupPodFlows(podIP)
+		if err != nil {
+			return err
+		}
+		err = oc.setupPodFlows(ofport, podIP, vnid)
+		if err != nil {
+			return err
+		}
 	}
-	return oc.setupPodFlows(ofport, podIP, vnid)
+	return nil
 }
 
 func (oc *ovsController) TearDownPod(sandboxID string) error {
-	_, podIP, err := oc.getPodDetailsBySandboxID(sandboxID)
+	_, podIPs, err := oc.getPodDetailsBySandboxID(sandboxID)
 	if err != nil {
 		// OVS flows related to sandboxID not found
 		// Nothing needs to be done in that case
 		return nil
 	}
 
-	if err := oc.cleanupPodFlows(podIP); err != nil {
-		return err
+	for _, podIP := range podIPs {
+		if err := oc.cleanupPodFlows(podIP); err != nil {
+			return err
+		}
 	}
 
 	ports, err := oc.getInterfacesForSandbox(sandboxID)
@@ -606,9 +736,9 @@ func (oc *ovsController) UpdateVXLANMulticastFlows(remoteIPs []string) error {
 			actions[i] = fmt.Sprintf("set_field:%s->tun_dst,output:1", ip)
 		}
 		sort.Strings(actions)
-		otx.AddFlow("table=111, priority=100, actions=move:NXM_NX_REG0[]->NXM_NX_TUN_ID[0..31],%s,goto_table:120", strings.Join(actions, ","))
+		otx.AddFlow("table=111, priority=0, actions=move:NXM_NX_REG0[]->NXM_NX_TUN_ID[0..31],%s,goto_table:120", strings.Join(actions, ","))
 	} else {
-		otx.AddFlow("table=111, priority=100, actions=goto_table:120")
+		otx.AddFlow("table=111, priority=0, actions=goto_table:120")
 	}
 
 	return otx.Commit()
@@ -724,6 +854,15 @@ func (oc *ovsController) SetNamespaceEgressDropped(vnid uint32) error {
 	return otx.Commit()
 }
 
+func (oc *ovsController) isLocalNodeIP(ip string) bool {
+	for _, localIP := range oc.localIPs {
+		if ip == localIP {
+			return true
+		}
+	}
+	return false
+}
+
 func (oc *ovsController) SetNamespaceEgressViaEgressIPs(vnid uint32, egressIPsMetaData []egressIPMetaData) error {
 	otx := oc.ovs.NewTransaction()
 	otx.DeleteFlows("table=100, reg0=%d", vnid)
@@ -731,7 +870,7 @@ func (oc *ovsController) SetNamespaceEgressViaEgressIPs(vnid uint32, egressIPsMe
 
 	var buildBuckets []string
 	for _, egressIPMetaData := range egressIPsMetaData {
-		if egressIPMetaData.nodeIP == oc.localIP {
+		if oc.isLocalNodeIP(egressIPMetaData.nodeIP) {
 			if err := oc.ensureTunMAC(); err != nil {
 				return err
 			}

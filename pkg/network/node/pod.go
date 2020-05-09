@@ -487,15 +487,26 @@ func (m *podManager) setup(req *cniserver.PodRequest) (cnitypes.Result, *running
 	}
 
 	var ipamResult cnitypes.Result
-	podIP := net.ParseIP(req.AssignedIP)
-	if podIP == nil {
-		ipamResult, podIP, err = m.ipamAdd(req.Netns, req.SandboxID)
+	var podIPs []net.IP
+
+	if req.AssignedIPs == nil {
+		podIPs = make([]net.IP, 1)
+		ipamResult, podIPs[0], err = m.ipamAdd(req.Netns, req.SandboxID)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to run IPAM for %v: %v", req.SandboxID, err)
 		}
-		if err := maybeAddMacvlan(v1Pod, req.Netns); err != nil {
-			return nil, nil, err
+	} else {
+		for _, assignedIP := range req.AssignedIPs {
+			podIP := net.ParseIP(assignedIP)
+			if podIP == nil {
+				return nil, nil, fmt.Errorf("could not parse existing pod IP %q for %v", assignedIP, req.SandboxID)
+			}
+			podIPs = append(podIPs, podIP)
 		}
+	}
+
+	if err := maybeAddMacvlan(v1Pod, req.Netns); err != nil {
+		return nil, nil, err
 	}
 
 	vnid, err := m.policy.GetVNID(req.PodNamespace)
@@ -503,7 +514,7 @@ func (m *podManager) setup(req *cniserver.PodRequest) (cnitypes.Result, *running
 		return nil, nil, err
 	}
 
-	ofport, err := m.ovs.SetUpPod(req.SandboxID, req.HostVeth, podIP, vnid)
+	ofport, err := m.ovs.SetUpPod(req.SandboxID, req.HostVeth, podIPs, vnid)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -513,7 +524,7 @@ func (m *podManager) setup(req *cniserver.PodRequest) (cnitypes.Result, *running
 
 	m.policy.EnsureVNIDRules(vnid)
 	success = true
-	klog.Infof("CNI_ADD %s/%s got IP %s, ofport %d", req.PodNamespace, req.PodName, podIP, ofport)
+	klog.Infof("CNI_ADD %s/%s got IPs %v, ofport %d", req.PodNamespace, req.PodName, podIPs, ofport)
 	return ipamResult, &runningPod{vnid: vnid, ofport: ofport}, nil
 }
 
