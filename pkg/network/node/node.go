@@ -22,15 +22,12 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/strategicpatch"
 	kwait "k8s.io/apimachinery/pkg/util/wait"
-	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/retry"
 	kubeletapi "k8s.io/cri-api/pkg/apis"
 	kruntimeapi "k8s.io/cri-api/pkg/apis/runtime/v1alpha2"
-	kapi "k8s.io/kubernetes/pkg/apis/core"
-	"k8s.io/kubernetes/pkg/apis/core/v1/helper"
 	ktypes "k8s.io/kubernetes/pkg/kubelet/types"
 	kubeproxyconfig "k8s.io/kubernetes/pkg/proxy/apis/config"
 	"k8s.io/kubernetes/pkg/util/iptables"
@@ -93,7 +90,6 @@ type OsdnNode struct {
 	localGatewayCIDR string
 	localIP          string
 	hostName         string
-	useConnTrack     bool
 	masqueradeBit    uint32
 
 	// Synchronizes operations on egressPolicies
@@ -122,7 +118,6 @@ func New(c *OsdnNodeConfig) (*OsdnNode, error) {
 	}
 
 	policy := NewNetworkPolicyPlugin()
-	useConnTrack := true
 
 	if c.ProxyMode == kubeproxyconfig.ProxyModeUserspace {
 		return nil, fmt.Errorf("plugin is not compatible with proxy-mode %q", c.ProxyMode)
@@ -134,7 +129,7 @@ func New(c *OsdnNodeConfig) (*OsdnNode, error) {
 	if err != nil {
 		return nil, err
 	}
-	oc := NewOVSController(ovsif, useConnTrack, c.NodeIP)
+	oc := NewOVSController(ovsif, c.NodeIP)
 
 	masqBit := uint32(0)
 	if c.MasqueradeBit != nil {
@@ -156,7 +151,6 @@ func New(c *OsdnNodeConfig) (*OsdnNode, error) {
 		podManager:       newPodManager(c.KClient, policy, networkInfo.MTU, oc),
 		localIP:          c.NodeIP,
 		hostName:         c.NodeName,
-		useConnTrack:     useConnTrack,
 		ipt:              c.IPTables,
 		masqueradeBit:    masqBit,
 		egressPolicies:   make(map[uint32][]networkapi.EgressNetworkPolicy),
@@ -328,7 +322,7 @@ func (node *OsdnNode) Start() error {
 		node.clusterCIDRs = append(node.clusterCIDRs, cn.ClusterCIDR.String())
 	}
 
-	node.nodeIPTables = newNodeIPTables(node.ipt, node.clusterCIDRs, !node.useConnTrack, node.networkInfo.VXLANPort, node.masqueradeBit)
+	node.nodeIPTables = newNodeIPTables(node.ipt, node.clusterCIDRs, node.networkInfo.VXLANPort, node.masqueradeBit)
 	if err = node.nodeIPTables.Setup(); err != nil {
 		return fmt.Errorf("failed to set up iptables: %v", err)
 	}
@@ -351,9 +345,6 @@ func (node *OsdnNode) Start() error {
 		if err := node.egressIP.Start(node.networkInformers, node.nodeIPTables); err != nil {
 			return err
 		}
-	}
-	if !node.useConnTrack {
-		node.watchServices()
 	}
 
 	existingPodSandboxes, err := node.getSDNPodSandboxes()
@@ -492,61 +483,6 @@ func (node *OsdnNode) GetRunningPods(namespace string) ([]corev1.Pod, error) {
 		}
 	}
 	return pods, nil
-}
-
-func isServiceChanged(oldsvc, newsvc *corev1.Service) bool {
-	if len(oldsvc.Spec.Ports) == len(newsvc.Spec.Ports) {
-		for i := range oldsvc.Spec.Ports {
-			if oldsvc.Spec.Ports[i].Protocol != newsvc.Spec.Ports[i].Protocol ||
-				oldsvc.Spec.Ports[i].Port != newsvc.Spec.Ports[i].Port {
-				return true
-			}
-		}
-		return false
-	}
-	return true
-}
-
-func (node *OsdnNode) watchServices() {
-	funcs := common.InformerFuncs(&kapi.Service{}, node.handleAddOrUpdateService, node.handleDeleteService)
-	node.kubeInformers.Core().V1().Services().Informer().AddEventHandler(funcs)
-}
-
-func (node *OsdnNode) handleAddOrUpdateService(obj, oldObj interface{}, eventType watch.EventType) {
-	serv := obj.(*corev1.Service)
-	// Ignore headless/external services
-	if !helper.IsServiceIPSet(serv) {
-		return
-	}
-
-	klog.V(5).Infof("Watch %s event for Service %q", eventType, serv.Name)
-	oldServ, exists := oldObj.(*corev1.Service)
-	if exists {
-		if !isServiceChanged(oldServ, serv) {
-			return
-		}
-		node.DeleteServiceRules(oldServ)
-	}
-
-	netid, err := node.policy.GetVNID(serv.Namespace)
-	if err != nil {
-		utilruntime.HandleError(fmt.Errorf("Skipped adding service rules for serviceEvent: %v, Error: %v", eventType, err))
-		return
-	}
-
-	node.AddServiceRules(serv, netid)
-	node.policy.EnsureVNIDRules(netid)
-}
-
-func (node *OsdnNode) handleDeleteService(obj interface{}) {
-	serv := obj.(*corev1.Service)
-	// Ignore headless/external services
-	if !helper.IsServiceIPSet(serv) {
-		return
-	}
-
-	klog.V(5).Infof("Watch %s event for Service %q", watch.Deleted, serv.Name)
-	node.DeleteServiceRules(serv)
 }
 
 func (node *OsdnNode) ReloadIPTables() error {
