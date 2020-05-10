@@ -204,8 +204,7 @@ func (plugin *OsdnNode) setup(localSubnetCIDR, localSubnetGateway string) error 
 
 func (plugin *OsdnNode) updateEgressNetworkPolicyRules(vnid uint32) {
 	policies := plugin.egressPolicies[vnid]
-	namespaces := plugin.policy.GetNamespaces(vnid)
-	if err := plugin.oc.UpdateEgressNetworkPolicyRules(policies, vnid, namespaces, plugin.egressDNS); err != nil {
+	if err := plugin.oc.UpdateEgressNetworkPolicyRules(policies, vnid, plugin.egressDNS); err != nil {
 		utilruntime.HandleError(fmt.Errorf("Error updating OVS flows for EgressNetworkPolicy: %v", err))
 	}
 }

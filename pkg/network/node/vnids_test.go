@@ -16,7 +16,7 @@ func TestNodeVNIDMap(t *testing.T) {
 	// empty vmap
 
 	checkNotExists(t, vmap, "alpha")
-	checkNamespaces(t, vmap, 1, []string{})
+	checkNamespace(t, vmap, 1, "")
 	checkAllocatedVNIDs(t, vmap, []uint32{})
 
 	// set vnids, non-overlapping
@@ -32,10 +32,10 @@ func TestNodeVNIDMap(t *testing.T) {
 	checkExists(t, vmap, "delta", 4)
 	checkNotExists(t, vmap, "echo")
 
-	checkNamespaces(t, vmap, 1, []string{"alpha"})
-	checkNamespaces(t, vmap, 2, []string{"bravo"})
-	checkNamespaces(t, vmap, 3, []string{"charlie"})
-	checkNamespaces(t, vmap, 4, []string{"delta"})
+	checkNamespace(t, vmap, 1, "alpha")
+	checkNamespace(t, vmap, 2, "bravo")
+	checkNamespace(t, vmap, 3, "charlie")
+	checkNamespace(t, vmap, 4, "delta")
 
 	checkAllocatedVNIDs(t, vmap, []uint32{1, 2, 3, 4})
 
@@ -64,85 +64,12 @@ func TestNodeVNIDMap(t *testing.T) {
 		t.Fatalf("Unexpected success: %d", id)
 	}
 
-	checkNamespaces(t, vmap, 1, []string{})
-	checkNamespaces(t, vmap, 2, []string{"bravo"})
-	checkNamespaces(t, vmap, 3, []string{})
-	checkNamespaces(t, vmap, 4, []string{"delta"})
+	checkNamespace(t, vmap, 1, "")
+	checkNamespace(t, vmap, 2, "bravo")
+	checkNamespace(t, vmap, 3, "")
+	checkNamespace(t, vmap, 4, "delta")
 
 	checkAllocatedVNIDs(t, vmap, []uint32{2, 4})
-
-	// change vnids
-
-	vmap.setVNID("bravo", 1, false)
-	vmap.setVNID("delta", 2, false)
-
-	checkExists(t, vmap, "bravo", 1)
-	checkExists(t, vmap, "delta", 2)
-
-	checkNamespaces(t, vmap, 1, []string{"bravo"})
-	checkNamespaces(t, vmap, 2, []string{"delta"})
-	checkNamespaces(t, vmap, 3, []string{})
-	checkNamespaces(t, vmap, 4, []string{})
-
-	checkAllocatedVNIDs(t, vmap, []uint32{1, 2})
-
-	// overlapping vnids
-
-	vmap.setVNID("echo", 3, false)
-	vmap.setVNID("foxtrot", 5, false)
-	vmap.setVNID("golf", 1, false)
-	vmap.setVNID("hotel", 1, false)
-	vmap.setVNID("india", 1, false)
-	vmap.setVNID("juliet", 3, false)
-
-	checkExists(t, vmap, "bravo", 1)
-	checkExists(t, vmap, "delta", 2)
-	checkExists(t, vmap, "echo", 3)
-	checkExists(t, vmap, "foxtrot", 5)
-	checkExists(t, vmap, "golf", 1)
-	checkExists(t, vmap, "hotel", 1)
-	checkExists(t, vmap, "india", 1)
-	checkExists(t, vmap, "juliet", 3)
-
-	checkNamespaces(t, vmap, 1, []string{"bravo", "golf", "hotel", "india"})
-	checkNamespaces(t, vmap, 2, []string{"delta"})
-	checkNamespaces(t, vmap, 3, []string{"echo", "juliet"})
-	checkNamespaces(t, vmap, 4, []string{})
-	checkNamespaces(t, vmap, 5, []string{"foxtrot"})
-
-	checkAllocatedVNIDs(t, vmap, []uint32{1, 2, 3, 5})
-
-	// deleting with overlapping vnids
-
-	id, err = vmap.unsetVNID("golf")
-	if err != nil {
-		t.Fatalf("Unexpected failure: %d, %v", id, err)
-	}
-	id, err = vmap.unsetVNID("echo")
-	if err != nil {
-		t.Fatalf("Unexpected failure: %d, %v", id, err)
-	}
-	id, err = vmap.unsetVNID("juliet")
-	if err != nil {
-		t.Fatalf("Unexpected failure: %d, %v", id, err)
-	}
-
-	checkExists(t, vmap, "bravo", 1)
-	checkExists(t, vmap, "delta", 2)
-	checkNotExists(t, vmap, "echo")
-	checkExists(t, vmap, "foxtrot", 5)
-	checkNotExists(t, vmap, "golf")
-	checkExists(t, vmap, "hotel", 1)
-	checkExists(t, vmap, "india", 1)
-	checkNotExists(t, vmap, "juliet")
-
-	checkNamespaces(t, vmap, 1, []string{"bravo", "hotel", "india"})
-	checkNamespaces(t, vmap, 2, []string{"delta"})
-	checkNamespaces(t, vmap, 3, []string{})
-	checkNamespaces(t, vmap, 4, []string{})
-	checkNamespaces(t, vmap, 5, []string{"foxtrot"})
-
-	checkAllocatedVNIDs(t, vmap, []uint32{1, 2, 5})
 }
 
 func checkExists(t *testing.T, vmap *nodeVNIDMap, name string, expected uint32) {
@@ -159,22 +86,10 @@ func checkNotExists(t *testing.T, vmap *nodeVNIDMap, name string) {
 	}
 }
 
-func checkNamespaces(t *testing.T, vmap *nodeVNIDMap, vnid uint32, match []string) {
-	namespaces := vmap.GetNamespaces(vnid)
-	if len(namespaces) != len(match) {
-		t.Fatalf("Wrong number of namespaces: %v vs %v", namespaces, match)
-	}
-	for _, m := range match {
-		found := false
-		for _, n := range namespaces {
-			if n == m {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Fatalf("Missing namespace: %s", m)
-		}
+func checkNamespace(t *testing.T, vmap *nodeVNIDMap, vnid uint32, match string) {
+	namespace := vmap.GetNamespace(vnid)
+	if namespace != match {
+		t.Fatalf("Wrong namespace: %v vs %v", namespace, match)
 	}
 }
 

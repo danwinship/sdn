@@ -471,7 +471,7 @@ func policyNames(policies []networkapi.EgressNetworkPolicy) string {
 	return strings.Join(names, ", ")
 }
 
-func (oc *ovsController) UpdateEgressNetworkPolicyRules(policies []networkapi.EgressNetworkPolicy, vnid uint32, namespaces []string, egressDNS *common.EgressDNS) error {
+func (oc *ovsController) UpdateEgressNetworkPolicyRules(policies []networkapi.EgressNetworkPolicy, vnid uint32, egressDNS *common.EgressDNS) error {
 	otx := oc.ovs.NewTransaction()
 	errs := []error{}
 
@@ -479,13 +479,6 @@ func (oc *ovsController) UpdateEgressNetworkPolicyRules(policies []networkapi.Eg
 		otx.DeleteFlows("table=101, reg0=%d", vnid)
 	} else if vnid == 0 {
 		errs = append(errs, fmt.Errorf("EgressNetworkPolicy in global network namespace is not allowed (%s); ignoring", policyNames(policies)))
-	} else if len(namespaces) > 1 {
-		// Rationale: In our current implementation, multiple namespaces share their network by using the same VNID.
-		// Even though Egress network policy is defined per namespace, its implementation is based on VNIDs.
-		// So in case of shared network namespaces, egress policy of one namespace will affect all other namespaces that are sharing the network which might not be desirable.
-		errs = append(errs, fmt.Errorf("EgressNetworkPolicy not allowed in shared NetNamespace (%s); dropping all traffic", strings.Join(namespaces, ", ")))
-		otx.DeleteFlows("table=101, reg0=%d", vnid)
-		otx.AddFlow("table=101, reg0=%d, priority=1, actions=drop", vnid)
 	} else if len(policies) > 1 {
 		// Rationale: If we have allowed more than one policy, we could end up with different network restrictions depending
 		// on the order of policies that were processed and also it doesn't give more expressive power than a single policy.

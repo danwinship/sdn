@@ -66,7 +66,7 @@ func Start(networkClient networkclient.Interface, kClient kclientset.Interface,
 		netNamespaceInformer: networkInformers.Network().V1().NetNamespaces(),
 
 		hostSubnetNodeIPs: map[ktypes.UID]string{},
-		vnids:             newMasterVNIDMap(false),
+		vnids:             newMasterVNIDMap(),
 	}
 
 	if err = master.checkClusterNetworkAgainstLocalNetworks(); err != nil {
