@@ -5,12 +5,11 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"github.com/openshift/library-go/pkg/network/networkapihelpers"
 	"github.com/openshift/sdn/pkg/network"
 )
 
 func TestMasterVNIDMap(t *testing.T) {
-	vmap := newMasterVNIDMap(true)
+	vmap := newMasterVNIDMap()
 
 	// empty vmap
 	checkCurrentVNIDs(t, vmap, 0, 0)
@@ -33,31 +32,6 @@ func TestMasterVNIDMap(t *testing.T) {
 	_, _, err = vmap.allocateNetID("charlie")
 	checkNoErr(t, err)
 	checkCurrentVNIDs(t, vmap, 4, 3)
-
-	// update vnids
-	_, err = vmap.updateNetID("alpha", networkapihelpers.JoinPodNetwork, "bravo")
-	checkNoErr(t, err)
-	_, err = vmap.updateNetID("alpha", networkapihelpers.JoinPodNetwork, "bogus")
-	checkErr(t, err)
-	_, err = vmap.updateNetID("bogus", networkapihelpers.JoinPodNetwork, "alpha")
-	checkErr(t, err)
-	checkCurrentVNIDs(t, vmap, 4, 2)
-
-	_, err = vmap.updateNetID("alpha", networkapihelpers.GlobalPodNetwork, "")
-	checkNoErr(t, err)
-	_, err = vmap.updateNetID("charlie", networkapihelpers.GlobalPodNetwork, "")
-	checkNoErr(t, err)
-	_, err = vmap.updateNetID("bogus", networkapihelpers.GlobalPodNetwork, "")
-	checkErr(t, err)
-	checkCurrentVNIDs(t, vmap, 4, 1)
-
-	_, err = vmap.updateNetID("alpha", networkapihelpers.IsolatePodNetwork, "")
-	checkNoErr(t, err)
-	_, err = vmap.updateNetID("bravo", networkapihelpers.IsolatePodNetwork, "")
-	checkNoErr(t, err)
-	_, err = vmap.updateNetID("bogus", networkapihelpers.IsolatePodNetwork, "")
-	checkErr(t, err)
-	checkCurrentVNIDs(t, vmap, 4, 2)
 
 	// release vnids
 	checkNoErr(t, vmap.releaseNetID("alpha"))

@@ -421,7 +421,6 @@ func TestOVSEgressNetworkPolicy(t *testing.T) {
 	err := oc.UpdateEgressNetworkPolicyRules(
 		[]networkapi.EgressNetworkPolicy{enp1},
 		42,
-		[]string{"ns1"},
 		nil,
 	)
 	if err != nil {
@@ -445,7 +444,6 @@ func TestOVSEgressNetworkPolicy(t *testing.T) {
 	err = oc.UpdateEgressNetworkPolicyRules(
 		[]networkapi.EgressNetworkPolicy{enp2},
 		43,
-		[]string{"ns2"},
 		nil,
 	)
 	if err != nil {
@@ -473,7 +471,6 @@ func TestOVSEgressNetworkPolicy(t *testing.T) {
 	err = oc.UpdateEgressNetworkPolicyRules(
 		[]networkapi.EgressNetworkPolicy{enp2},
 		42,
-		[]string{"ns1"},
 		nil,
 	)
 	if err != nil {
@@ -501,7 +498,6 @@ func TestOVSEgressNetworkPolicy(t *testing.T) {
 	err = oc.UpdateEgressNetworkPolicyRules(
 		[]networkapi.EgressNetworkPolicy{},
 		43,
-		[]string{"ns2"},
 		nil,
 	)
 	if err != nil {
@@ -525,31 +521,6 @@ func TestOVSEgressNetworkPolicy(t *testing.T) {
 	err = oc.UpdateEgressNetworkPolicyRules(
 		[]networkapi.EgressNetworkPolicy{},
 		0,
-		[]string{"default", "my-global-project"},
-		nil,
-	)
-	if err != nil {
-		t.Fatalf("Unexpected error updating egress network policy: %v", err)
-	}
-	flows, err = ovsif.DumpFlows("")
-	if err != nil {
-		t.Fatalf("Unexpected error dumping flows: %v", err)
-	}
-	err = assertENPFlowAdditions(origFlows, flows,
-		enpFlowAddition{
-			vnid:   42,
-			policy: &enp2,
-		},
-	)
-	if err != nil {
-		t.Fatalf("Unexpected flow changes: %v\nOrig: %#v\nNew: %#v", err, origFlows, flows)
-	}
-
-	// Set no EgressNetworkPolicy on a shared namespace
-	err = oc.UpdateEgressNetworkPolicyRules(
-		[]networkapi.EgressNetworkPolicy{},
-		44,
-		[]string{"ns3", "ns4"},
 		nil,
 	)
 	if err != nil {
@@ -575,7 +546,6 @@ func TestOVSEgressNetworkPolicy(t *testing.T) {
 	err = oc.UpdateEgressNetworkPolicyRules(
 		[]networkapi.EgressNetworkPolicy{enp1},
 		0,
-		[]string{"default"},
 		nil,
 	)
 	if err == nil {
@@ -589,34 +559,6 @@ func TestOVSEgressNetworkPolicy(t *testing.T) {
 		enpFlowAddition{
 			vnid:   42,
 			policy: &enp2,
-		},
-	)
-	if err != nil {
-		t.Fatalf("Unexpected flow changes: %v\nOrig: %#v\nNew: %#v", err, origFlows, flows)
-	}
-
-	// Can't set non-empty ENP in a shared namespace
-	err = oc.UpdateEgressNetworkPolicyRules(
-		[]networkapi.EgressNetworkPolicy{enp1},
-		45,
-		[]string{"ns3", "ns4"},
-		nil,
-	)
-	if err == nil {
-		t.Fatalf("Unexpected lack of error updating egress network policy")
-	}
-	flows, err = ovsif.DumpFlows("")
-	if err != nil {
-		t.Fatalf("Unexpected error dumping flows: %v", err)
-	}
-	err = assertENPFlowAdditions(origFlows, flows,
-		enpFlowAddition{
-			vnid:   42,
-			policy: &enp2,
-		},
-		enpFlowAddition{
-			vnid:   45,
-			policy: &enpDenyAll,
 		},
 	)
 	if err != nil {
@@ -627,7 +569,6 @@ func TestOVSEgressNetworkPolicy(t *testing.T) {
 	err = oc.UpdateEgressNetworkPolicyRules(
 		[]networkapi.EgressNetworkPolicy{enp1, enp2},
 		46,
-		[]string{"ns5"},
 		nil,
 	)
 	if err == nil {
@@ -641,10 +582,6 @@ func TestOVSEgressNetworkPolicy(t *testing.T) {
 		enpFlowAddition{
 			vnid:   42,
 			policy: &enp2,
-		},
-		enpFlowAddition{
-			vnid:   45,
-			policy: &enpDenyAll,
 		},
 		enpFlowAddition{
 			vnid:   46,
@@ -659,35 +596,7 @@ func TestOVSEgressNetworkPolicy(t *testing.T) {
 
 	err = oc.UpdateEgressNetworkPolicyRules(
 		[]networkapi.EgressNetworkPolicy{},
-		45,
-		[]string{"ns3", "ns4"},
-		nil,
-	)
-	if err != nil {
-		t.Fatalf("Unexpected error updating egress network policy: %v", err)
-	}
-	flows, err = ovsif.DumpFlows("")
-	if err != nil {
-		t.Fatalf("Unexpected error dumping flows: %v", err)
-	}
-	err = assertENPFlowAdditions(origFlows, flows,
-		enpFlowAddition{
-			vnid:   42,
-			policy: &enp2,
-		},
-		enpFlowAddition{
-			vnid:   46,
-			policy: &enpDenyAll,
-		},
-	)
-	if err != nil {
-		t.Fatalf("Unexpected flow changes: %v\nOrig: %#v\nNew: %#v", err, origFlows, flows)
-	}
-
-	err = oc.UpdateEgressNetworkPolicyRules(
-		[]networkapi.EgressNetworkPolicy{},
 		46,
-		[]string{"ns5"},
 		nil,
 	)
 	if err != nil {

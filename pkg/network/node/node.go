@@ -51,7 +51,7 @@ type osdnPolicy interface {
 	DeleteNetNamespace(netns *networkapi.NetNamespace)
 
 	GetVNID(namespace string) (uint32, error)
-	GetNamespaces(vnid uint32) []string
+	GetNamespace(vnid uint32) string
 	GetMulticastEnabled(vnid uint32) bool
 
 	EnsureVNIDRules(vnid uint32)

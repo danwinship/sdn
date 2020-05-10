@@ -11,7 +11,6 @@ import (
 	"k8s.io/klog"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/sets"
 	utilwait "k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/apimachinery/pkg/watch"
 
@@ -29,8 +28,8 @@ type nodeVNIDMap struct {
 	// Synchronizes add or remove ids/namespaces
 	lock       sync.Mutex
 	ids        map[string]uint32
-	mcEnabled  map[string]bool
-	namespaces map[uint32]sets.String
+	mcEnabled  map[uint32]bool
+	namespaces map[uint32]string
 }
 
 func newNodeVNIDMap(policy osdnPolicy, networkClient networkclient.Interface) *nodeVNIDMap {
@@ -38,54 +37,23 @@ func newNodeVNIDMap(policy osdnPolicy, networkClient networkclient.Interface) *n
 		policy:        policy,
 		networkClient: networkClient,
 		ids:           make(map[string]uint32),
-		mcEnabled:     make(map[string]bool),
-		namespaces:    make(map[uint32]sets.String),
+		mcEnabled:     make(map[uint32]bool),
+		namespaces:    make(map[uint32]string),
 	}
 }
 
-func (vmap *nodeVNIDMap) addNamespaceToSet(name string, vnid uint32) {
-	set, found := vmap.namespaces[vnid]
-	if !found {
-		set = sets.NewString()
-		vmap.namespaces[vnid] = set
-	}
-	set.Insert(name)
-}
-
-func (vmap *nodeVNIDMap) removeNamespaceFromSet(name string, vnid uint32) {
-	if set, found := vmap.namespaces[vnid]; found {
-		set.Delete(name)
-		if set.Len() == 0 {
-			delete(vmap.namespaces, vnid)
-		}
-	}
-}
-
-func (vmap *nodeVNIDMap) GetNamespaces(id uint32) []string {
+func (vmap *nodeVNIDMap) GetNamespace(id uint32) string {
 	vmap.lock.Lock()
 	defer vmap.lock.Unlock()
 
-	if set, ok := vmap.namespaces[id]; ok {
-		return set.List()
-	} else {
-		return nil
-	}
+	return vmap.namespaces[id]
 }
 
 func (vmap *nodeVNIDMap) GetMulticastEnabled(id uint32) bool {
 	vmap.lock.Lock()
 	defer vmap.lock.Unlock()
 
-	set, exists := vmap.namespaces[id]
-	if !exists || set.Len() == 0 {
-		return false
-	}
-	for _, ns := range set.List() {
-		if !vmap.mcEnabled[ns] {
-			return false
-		}
-	}
-	return true
+	return vmap.mcEnabled[id]
 }
 
 // Nodes asynchronously watch for both NetNamespaces and services
@@ -139,12 +107,9 @@ func (vmap *nodeVNIDMap) setVNID(name string, id uint32, mcEnabled bool) {
 	vmap.lock.Lock()
 	defer vmap.lock.Unlock()
 
-	if oldId, found := vmap.ids[name]; found {
-		vmap.removeNamespaceFromSet(name, oldId)
-	}
+	vmap.namespaces[id] = name
 	vmap.ids[name] = id
-	vmap.mcEnabled[name] = mcEnabled
-	vmap.addNamespaceToSet(name, id)
+	vmap.mcEnabled[id] = mcEnabled
 
 	klog.V(4).Infof("Associate netid %d to namespace %q with mcEnabled %v", id, name, mcEnabled)
 }
@@ -157,9 +122,9 @@ func (vmap *nodeVNIDMap) unsetVNID(name string) (id uint32, err error) {
 	if !found {
 		return 0, fmt.Errorf("failed to find netid for namespace: %s in vnid map", name)
 	}
-	vmap.removeNamespaceFromSet(name, id)
+	delete(vmap.namespaces, id)
 	delete(vmap.ids, name)
-	delete(vmap.mcEnabled, name)
+	delete(vmap.mcEnabled, id)
 	klog.V(4).Infof("Dissociate netid %d from namespace %q", id, name)
 	return id, nil
 }
@@ -205,7 +170,7 @@ func (vmap *nodeVNIDMap) handleAddOrUpdateNetNamespace(obj, _ interface{}, event
 
 	// Skip this event if nothing has changed
 	oldNetID, err := vmap.getVNID(netns.NetName)
-	oldMCEnabled := vmap.mcEnabled[netns.NetName]
+	oldMCEnabled := vmap.mcEnabled[netns.NetID]
 	mcEnabled := netnsIsMulticastEnabled(netns)
 	if err == nil && oldNetID == netns.NetID && oldMCEnabled == mcEnabled {
 		return

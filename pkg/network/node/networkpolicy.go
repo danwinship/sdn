@@ -240,8 +240,8 @@ func (np *networkPolicyPlugin) GetVNID(namespace string) (uint32, error) {
 	return np.vnids.WaitAndGetVNID(namespace)
 }
 
-func (np *networkPolicyPlugin) GetNamespaces(vnid uint32) []string {
-	return np.vnids.GetNamespaces(vnid)
+func (np *networkPolicyPlugin) GetNamespace(vnid uint32) string {
+	return np.vnids.GetNamespace(vnid)
 }
 
 func (np *networkPolicyPlugin) GetMulticastEnabled(vnid uint32) bool {
