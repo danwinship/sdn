@@ -19,7 +19,6 @@ import (
 	networkclient "github.com/openshift/client-go/network/clientset/versioned"
 	networkinternalinformers "github.com/openshift/client-go/network/informers/externalversions"
 	networkinformers "github.com/openshift/client-go/network/informers/externalversions/network/v1"
-	"github.com/openshift/library-go/pkg/network/networkutils"
 	"github.com/openshift/sdn/pkg/network/common"
 	masterutil "github.com/openshift/sdn/pkg/network/master/util"
 )
@@ -67,6 +66,7 @@ func Start(networkClient networkclient.Interface, kClient kclientset.Interface,
 		netNamespaceInformer: networkInformers.Network().V1().NetNamespaces(),
 
 		hostSubnetNodeIPs: map[ktypes.UID]string{},
+		vnids:             newMasterVNIDMap(false),
 	}
 
 	if err = master.checkClusterNetworkAgainstLocalNetworks(); err != nil {
@@ -83,12 +83,12 @@ func Start(networkClient networkclient.Interface, kClient kclientset.Interface,
 	master.hostSubnetInformer.Informer().GetController()
 	master.netNamespaceInformer.Informer().GetController()
 
-	go master.startSubSystems(master.networkInfo.PluginName)
+	go master.startSubSystems()
 
 	return nil
 }
 
-func (master *OsdnMaster) startSubSystems(pluginName string) {
+func (master *OsdnMaster) startSubSystems() {
 	// Wait for informer sync
 	if !cache.WaitForCacheSync(wait.NeverStop,
 		master.nodeInformer.Informer().GetController().HasSynced,
@@ -101,17 +101,8 @@ func (master *OsdnMaster) startSubSystems(pluginName string) {
 	if err := master.startSubnetMaster(); err != nil {
 		klog.Fatalf("failed to start subnet master: %v", err)
 	}
-
-	switch pluginName {
-	case networkutils.MultiTenantPluginName:
-		master.vnids = newMasterVNIDMap(true)
-	case networkutils.NetworkPolicyPluginName:
-		master.vnids = newMasterVNIDMap(false)
-	}
-	if master.vnids != nil {
-		if err := master.startVNIDMaster(); err != nil {
-			klog.Fatalf("failed to start VNID master: %v", err)
-		}
+	if err := master.startVNIDMaster(); err != nil {
+		klog.Fatalf("failed to start VNID master: %v", err)
 	}
 
 	eim := newEgressIPManager()

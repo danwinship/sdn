@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
-	"strings"
 	"sync"
 	"time"
 
@@ -41,7 +40,6 @@ import (
 	networkapi "github.com/openshift/api/network/v1"
 	networkclient "github.com/openshift/client-go/network/clientset/versioned"
 	networkinformers "github.com/openshift/client-go/network/informers/externalversions"
-	"github.com/openshift/library-go/pkg/network/networkutils"
 	"github.com/openshift/sdn/pkg/network/common"
 	"github.com/openshift/sdn/pkg/network/node/cniserver"
 	"github.com/openshift/sdn/pkg/network/node/ovs"
@@ -123,39 +121,20 @@ func New(c *OsdnNodeConfig) (*OsdnNode, error) {
 		return nil, err
 	}
 
-	var policy osdnPolicy
-	var pluginId int
-	var useConnTrack bool
-	switch strings.ToLower(networkInfo.PluginName) {
-	case networkutils.SingleTenantPluginName:
-		policy = NewSingleTenantPlugin()
-		pluginId = 0
-	case networkutils.MultiTenantPluginName:
-		policy = NewMultiTenantPlugin()
-		pluginId = 1
-		// Userspace proxy is incompatible with conntrack.
-		if c.ProxyMode != kubeproxyconfig.ProxyModeUserspace {
-			useConnTrack = true
-		}
-	case networkutils.NetworkPolicyPluginName:
-		policy = NewNetworkPolicyPlugin()
-		pluginId = 2
-		useConnTrack = true
-	default:
-		return nil, fmt.Errorf("Unknown plugin name %q", networkInfo.PluginName)
+	policy := NewNetworkPolicyPlugin()
+	useConnTrack := true
+
+	if c.ProxyMode == kubeproxyconfig.ProxyModeUserspace {
+		return nil, fmt.Errorf("plugin is not compatible with proxy-mode %q", c.ProxyMode)
 	}
 
-	if useConnTrack && c.ProxyMode == kubeproxyconfig.ProxyModeUserspace {
-		return nil, fmt.Errorf("%q plugin is not compatible with proxy-mode %q", networkInfo.PluginName, c.ProxyMode)
-	}
-
-	klog.Infof("Initializing SDN node %q (%s) of type %q", c.NodeName, c.NodeIP, networkInfo.PluginName)
+	klog.Infof("Initializing SDN node %q (%s)", c.NodeName, c.NodeIP)
 
 	ovsif, err := ovs.New(kexec.New(), Br0)
 	if err != nil {
 		return nil, err
 	}
-	oc := NewOVSController(ovsif, pluginId, useConnTrack, c.NodeIP)
+	oc := NewOVSController(ovsif, useConnTrack, c.NodeIP)
 
 	masqBit := uint32(0)
 	if c.MasqueradeBit != nil {

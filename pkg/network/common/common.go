@@ -19,10 +19,6 @@ func HostSubnetToString(subnet *networkv1.HostSubnet) string {
 	return fmt.Sprintf("%s (host: %q, ip: %q, subnet: %q)", subnet.Name, subnet.Host, subnet.HostIP, subnet.Subnet)
 }
 
-func ClusterNetworkToString(n *networkv1.ClusterNetwork) string {
-	return fmt.Sprintf("%s (network: %q, hostSubnetBits: %d, serviceNetwork: %q, pluginName: %q)", n.Name, n.Network, n.HostSubnetLength, n.ServiceNetwork, n.PluginName)
-}
-
 func ClusterNetworkListContains(clusterNetworks []ParsedClusterNetworkEntry, ipaddr net.IP) (*net.IPNet, bool) {
 	for _, cn := range clusterNetworks {
 		if cn.ClusterCIDR.Contains(ipaddr) {
@@ -33,7 +29,6 @@ func ClusterNetworkListContains(clusterNetworks []ParsedClusterNetworkEntry, ipa
 }
 
 type ParsedClusterNetwork struct {
-	PluginName      string
 	ClusterNetworks []ParsedClusterNetworkEntry
 	ServiceNetwork  *net.IPNet
 	VXLANPort       uint32
@@ -47,7 +42,6 @@ type ParsedClusterNetworkEntry struct {
 
 func ParseClusterNetwork(cn *networkv1.ClusterNetwork) (*ParsedClusterNetwork, error) {
 	pcn := &ParsedClusterNetwork{
-		PluginName:      cn.PluginName,
 		ClusterNetworks: make([]ParsedClusterNetworkEntry, 0, len(cn.ClusterNetworks)),
 	}
 

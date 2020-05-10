@@ -38,6 +38,11 @@ func validateIPv4(ip string) (net.IP, error) {
 // ValidateClusterNetwork tests if required fields in the ClusterNetwork are set, and ensures that the "default" ClusterNetwork can only be set to the correct values
 func ValidateClusterNetwork(clusterNet *networkapi.ClusterNetwork) error {
 	allErrs := validation.ValidateObjectMeta(&clusterNet.ObjectMeta, false, path.ValidatePathSegmentName, field.NewPath("metadata"))
+
+	if clusterNet.PluginName != networkutils.NetworkPolicyPluginName {
+		allErrs = append(allErrs, field.Invalid(field.NewPath("pluginName"), clusterNet.PluginName, "must be " + networkutils.NetworkPolicyPluginName))
+	}
+
 	var testedCIDRS []*net.IPNet
 
 	serviceIPNet, err := validateCIDRv4(clusterNet.ServiceNetwork)

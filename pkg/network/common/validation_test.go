@@ -18,15 +18,27 @@ func TestValidateClusterNetwork(t *testing.T) {
 			name: "Good one",
 			cn: &networkapi.ClusterNetwork{
 				ObjectMeta:      metav1.ObjectMeta{Name: "any"},
+				PluginName:      "redhat/openshift-ovs-networkpolicy",
 				ClusterNetworks: []networkapi.ClusterNetworkEntry{{CIDR: "10.20.0.0/16", HostSubnetLength: 8}},
 				ServiceNetwork:  "172.30.0.0/16",
 			},
 			expectedErrors: 0,
 		},
 		{
+			name: "Bad pluginName",
+			cn: &networkapi.ClusterNetwork{
+				ObjectMeta:      metav1.ObjectMeta{Name: "any"},
+				PluginName:      "redhat/openshift-ovs-multitenant",
+				ClusterNetworks: []networkapi.ClusterNetworkEntry{{CIDR: "10.20.0.0/16", HostSubnetLength: 8}},
+				ServiceNetwork:  "172.30.0.0/16",
+			},
+			expectedErrors: 1,
+		},
+		{
 			name: "Good one old network and hostsubnetlength set",
 			cn: &networkapi.ClusterNetwork{
 				ObjectMeta:       metav1.ObjectMeta{Name: "any"},
+				PluginName:      "redhat/openshift-ovs-networkpolicy",
 				Network:          "10.20.0.0/16",
 				HostSubnetLength: 8,
 				ClusterNetworks:  []networkapi.ClusterNetworkEntry{{CIDR: "10.20.0.0/16", HostSubnetLength: 8}},
@@ -38,6 +50,7 @@ func TestValidateClusterNetwork(t *testing.T) {
 			name: "old network set incorrectly",
 			cn: &networkapi.ClusterNetwork{
 				ObjectMeta:       metav1.ObjectMeta{Name: "any"},
+				PluginName:      "redhat/openshift-ovs-networkpolicy",
 				Network:          "10.30.0.0/16",
 				HostSubnetLength: 8,
 				ClusterNetworks:  []networkapi.ClusterNetworkEntry{{CIDR: "10.20.0.0/16", HostSubnetLength: 8}},
@@ -49,6 +62,7 @@ func TestValidateClusterNetwork(t *testing.T) {
 			name: "old hostsubnetlength set incorrectly",
 			cn: &networkapi.ClusterNetwork{
 				ObjectMeta:       metav1.ObjectMeta{Name: "any"},
+				PluginName:      "redhat/openshift-ovs-networkpolicy",
 				Network:          "10.20.0.0/16",
 				HostSubnetLength: 9,
 				ClusterNetworks:  []networkapi.ClusterNetworkEntry{{CIDR: "10.20.0.0/16", HostSubnetLength: 8}},
@@ -60,6 +74,7 @@ func TestValidateClusterNetwork(t *testing.T) {
 			name: "only old network set",
 			cn: &networkapi.ClusterNetwork{
 				ObjectMeta:      metav1.ObjectMeta{Name: "any"},
+				PluginName:      "redhat/openshift-ovs-networkpolicy",
 				Network:         "10.20.0.0/16",
 				ClusterNetworks: []networkapi.ClusterNetworkEntry{{CIDR: "10.20.0.0/16", HostSubnetLength: 8}},
 				ServiceNetwork:  "172.30.0.0/16",
@@ -70,6 +85,7 @@ func TestValidateClusterNetwork(t *testing.T) {
 			name: "only old hostsubnetlength set",
 			cn: &networkapi.ClusterNetwork{
 				ObjectMeta:       metav1.ObjectMeta{Name: "any"},
+				PluginName:      "redhat/openshift-ovs-networkpolicy",
 				HostSubnetLength: 8,
 				ClusterNetworks:  []networkapi.ClusterNetworkEntry{{CIDR: "10.20.0.0/16", HostSubnetLength: 8}},
 				ServiceNetwork:   "172.30.0.0/16",
@@ -80,6 +96,7 @@ func TestValidateClusterNetwork(t *testing.T) {
 			name: "Good one multiple addresses",
 			cn: &networkapi.ClusterNetwork{
 				ObjectMeta:      metav1.ObjectMeta{Name: "any"},
+				PluginName:      "redhat/openshift-ovs-networkpolicy",
 				ClusterNetworks: []networkapi.ClusterNetworkEntry{{CIDR: "10.20.0.0/16", HostSubnetLength: 8}, {CIDR: "10.128.0.0/16", HostSubnetLength: 8}},
 				ServiceNetwork:  "172.30.0.0/16",
 			},
@@ -89,6 +106,7 @@ func TestValidateClusterNetwork(t *testing.T) {
 			name: "Bad network",
 			cn: &networkapi.ClusterNetwork{
 				ObjectMeta:      metav1.ObjectMeta{Name: "any"},
+				PluginName:      "redhat/openshift-ovs-networkpolicy",
 				ClusterNetworks: []networkapi.ClusterNetworkEntry{{CIDR: "10.20.0.0.0/16", HostSubnetLength: 8}},
 				ServiceNetwork:  "172.30.0.0/16",
 			},
@@ -98,6 +116,7 @@ func TestValidateClusterNetwork(t *testing.T) {
 			name: "Bad network CIDR",
 			cn: &networkapi.ClusterNetwork{
 				ObjectMeta:      metav1.ObjectMeta{Name: "any"},
+				PluginName:      "redhat/openshift-ovs-networkpolicy",
 				ClusterNetworks: []networkapi.ClusterNetworkEntry{{CIDR: "10.20.0.1/16", HostSubnetLength: 8}},
 				ServiceNetwork:  "172.30.0.0/16",
 			},
@@ -107,6 +126,7 @@ func TestValidateClusterNetwork(t *testing.T) {
 			name: "Empty network ClusterNetworks",
 			cn: &networkapi.ClusterNetwork{
 				ObjectMeta:     metav1.ObjectMeta{Name: "any"},
+				PluginName:      "redhat/openshift-ovs-networkpolicy",
 				ServiceNetwork: "172.30.0.0/16",
 			},
 			expectedErrors: 1,
@@ -115,6 +135,7 @@ func TestValidateClusterNetwork(t *testing.T) {
 			name: "Subnet length too large for network",
 			cn: &networkapi.ClusterNetwork{
 				ObjectMeta:      metav1.ObjectMeta{Name: "any"},
+				PluginName:      "redhat/openshift-ovs-networkpolicy",
 				ClusterNetworks: []networkapi.ClusterNetworkEntry{{CIDR: "10.20.30.0/24", HostSubnetLength: 16}},
 				ServiceNetwork:  "172.30.0.0/16",
 			},
@@ -124,6 +145,7 @@ func TestValidateClusterNetwork(t *testing.T) {
 			name: "Subnet length too small",
 			cn: &networkapi.ClusterNetwork{
 				ObjectMeta:      metav1.ObjectMeta{Name: "any"},
+				PluginName:      "redhat/openshift-ovs-networkpolicy",
 				ClusterNetworks: []networkapi.ClusterNetworkEntry{{CIDR: "10.20.0.0/16", HostSubnetLength: 1}},
 				ServiceNetwork:  "172.30.0.0/16",
 			},
@@ -133,6 +155,7 @@ func TestValidateClusterNetwork(t *testing.T) {
 			name: "Bad service network",
 			cn: &networkapi.ClusterNetwork{
 				ObjectMeta:      metav1.ObjectMeta{Name: "any"},
+				PluginName:      "redhat/openshift-ovs-networkpolicy",
 				ClusterNetworks: []networkapi.ClusterNetworkEntry{{CIDR: "10.20.0.0/16", HostSubnetLength: 8}},
 				ServiceNetwork:  "1172.30.0.0/16",
 			},
@@ -142,6 +165,7 @@ func TestValidateClusterNetwork(t *testing.T) {
 			name: "Bad service network CIDR",
 			cn: &networkapi.ClusterNetwork{
 				ObjectMeta:      metav1.ObjectMeta{Name: "any"},
+				PluginName:      "redhat/openshift-ovs-networkpolicy",
 				ClusterNetworks: []networkapi.ClusterNetworkEntry{{CIDR: "10.20.0.0/16", HostSubnetLength: 8}},
 				ServiceNetwork:  "172.30.1.0/16",
 			},
@@ -151,6 +175,7 @@ func TestValidateClusterNetwork(t *testing.T) {
 			name: "Service network overlaps with cluster network",
 			cn: &networkapi.ClusterNetwork{
 				ObjectMeta:      metav1.ObjectMeta{Name: "any"},
+				PluginName:      "redhat/openshift-ovs-networkpolicy",
 				ClusterNetworks: []networkapi.ClusterNetworkEntry{{CIDR: "10.20.0.0/16", HostSubnetLength: 8}},
 				ServiceNetwork:  "10.20.1.0/24",
 			},
@@ -160,6 +185,7 @@ func TestValidateClusterNetwork(t *testing.T) {
 			name: "Cluster network overlaps with service network",
 			cn: &networkapi.ClusterNetwork{
 				ObjectMeta:      metav1.ObjectMeta{Name: "any"},
+				PluginName:      "redhat/openshift-ovs-networkpolicy",
 				ClusterNetworks: []networkapi.ClusterNetworkEntry{{CIDR: "10.20.0.0/16", HostSubnetLength: 8}},
 				ServiceNetwork:  "10.0.0.0/8",
 			},
@@ -169,6 +195,7 @@ func TestValidateClusterNetwork(t *testing.T) {
 			name: "Cluster networks overlap with each other",
 			cn: &networkapi.ClusterNetwork{
 				ObjectMeta:      metav1.ObjectMeta{Name: "any"},
+				PluginName:      "redhat/openshift-ovs-networkpolicy",
 				ClusterNetworks: []networkapi.ClusterNetworkEntry{{CIDR: "10.128.0.0/14", HostSubnetLength: 8}, {CIDR: "10.0.0.0/8", HostSubnetLength: 8}},
 				ServiceNetwork:  "172.30.0.0/16",
 			},
@@ -178,6 +205,7 @@ func TestValidateClusterNetwork(t *testing.T) {
 			name: "IPv6 ClusterNetwork",
 			cn: &networkapi.ClusterNetwork{
 				ObjectMeta:      metav1.ObjectMeta{Name: "any"},
+				PluginName:      "redhat/openshift-ovs-networkpolicy",
 				ClusterNetworks: []networkapi.ClusterNetworkEntry{{CIDR: "fe80:1234::/64", HostSubnetLength: 8}},
 				ServiceNetwork:  "172.30.0.0/16",
 			},
@@ -187,6 +215,7 @@ func TestValidateClusterNetwork(t *testing.T) {
 			name: "IPv6 ServiceNetwork",
 			cn: &networkapi.ClusterNetwork{
 				ObjectMeta:      metav1.ObjectMeta{Name: "any"},
+				PluginName:      "redhat/openshift-ovs-networkpolicy",
 				ClusterNetworks: []networkapi.ClusterNetworkEntry{{CIDR: "10.20.0.0/16", HostSubnetLength: 8}},
 				ServiceNetwork:  "fe80:1234::/64",
 			},
