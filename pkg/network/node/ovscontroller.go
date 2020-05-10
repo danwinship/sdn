@@ -24,7 +24,6 @@ import (
 
 type ovsController struct {
 	ovs          ovs.Interface
-	pluginId     int
 	useConnTrack bool
 	localIP      string
 	tunMAC       string
@@ -35,21 +34,24 @@ const (
 	Tun0   = "tun0"
 	Vxlan0 = "vxlan0"
 
+	// plugin ID; 2 for ovs-networkpolicy
+	pluginID = 2
+
 	// rule versioning; increment each time flow rules change
 	ruleVersion = 7
 
 	ruleVersionTable = 253
 )
 
-func NewOVSController(ovsif ovs.Interface, pluginId int, useConnTrack bool, localIP string) *ovsController {
-	return &ovsController{ovs: ovsif, pluginId: pluginId, useConnTrack: useConnTrack, localIP: localIP}
+func NewOVSController(ovsif ovs.Interface, useConnTrack bool, localIP string) *ovsController {
+	return &ovsController{ovs: ovsif, useConnTrack: useConnTrack, localIP: localIP}
 }
 
 func (oc *ovsController) getVersionNote() string {
 	if ruleVersion > 254 {
 		panic("Version too large!")
 	}
-	return fmt.Sprintf("%02X.%02X", oc.pluginId, ruleVersion)
+	return fmt.Sprintf("%02X.%02X", pluginID, ruleVersion)
 }
 
 func (oc *ovsController) AlreadySetUp(vxlanPort uint32) bool {
