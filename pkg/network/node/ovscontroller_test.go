@@ -13,7 +13,6 @@ import (
 	networkapi "github.com/openshift/api/network/v1"
 	"github.com/openshift/sdn/pkg/network/node/ovs"
 
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
 
@@ -22,7 +21,7 @@ import (
 
 func setupOVSController(t *testing.T) (ovs.Interface, *ovsController, []string) {
 	ovsif := ovs.NewFake(Br0)
-	oc := NewOVSController(ovsif, true, "172.17.0.4")
+	oc := NewOVSController(ovsif, "172.17.0.4")
 	oc.tunMAC = "c6:ac:2c:13:48:4b"
 	err := oc.SetupOVS([]string{"10.128.0.0/14"}, "172.30.0.0/16", "10.128.0.0/23", "10.128.0.1", 1450, 4789)
 	if err != nil {
@@ -102,67 +101,6 @@ func assertFlowChanges(origFlows, newFlows []string, changes ...flowChange) erro
 		return fmt.Errorf("unexpected additional changes to flows")
 	}
 	return nil
-}
-
-func TestOVSService(t *testing.T) {
-	ovsif, oc, origFlows := setupOVSController(t)
-
-	svc := corev1.Service{
-		TypeMeta: metav1.TypeMeta{
-			Kind: "Service",
-		},
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "service",
-		},
-		Spec: corev1.ServiceSpec{
-			ClusterIP: "172.30.99.99",
-			Ports: []corev1.ServicePort{
-				{Protocol: corev1.ProtocolTCP, Port: 80},
-				{Protocol: corev1.ProtocolTCP, Port: 443},
-			},
-		},
-	}
-	err := oc.AddServiceRules(&svc, 42)
-	if err != nil {
-		t.Fatalf("Unexpected error adding service rules: %v", err)
-	}
-
-	flows, err := ovsif.DumpFlows("")
-	if err != nil {
-		t.Fatalf("Unexpected error dumping flows: %v", err)
-	}
-	err = assertFlowChanges(origFlows, flows,
-		flowChange{
-			kind:    flowAdded,
-			match:   []string{"table=60", "ip_frag", "42->NXM_NX_REG1"},
-			noMatch: []string{"tcp"},
-		},
-		flowChange{
-			kind:  flowAdded,
-			match: []string{"table=60", "nw_dst=172.30.99.99", "tcp_dst=80", "42->NXM_NX_REG1"},
-		},
-		flowChange{
-			kind:  flowAdded,
-			match: []string{"table=60", "nw_dst=172.30.99.99", "tcp_dst=443", "42->NXM_NX_REG1"},
-		},
-	)
-	if err != nil {
-		t.Fatalf("Unexpected flow changes: %v\nOrig: %#v\nNew: %#v", err, origFlows, flows)
-	}
-
-	err = oc.DeleteServiceRules(&svc)
-	if err != nil {
-		t.Fatalf("Unexpected error deleting service rules: %v", err)
-	}
-	flows, err = ovsif.DumpFlows("")
-	if err != nil {
-		t.Fatalf("Unexpected error dumping flows: %v", err)
-	}
-	err = assertFlowChanges(origFlows, flows) // no changes
-
-	if err != nil {
-		t.Fatalf("Unexpected flow changes: %v\nOrig: %#v\nNew: %#v", err, origFlows, flows)
-	}
 }
 
 const (
@@ -807,7 +745,7 @@ func TestAlreadySetUp(t *testing.T) {
 		if err := ovsif.AddBridge("fail_mode=secure", "protocols=OpenFlow13"); err != nil {
 			t.Fatalf("(%d) unexpected error from AddBridge: %v", i, err)
 		}
-		oc := NewOVSController(ovsif, true, "172.17.0.4")
+		oc := NewOVSController(ovsif, "172.17.0.4")
 		/* In order to test AlreadySetUp the vxlan port has to be added, we are not testing AddPort here */
 		_, err := ovsif.AddPort("vxlan0", 1, "type=vxlan", `options:remote_ip="flow"`, `options:key="flow"`, fmt.Sprintf("options:dst_port=%d", 4789))
 		if err != nil {
