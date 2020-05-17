@@ -8,12 +8,11 @@ import (
 	kapi "k8s.io/api/core/v1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	kerrors "k8s.io/apimachinery/pkg/util/errors"
-	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	utilnet "k8s.io/utils/net"
 
+	"github.com/openshift/library-go/pkg/network/networkutils"
 	networkv1 "github.com/openshift/api/network/v1"
 	networkclient "github.com/openshift/client-go/network/clientset/versioned"
-	"github.com/openshift/library-go/pkg/network/networkutils"
 )
 
 func HostSubnetToString(subnet *networkv1.HostSubnet) string {
@@ -72,6 +71,10 @@ func (ipv IPSupport) ParseCIDR(cidrString string) (*net.IPNet, error) {
 	return cidr, nil
 }
 
+func cidrsOverlap(cidr1, cidr2 *net.IPNet) bool {
+	return cidr1.Contains(cidr2.IP) || cidr2.Contains(cidr1.IP)
+}
+
 type ParsedClusterNetwork struct {
 	ClusterNetworks []ParsedClusterNetworkEntry
 	ServiceNetwork  *net.IPNet
@@ -90,25 +93,38 @@ func ParseClusterNetwork(cn *networkv1.ClusterNetwork) (*ParsedClusterNetwork, e
 	}
 
 	for _, entry := range cn.ClusterNetworks {
-		cidr, err := networkutils.ParseCIDRMask(entry.CIDR)
+		cidr, err := validateCIDRv4(entry.CIDR)
 		if err != nil {
-			_, cidr, err = net.ParseCIDR(entry.CIDR)
-			if err != nil {
-				return nil, fmt.Errorf("failed to parse ClusterNetwork CIDR %s: %v", entry.CIDR, err)
-			}
-			utilruntime.HandleError(fmt.Errorf("Configured clusterNetworks value %q is invalid; treating it as %q", entry.CIDR, cidr.String()))
+			return nil, fmt.Errorf("bad cluster CIDR value %q: %v", entry.CIDR, err)
 		}
+
+		maskLen, addrLen := cidr.Mask.Size()
+		if entry.HostSubnetLength > uint32(addrLen-maskLen) {
+			return nil, fmt.Errorf("hostSubnetLength %d is too large for CIDR %q",
+				entry.HostSubnetLength, entry.CIDR)
+		} else if entry.HostSubnetLength < 2 {
+			return nil, fmt.Errorf("hostSubnetLength %d must be at least 2",
+				entry.HostSubnetLength)
+		}
+
+		for _, pcnEntry := range pcn.ClusterNetworks {
+			if cidrsOverlap(cidr, pcnEntry.ClusterCIDR) {
+				return nil, fmt.Errorf("cluster CIDR %q overlaps another CIDR %q", entry.CIDR, pcnEntry.ClusterCIDR.String())
+			}
+		}
+
 		pcn.ClusterNetworks = append(pcn.ClusterNetworks, ParsedClusterNetworkEntry{ClusterCIDR: cidr, HostSubnetLength: entry.HostSubnetLength})
 	}
 
 	var err error
-	pcn.ServiceNetwork, err = networkutils.ParseCIDRMask(cn.ServiceNetwork)
+	pcn.ServiceNetwork, err = validateCIDRv4(cn.ServiceNetwork)
 	if err != nil {
-		_, pcn.ServiceNetwork, err = net.ParseCIDR(cn.ServiceNetwork)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse ServiceNetwork CIDR %s: %v", cn.ServiceNetwork, err)
+		return nil, fmt.Errorf("bad service CIDR value %q: %v", cn.ServiceNetwork, err)
+	}
+	for _, pcne := range pcn.ClusterNetworks {
+		if cidrsOverlap(pcne.ClusterCIDR, pcn.ServiceNetwork) {
+			return nil, fmt.Errorf("service CIDR %q overlaps with cluster CIDR %q", cn.ServiceNetwork, pcne.ClusterCIDR.String())
 		}
-		utilruntime.HandleError(fmt.Errorf("Configured serviceNetworkCIDR value %q is invalid; treating it as %q", cn.ServiceNetwork, pcn.ServiceNetwork.String()))
 	}
 
 	if cn.VXLANPort != nil {
@@ -204,13 +220,91 @@ func (pcn *ParsedClusterNetwork) CheckClusterObjects(subnets []networkv1.HostSub
 	return kerrors.NewAggregate(errList)
 }
 
+type ParsedHostSubnet struct {
+	HostIP net.IP
+	Subnet *net.IPNet
+
+	EgressIPs   []net.IP
+	EgressCIDRs []*net.IPNet
+}
+
+func (pcn *ParsedClusterNetwork) ParseHostSubnet(hs *networkv1.HostSubnet, parseEgressIPs bool) (*ParsedHostSubnet, error) {
+	phs := &ParsedHostSubnet{}
+	var err error
+
+	phs.HostIP, err = validateIPv4(hs.HostIP)
+	if err != nil {
+		return nil, fmt.Errorf("bad HostIP value %q: %v", hs.HostIP, err)
+	}
+
+	if hs.Subnet == "" {
+		// check if annotation exists, then let the Subnet field be empty
+		if _, ok := hs.Annotations[networkv1.AssignHostSubnetAnnotation]; !ok {
+			return nil, fmt.Errorf("missing Subnet value")
+		}
+	} else {
+		phs.Subnet, err = validateCIDRv4(hs.Subnet)
+		if err != nil {
+			return nil, fmt.Errorf("bad Subnet value %q: %v", hs.Subnet, err)
+		}
+	}
+
+	if parseEgressIPs {
+		if hs.EgressIPs != nil {
+			phs.EgressIPs = make([]net.IP, len(hs.EgressIPs))
+			for i, egressIP := range hs.EgressIPs {
+				phs.EgressIPs[i], err = validateIPv4(string(egressIP))
+				if err != nil {
+					return nil, fmt.Errorf("bad EgressIPs value %q: %v", egressIP, err)
+				}
+			}
+		}
+
+		if hs.EgressCIDRs != nil {
+			phs.EgressCIDRs = make([]*net.IPNet, len(hs.EgressCIDRs))
+			for i, egressCIDR := range hs.EgressCIDRs {
+				phs.EgressCIDRs[i], err = validateCIDRv4(string(egressCIDR))
+				if err != nil {
+					return nil, fmt.Errorf("bad EgressCIDRs value %q: %v", egressCIDR, err)
+				}
+			}
+		}
+	}
+
+	return phs, nil
+}
+
+type ParsedNetNamespace struct {
+	NetName string
+	NetID   uint32
+
+	EgressIPs []net.IP
+}
+
+func (pcn *ParsedClusterNetwork) ParseNetNamespace(netns *networkv1.NetNamespace) (*ParsedNetNamespace, error) {
+	pnetns := &ParsedNetNamespace{
+		NetName: netns.NetName,
+		NetID:   netns.NetID,
+	}
+
+	if netns.EgressIPs != nil {
+		var err error
+		pnetns.EgressIPs = make([]net.IP, len(netns.EgressIPs))
+		for i, egressIP := range netns.EgressIPs {
+			pnetns.EgressIPs[i], err = validateIPv4(string(egressIP))
+			if err != nil {
+				return nil, fmt.Errorf("bad EgressIPs value %q: %v", egressIP, err)
+			}
+		}
+	}
+
+	return pnetns, nil
+}
+
 func GetParsedClusterNetwork(networkClient networkclient.Interface) (*ParsedClusterNetwork, error) {
 	cn, err := networkClient.NetworkV1().ClusterNetworks().Get(context.TODO(), networkv1.ClusterNetworkDefault, v1.GetOptions{})
 	if err != nil {
 		return nil, err
-	}
-	if err = ValidateClusterNetwork(cn); err != nil {
-		return nil, fmt.Errorf("ClusterNetwork is invalid (%v)", err)
 	}
 	return ParseClusterNetwork(cn)
 }

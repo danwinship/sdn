@@ -43,9 +43,9 @@ type egressNode struct {
 	retries int
 }
 
-func newEgressIPManager() *egressIPManager {
+func newEgressIPManager(pcn *common.ParsedClusterNetwork) *egressIPManager {
 	eim := &egressIPManager{}
-	eim.tracker = common.NewEgressIPTracker(eim)
+	eim.tracker = common.NewEgressIPTracker(pcn, eim)
 	return eim
 }
 

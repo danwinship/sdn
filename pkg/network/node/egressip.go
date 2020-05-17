@@ -39,7 +39,7 @@ type egressIPMetaData struct {
 	packetMark string
 }
 
-func newEgressIPWatcher(oc *ovsController, localIP string, masqueradeBit *int32) *egressIPWatcher {
+func newEgressIPWatcher(oc *ovsController, pcn *common.ParsedClusterNetwork, localIP string, masqueradeBit *int32) *egressIPWatcher {
 	eip := &egressIPWatcher{
 		oc:      oc,
 		localIP: localIP,
@@ -50,7 +50,7 @@ func newEgressIPWatcher(oc *ovsController, localIP string, masqueradeBit *int32)
 		eip.masqueradeBit = 1 << uint32(*masqueradeBit)
 	}
 
-	eip.tracker = common.NewEgressIPTracker(eip)
+	eip.tracker = common.NewEgressIPTracker(pcn, eip)
 	return eip
 }
 

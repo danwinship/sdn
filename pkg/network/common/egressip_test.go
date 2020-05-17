@@ -94,8 +94,9 @@ func (w *testEIPWatcher) assertUpdateEgressCIDRsNotification() error {
 }
 
 func setupEgressIPTracker(t *testing.T) (*EgressIPTracker, *testEIPWatcher) {
+	pcn := &ParsedClusterNetwork{}
 	watcher := &testEIPWatcher{}
-	return NewEgressIPTracker(watcher), watcher
+	return NewEgressIPTracker(pcn, watcher), watcher
 }
 
 func updateHostSubnetEgress(eit *EgressIPTracker, hs *networkv1.HostSubnet) {

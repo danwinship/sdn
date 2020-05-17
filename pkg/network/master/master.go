@@ -105,7 +105,7 @@ func (master *OsdnMaster) startSubSystems() {
 		klog.Fatalf("failed to start VNID master: %v", err)
 	}
 
-	eim := newEgressIPManager()
+	eim := newEgressIPManager(master.networkInfo)
 	eim.Start(master.networkClient, master.hostSubnetInformer, master.netNamespaceInformer, master.nodeInformer)
 }
 

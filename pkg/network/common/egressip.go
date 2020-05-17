@@ -73,6 +73,7 @@ type EgressIPWatcher interface {
 type EgressIPTracker struct {
 	sync.Mutex
 
+	pcn     *ParsedClusterNetwork
 	watcher EgressIPWatcher
 
 	nodes            map[ktypes.UID]*nodeEgress
@@ -86,7 +87,7 @@ type EgressIPTracker struct {
 	updateEgressCIDRs bool
 }
 
-func NewEgressIPTracker(watcher EgressIPWatcher) *EgressIPTracker {
+func NewEgressIPTracker(pcn *ParsedClusterNetwork, watcher EgressIPWatcher) *EgressIPTracker {
 	return &EgressIPTracker{
 		watcher: watcher,
 
@@ -185,7 +186,7 @@ func (eit *EgressIPTracker) handleAddOrUpdateHostSubnet(obj, _ interface{}, even
 	hs := obj.(*networkv1.HostSubnet)
 	klog.V(5).Infof("Watch %s event for HostSubnet %q", eventType, hs.Name)
 
-	if err := ValidateHostSubnetEgress(hs); err != nil {
+	if _, err := eit.pcn.ParseHostSubnet(hs, true); err != nil {
 		utilruntime.HandleError(fmt.Errorf("Ignoring invalid HostSubnet %s: %v", HostSubnetToString(hs), err))
 		return
 	}
@@ -196,6 +197,11 @@ func (eit *EgressIPTracker) handleAddOrUpdateHostSubnet(obj, _ interface{}, even
 func (eit *EgressIPTracker) handleDeleteHostSubnet(obj interface{}) {
 	hs := obj.(*networkv1.HostSubnet)
 	klog.V(5).Infof("Watch %s event for HostSubnet %q", watch.Deleted, hs.Name)
+
+	if _, err := eit.pcn.ParseHostSubnet(hs, true); err != nil {
+		utilruntime.HandleError(fmt.Errorf("Ignoring invalid HostSubnet %s: %v", HostSubnetToString(hs), err))
+		return
+	}
 
 	hs = hs.DeepCopy()
 	hs.EgressCIDRs = nil
@@ -209,10 +215,7 @@ func (eit *EgressIPTracker) UpdateHostSubnetEgress(hs *networkv1.HostSubnet) {
 
 	sdnIP := ""
 	if hs.Subnet != "" {
-		_, cidr, err := net.ParseCIDR(hs.Subnet)
-		if err != nil {
-			utilruntime.HandleError(fmt.Errorf("could not parse HostSubnet %q CIDR: %v", hs.Name, err))
-		}
+		_, cidr, _ := net.ParseCIDR(hs.Subnet)
 		sdnIP = GenerateDefaultGateway(cidr).String()
 	}
 
@@ -299,12 +302,22 @@ func (eit *EgressIPTracker) handleAddOrUpdateNetNamespace(obj, _ interface{}, ev
 	netns := obj.(*networkv1.NetNamespace)
 	klog.V(5).Infof("Watch %s event for NetNamespace %q", eventType, netns.Name)
 
+	if _, err := eit.pcn.ParseNetNamespace(netns); err != nil {
+		utilruntime.HandleError(fmt.Errorf("Ignoring invalid NetNamespace %s: %v", netns.Name, err))
+		return
+	}
+
 	eit.UpdateNetNamespaceEgress(netns)
 }
 
 func (eit *EgressIPTracker) handleDeleteNetNamespace(obj interface{}) {
 	netns := obj.(*networkv1.NetNamespace)
 	klog.V(5).Infof("Watch %s event for NetNamespace %q", watch.Deleted, netns.Name)
+
+	if _, err := eit.pcn.ParseNetNamespace(netns); err != nil {
+		utilruntime.HandleError(fmt.Errorf("Ignoring invalid NetNamespace %s: %v", netns.Name, err))
+		return
+	}
 
 	eit.DeleteNetNamespaceEgress(netns.NetID)
 }

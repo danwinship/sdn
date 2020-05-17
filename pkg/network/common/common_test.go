@@ -7,7 +7,6 @@ import (
 
 	networkapi "github.com/openshift/api/network/v1"
 	kapi "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	kerrors "k8s.io/apimachinery/pkg/util/errors"
 )
 
@@ -230,7 +229,7 @@ func TestParseClusterNetwork(t *testing.T) {
 		{
 			name: "valid single cidr",
 			cn: networkapi.ClusterNetwork{
-				ClusterNetworks: []networkapi.ClusterNetworkEntry{{CIDR: "10.0.0.0/16"}},
+				ClusterNetworks: []networkapi.ClusterNetworkEntry{{CIDR: "10.0.0.0/16", HostSubnetLength: 8}},
 				ServiceNetwork:  "172.30.0.0/16",
 			},
 			err: "",
@@ -238,7 +237,7 @@ func TestParseClusterNetwork(t *testing.T) {
 		{
 			name: "valid multiple cidr",
 			cn: networkapi.ClusterNetwork{
-				ClusterNetworks: []networkapi.ClusterNetworkEntry{{CIDR: "10.0.0.0/16"}, {CIDR: "10.4.0.0/16"}},
+				ClusterNetworks: []networkapi.ClusterNetworkEntry{{CIDR: "10.0.0.0/16", HostSubnetLength: 8}, {CIDR: "10.4.0.0/16", HostSubnetLength: 8}},
 				ServiceNetwork:  "172.30.0.0/16",
 			},
 			err: "",
@@ -246,7 +245,7 @@ func TestParseClusterNetwork(t *testing.T) {
 		{
 			name: "invalid CIDR address",
 			cn: networkapi.ClusterNetwork{
-				ClusterNetworks: []networkapi.ClusterNetworkEntry{{CIDR: "Invalid"}},
+				ClusterNetworks: []networkapi.ClusterNetworkEntry{{CIDR: "Invalid", HostSubnetLength: 8}},
 				ServiceNetwork:  "172.30.0.0/16",
 			},
 			err: "Invalid",
@@ -254,7 +253,7 @@ func TestParseClusterNetwork(t *testing.T) {
 		{
 			name: "invalid serviceNetwork",
 			cn: networkapi.ClusterNetwork{
-				ClusterNetworks: []networkapi.ClusterNetworkEntry{{CIDR: "10.0.0.0/16"}},
+				ClusterNetworks: []networkapi.ClusterNetworkEntry{{CIDR: "10.0.0.0/16", HostSubnetLength: 8}},
 				ServiceNetwork:  "172.30.0.0i/16",
 			},
 			err: "172.30.0.0i/16",
@@ -274,53 +273,124 @@ func TestParseClusterNetwork(t *testing.T) {
 	}
 }
 
-func TestValidateHostSubnetEgress(t *testing.T) {
+func TestParseHostSubnet(t *testing.T) {
 	tests := []struct {
 		name string
+		cn   networkapi.ClusterNetwork
 		hs   networkapi.HostSubnet
-		err  string
+
+		err       string
+		egressErr string
 	}{
 		{
-			name: "valid egress ip",
-			hs: networkapi.HostSubnet{
-				EgressIPs:   []networkapi.HostSubnetEgressIP{"10.0.0.10", "10.0.0.11"},
-				EgressCIDRs: []networkapi.HostSubnetEgressCIDR{"10.0.0.0/16"},
-				ObjectMeta:  metav1.ObjectMeta{Name: "any"},
+			name: "valid, no egress",
+			cn: networkapi.ClusterNetwork{
+				ClusterNetworks: []networkapi.ClusterNetworkEntry{{CIDR: "10.128.0.0/14", HostSubnetLength: 9}},
+				ServiceNetwork:  "172.30.0.0/16",
 			},
-			err: "",
+			hs: networkapi.HostSubnet{
+				HostIP: "10.0.0.1",
+				Subnet: "10.128.0.0/23",
+			},
+		},
+		{
+			name: "bad HostIP",
+			cn: networkapi.ClusterNetwork{
+				ClusterNetworks: []networkapi.ClusterNetworkEntry{{CIDR: "10.128.0.0/14", HostSubnetLength: 9}},
+				ServiceNetwork:  "172.30.0.0/16",
+			},
+			hs: networkapi.HostSubnet{
+				HostIP: "10.0.0.1/24",
+				Subnet: "10.128.0.0/23",
+			},
+			err: "bad HostIP",
+		},
+		{
+			name: "bad HostIP family",
+			cn: networkapi.ClusterNetwork{
+				ClusterNetworks: []networkapi.ClusterNetworkEntry{{CIDR: "10.128.0.0/14", HostSubnetLength: 9}},
+				ServiceNetwork:  "172.30.0.0/16",
+			},
+			hs: networkapi.HostSubnet{
+				HostIP: "fd01::1234",
+				Subnet: "10.128.0.0/23",
+			},
+			err: "must be an IPv4 address",
+		},
+		{
+			name: "bad Subnet",
+			cn: networkapi.ClusterNetwork{
+				ClusterNetworks: []networkapi.ClusterNetworkEntry{{CIDR: "10.128.0.0/14", HostSubnetLength: 9}},
+				ServiceNetwork:  "172.30.0.0/16",
+			},
+			hs: networkapi.HostSubnet{
+				HostIP: "10.0.0.1",
+				Subnet: "10.128.0.0",
+			},
+			err: "bad Subnet",
+		},
+		{
+			name: "valid egress ip",
+			cn: networkapi.ClusterNetwork{
+				ClusterNetworks: []networkapi.ClusterNetworkEntry{{CIDR: "10.128.0.0/14", HostSubnetLength: 9}},
+				ServiceNetwork:  "172.30.0.0/16",
+			},
+			hs: networkapi.HostSubnet{
+				HostIP:    "10.0.0.1",
+				Subnet:    "10.128.0.0/23",
+				EgressIPs: []networkapi.HostSubnetEgressIP{"10.0.0.10", "10.0.0.11"},
+			},
 		},
 		{
 			name: "valid egress cidr",
-			hs: networkapi.HostSubnet{
-				EgressIPs:   []networkapi.HostSubnetEgressIP{"10.0.0.10", "10.0.0.11"},
-				EgressCIDRs: []networkapi.HostSubnetEgressCIDR{"10.0.0.0/16"},
-				ObjectMeta:  metav1.ObjectMeta{Name: "any"},
+			cn: networkapi.ClusterNetwork{
+				ClusterNetworks: []networkapi.ClusterNetworkEntry{{CIDR: "10.128.0.0/14", HostSubnetLength: 9}},
+				ServiceNetwork:  "172.30.0.0/16",
 			},
-			err: "",
+			hs: networkapi.HostSubnet{
+				HostIP:      "10.0.0.1",
+				Subnet:      "10.128.0.0/23",
+				EgressCIDRs: []networkapi.HostSubnetEgressCIDR{"10.0.0.0/16"},
+			},
 		},
 		{
 			name: "invalid CIDR address",
+			cn: networkapi.ClusterNetwork{
+				ClusterNetworks: []networkapi.ClusterNetworkEntry{{CIDR: "10.128.0.0/14", HostSubnetLength: 9}},
+				ServiceNetwork:  "172.30.0.0/16",
+			},
 			hs: networkapi.HostSubnet{
+				HostIP:      "10.0.0.1",
+				Subnet:      "10.128.0.0/23",
 				EgressIPs:   []networkapi.HostSubnetEgressIP{"10.0.0.10", "10.0.0.11"},
 				EgressCIDRs: []networkapi.HostSubnetEgressCIDR{"10.139.125.80/27"},
-				ObjectMeta:  metav1.ObjectMeta{Name: "any"},
 			},
-			err: "Invalid",
+			egressErr: "bad EgressCIDR",
 		},
 		{
 			name: "invalid egress ip",
+			cn: networkapi.ClusterNetwork{
+				ClusterNetworks: []networkapi.ClusterNetworkEntry{{CIDR: "10.128.0.0/14", HostSubnetLength: 9}},
+				ServiceNetwork:  "172.30.0.0/16",
+			},
 			hs: networkapi.HostSubnet{
+				HostIP:      "10.0.0.1",
+				Subnet:      "10.128.0.0/23",
 				EgressIPs:   []networkapi.HostSubnetEgressIP{"2001:0db8:85a3:0000:0000:8a2e:0370:7334"},
 				EgressCIDRs: []networkapi.HostSubnetEgressCIDR{"10.139.125.64/27"},
-				ObjectMeta:  metav1.ObjectMeta{Name: "any"},
 			},
-			err: "Invalid",
+			egressErr: "bad EgressIP",
 		},
 	}
 	for _, test := range tests {
-		err := ValidateHostSubnetEgress(&test.hs)
+		pcn, err := ParseClusterNetwork(&test.cn)
+		if err != nil {
+			t.Fatalf("test %q unexpected error parsing ClusterNetwork: %v", test.name, err)
+		}
+
+		_, err = pcn.ParseHostSubnet(&test.hs, false)
 		if err == nil {
-			if len(test.err) > 0 {
+			if test.err != "" {
 				t.Fatalf("test %q unexpectedly did not get an error", test.name)
 			}
 		} else {
@@ -328,6 +398,21 @@ func TestValidateHostSubnetEgress(t *testing.T) {
 				t.Fatalf("test %q: error did not match %q: %v", test.name, test.err, err)
 			} else if test.err == "" {
 				t.Fatalf("test %q: error did not match %q: %v", test.name, test.err, err)
+			}
+		}
+
+		if test.err == "" {
+			_, err = pcn.ParseHostSubnet(&test.hs, true)
+			if err == nil {
+				if test.egressErr != "" {
+					t.Fatalf("test %q unexpectedly did not get an error parsing egress IPs", test.name)
+				}
+			} else {
+				if test.egressErr != "" && !strings.Contains(err.Error(), test.egressErr) {
+					t.Fatalf("test %q: error did not match %q: %v", test.name, test.egressErr, err)
+				} else if test.egressErr == "" {
+					t.Fatalf("test %q: error did not match %q: %v", test.name, test.egressErr, err)
+				}
 			}
 		}
 	}

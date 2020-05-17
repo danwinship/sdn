@@ -157,7 +157,7 @@ func New(c *OsdnNodeConfig) (*OsdnNode, error) {
 		egressDNS:        egressDNS,
 		kubeInformers:    c.KubeInformers,
 		networkInformers: c.NetworkInformers,
-		egressIP:         newEgressIPWatcher(oc, c.NodeIP, c.MasqueradeBit),
+		egressIP:         newEgressIPWatcher(oc, networkInfo, c.NodeIP, c.MasqueradeBit),
 	}
 
 	metrics.RegisterMetrics()
