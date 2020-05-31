@@ -15,6 +15,12 @@ import (
 	networkclient "github.com/openshift/client-go/network/clientset/versioned"
 )
 
+const (
+	ClusterNetworkSecondaryServiceNetworkAnnotation = "clusternetwork.network.openshift.io/secondary-service-network"
+	HostSubnetSecondaryHostIPAnnotation = "hostsubnet.network.openshift.io/secondary-host-ip"
+	HostSubnetSecondarySubnetAnnotation = "hostsubnet.network.openshift.io/secondary-subnet"
+)
+
 func HostSubnetToString(subnet *networkv1.HostSubnet) string {
 	return fmt.Sprintf("%s (host: %q, ip: %q, subnet: %q)", subnet.Name, subnet.Host, subnet.HostIP, subnet.Subnet)
 }
@@ -65,7 +71,7 @@ func (ipv IPSupport) ParseCIDR(cidrString string) (*net.IPNet, error) {
 type ParsedClusterNetwork struct {
 	IPFamilies      IPSupport
 	ClusterNetworks []ParsedClusterNetworkEntry
-	ServiceNetwork  *net.IPNet
+	ServiceNetworks []*net.IPNet
 	VXLANPort       uint32
 	MTU             uint32
 }
@@ -111,7 +117,21 @@ func ParseClusterNetwork(cn *networkv1.ClusterNetwork) (*ParsedClusterNetwork, e
 	if _, _, overlap := pcn.Overlaps(serviceNetwork); overlap != nil {
 		return nil, fmt.Errorf("service CIDR %q overlaps with cluster CIDR %q", cn.ServiceNetwork, overlap.String())
 	}
-	pcn.ServiceNetwork = serviceNetwork
+	pcn.ServiceNetworks = append(pcn.ServiceNetworks, serviceNetwork)
+
+	if annotation, exists := cn.Annotations[ClusterNetworkSecondaryServiceNetworkAnnotation]; exists {
+		secondaryServiceNetwork, err := pcn.IPFamilies.ParseCIDR(annotation)
+		if err != nil {
+			return nil, fmt.Errorf("bad secondary service CIDR value %q: %v", annotation, err)
+		}
+		if utilnet.IsIPv6CIDR(serviceNetwork) || !utilnet.IsIPv6CIDR(secondaryServiceNetwork) {
+			return nil, fmt.Errorf("service CIDRs are not of correct IP families")
+		}
+		if _, _, overlap := pcn.Overlaps(secondaryServiceNetwork); overlap != nil {
+			return nil, fmt.Errorf("service CIDR %q overlaps with cluster CIDR %q", secondaryServiceNetwork, overlap.String())
+		}
+		pcn.ServiceNetworks = append(pcn.ServiceNetworks, secondaryServiceNetwork)
+	}
 
 	if cn.VXLANPort != nil {
 		pcn.VXLANPort = *cn.VXLANPort
@@ -137,9 +157,9 @@ func (pcn *ParsedClusterNetwork) Contains(ip net.IP) (inPodNetwork, isServiceNet
 			return true, false, cn.ClusterCIDR
 		}
 	}
-	if pcn.ServiceNetwork != nil {
-		if pcn.ServiceNetwork.Contains(ip) {
-			return false, true, pcn.ServiceNetwork
+	for _, sn := range pcn.ServiceNetworks {
+		if sn.Contains(ip) {
+			return false, true, sn
 		}
 	}
 	return false, false, nil
@@ -152,9 +172,9 @@ func (pcn *ParsedClusterNetwork) Overlaps(cidr *net.IPNet) (inPodNetwork, isServ
 			return true, false, cn.ClusterCIDR
 		}
 	}
-	if pcn.ServiceNetwork != nil {
-		if pcn.ServiceNetwork.Contains(cidr.IP) || cidr.Contains(pcn.ServiceNetwork.IP) {
-			return false, true, pcn.ServiceNetwork
+	for _, sn := range pcn.ServiceNetworks {
+		if sn.Contains(cidr.IP) || cidr.Contains(sn.IP) {
+			return false, true, sn
 		}
 	}
 	return false, false, nil
@@ -238,8 +258,8 @@ func (pcn *ParsedClusterNetwork) CheckClusterObjects(subnets []networkv1.HostSub
 }
 
 type ParsedHostSubnet struct {
-	HostIP net.IP
-	Subnet *net.IPNet
+	HostIPs []net.IP
+	Subnets []*net.IPNet
 
 	EgressIPs   []net.IP
 	EgressCIDRs []*net.IPNet
@@ -247,11 +267,22 @@ type ParsedHostSubnet struct {
 
 func (pcn *ParsedClusterNetwork) ParseHostSubnet(hs *networkv1.HostSubnet, parseEgressIPs bool) (*ParsedHostSubnet, error) {
 	phs := &ParsedHostSubnet{}
-	var err error
 
-	phs.HostIP, err = pcn.IPFamilies.ParseIP(hs.HostIP)
+	hostIP, err := pcn.IPFamilies.ParseIP(hs.HostIP)
 	if err != nil {
 		return nil, fmt.Errorf("bad HostIP value %q: %v", hs.HostIP, err)
+	}
+	phs.HostIPs = append(phs.HostIPs, hostIP)
+
+	if annotation, exists := hs.Annotations[HostSubnetSecondaryHostIPAnnotation]; exists {
+		secondaryHostIP, err := pcn.IPFamilies.ParseIP(annotation)
+		if err != nil {
+			return nil, fmt.Errorf("bad secondary HostIP value %q: %v", annotation, err)
+		}
+		if utilnet.IsIPv6(hostIP) || !utilnet.IsIPv6(secondaryHostIP) {
+			return nil, fmt.Errorf("host IPs are not of correct IP families")
+		}
+		phs.HostIPs = append(phs.HostIPs, secondaryHostIP)
 	}
 
 	if hs.Subnet == "" {
@@ -260,9 +291,21 @@ func (pcn *ParsedClusterNetwork) ParseHostSubnet(hs *networkv1.HostSubnet, parse
 			return nil, fmt.Errorf("missing Subnet value")
 		}
 	} else {
-		phs.Subnet, err = pcn.IPFamilies.ParseCIDR(hs.Subnet)
+		subnet, err := pcn.IPFamilies.ParseCIDR(hs.Subnet)
 		if err != nil {
 			return nil, fmt.Errorf("bad Subnet value %q: %v", hs.Subnet, err)
+		}
+		phs.Subnets = append(phs.Subnets, subnet)
+
+		if annotation, exists := hs.Annotations[HostSubnetSecondarySubnetAnnotation]; exists {
+			secondarySubnet, err := pcn.IPFamilies.ParseCIDR(annotation)
+			if err != nil {
+				return nil, fmt.Errorf("bad secondary Subnet value %q: %v", annotation, err)
+			}
+			if utilnet.IsIPv6CIDR(subnet) || !utilnet.IsIPv6CIDR(secondarySubnet) {
+				return nil, fmt.Errorf("subnets are not of correct IP families")
+			}
+			phs.Subnets = append(phs.Subnets, secondarySubnet)
 		}
 	}
 

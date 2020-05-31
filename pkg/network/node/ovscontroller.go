@@ -406,40 +406,43 @@ func (oc *ovsController) ensureOvsPort(hostVeth, sandboxID string, podIPs []net.
 	return ofport, err
 }
 
-func (oc *ovsController) setupPodFlows(ofport int, podIP net.IP, vnid uint32) error {
+func (oc *ovsController) setupPodFlows(ofport int, podIPs []net.IP, vnid uint32) error {
 	otx := oc.ovs.NewTransaction()
 
-	ipstr := podIP.String()
+	for _, podIP := range podIPs {
+		ipstr := podIP.String()
 
-	// IPV6FIXME - sdn-cni-plugin is currently leaving the MAC random for IPv6
-	ipmacMatch := ""
-	if !utilnet.IsIPv6(podIP) {
-		podIP = podIP.To4()
-		ipmacMatch = fmt.Sprintf(", arp_sha=00:00:%02x:%02x:%02x:%02x/00:00:ff:ff:ff:ff", podIP[0], podIP[1], podIP[2], podIP[3])
+		// IPV6FIXME - sdn-cni-plugin is currently leaving the MAC random for IPv6
+		ipmacMatch := ""
+		if !utilnet.IsIPv6(podIP) {
+			podIP = podIP.To4()
+			ipmacMatch = fmt.Sprintf(", arp_sha=00:00:%02x:%02x:%02x:%02x/00:00:ff:ff:ff:ff", podIP[0], podIP[1], podIP[2], podIP[3])
+		}
+
+		// ARP/IP traffic from container
+		otx.AddFlow("table=20, priority=100, in_port=%d, arp, nw_src=%s%s, actions=load:%d->NXM_NX_REG0[], goto_table:21", ofport, ipstr, ipmacMatch, vnid)
+		otx.AddFlow("table=20, priority=100, in_port=%d, ip, nw_src=%s, actions=load:%d->NXM_NX_REG0[], goto_table:21", ofport, ipstr, vnid)
+		otx.AddFlow("table=25, priority=100, ip, nw_src=%s, actions=load:%d->NXM_NX_REG0[], goto_table:30", ipstr, vnid)
+
+		// ARP request/response to container (not isolated)
+		otx.AddFlow("table=40, priority=100, arp, nw_dst=%s, actions=output:%d", ipstr, ofport)
+
+		// IP traffic to container
+		otx.AddFlow("table=70, priority=100, ip, nw_dst=%s, actions=load:%d->NXM_NX_REG1[], load:%d->NXM_NX_REG2[], goto_table:80", ipstr, vnid, ofport)
 	}
-
-	// ARP/IP traffic from container
-	otx.AddFlow("table=20, priority=100, in_port=%d, arp, nw_src=%s%s, actions=load:%d->NXM_NX_REG0[], goto_table:21", ofport, ipstr, ipmacMatch, vnid)
-	otx.AddFlow("table=20, priority=100, in_port=%d, ip, nw_src=%s, actions=load:%d->NXM_NX_REG0[], goto_table:21", ofport, ipstr, vnid)
-	otx.AddFlow("table=25, priority=100, ip, nw_src=%s, actions=load:%d->NXM_NX_REG0[], goto_table:30", ipstr, vnid)
-
-	// ARP request/response to container (not isolated)
-	otx.AddFlow("table=40, priority=100, arp, nw_dst=%s, actions=output:%d", ipstr, ofport)
-
-	// IP traffic to container
-	otx.AddFlow("table=70, priority=100, ip, nw_dst=%s, actions=load:%d->NXM_NX_REG1[], load:%d->NXM_NX_REG2[], goto_table:80", ipstr, vnid, ofport)
 
 	return otx.Commit()
 }
 
-func (oc *ovsController) cleanupPodFlows(podIP net.IP) error {
-	ipstr := podIP.String()
-
+func (oc *ovsController) cleanupPodFlows(podIPs []net.IP) error {
 	otx := oc.ovs.NewTransaction()
-	otx.DeleteFlows("ip, nw_dst=%s", ipstr)
-	otx.DeleteFlows("ip, nw_src=%s", ipstr)
-	otx.DeleteFlows("arp, nw_dst=%s", ipstr)
-	otx.DeleteFlows("arp, nw_src=%s", ipstr)
+	for _, podIP := range podIPs {
+		ipstr := podIP.String()
+		otx.DeleteFlows("ip, nw_dst=%s", ipstr)
+		otx.DeleteFlows("ip, nw_src=%s", ipstr)
+		otx.DeleteFlows("arp, nw_dst=%s", ipstr)
+		otx.DeleteFlows("arp, nw_src=%s", ipstr)
+	}
 	return otx.Commit()
 }
 
@@ -448,13 +451,7 @@ func (oc *ovsController) SetUpPod(sandboxID, hostVeth string, podIPs []net.IP, v
 	if err != nil {
 		return -1, err
 	}
-	for _, podIP := range podIPs {
-		err = oc.setupPodFlows(ofport, podIP, vnid)
-		if err != nil {
-			return -1, err
-		}
-	}
-	return ofport, nil
+	return ofport, oc.setupPodFlows(ofport, podIPs, vnid)
 }
 
 // Returned list can also be used for port names
@@ -559,17 +556,11 @@ func (oc *ovsController) UpdatePod(sandboxID string, vnid uint32) error {
 	} else if ofport == -1 {
 		return fmt.Errorf("can't update pod %q with missing veth interface", sandboxID)
 	}
-	for _, podIP := range podIPs {
-		err = oc.cleanupPodFlows(podIP)
-		if err != nil {
-			return err
-		}
-		err = oc.setupPodFlows(ofport, podIP, vnid)
-		if err != nil {
-			return err
-		}
+	err = oc.cleanupPodFlows(podIPs)
+	if err != nil {
+		return err
 	}
-	return nil
+	return oc.setupPodFlows(ofport, podIPs, vnid)
 }
 
 func (oc *ovsController) TearDownPod(sandboxID string) error {
@@ -580,10 +571,8 @@ func (oc *ovsController) TearDownPod(sandboxID string) error {
 		return nil
 	}
 
-	for _, podIP := range podIPs {
-		if err := oc.cleanupPodFlows(podIP); err != nil {
-			return err
-		}
+	if err := oc.cleanupPodFlows(podIPs); err != nil {
+		return err
 	}
 
 	ports, err := oc.getInterfacesForSandbox(sandboxID)

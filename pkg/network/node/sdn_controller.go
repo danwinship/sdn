@@ -161,9 +161,12 @@ func (plugin *OsdnNode) FinishSetupSDN() error {
 }
 
 func (plugin *OsdnNode) setup(localSubnetCIDR, localSubnetGateway string) error {
-	serviceNetworkCIDR := plugin.networkInfo.ServiceNetwork.String()
+	serviceNetworkCIDRs := make([]string, len(plugin.networkInfo.ServiceNetworks))
+	for i, sn := range plugin.networkInfo.ServiceNetworks {
+		serviceNetworkCIDRs[i] = sn.String()
+	}
 
-	if err := plugin.oc.SetupOVS(plugin.clusterCIDRs, []string{serviceNetworkCIDR}, []string{localSubnetCIDR}, []string{localSubnetGateway}, plugin.networkInfo.MTU, plugin.networkInfo.VXLANPort); err != nil {
+	if err := plugin.oc.SetupOVS(plugin.clusterCIDRs, serviceNetworkCIDRs, []string{localSubnetCIDR}, []string{localSubnetGateway}, plugin.networkInfo.MTU, plugin.networkInfo.VXLANPort); err != nil {
 		return err
 	}
 
@@ -191,11 +194,13 @@ func (plugin *OsdnNode) setup(localSubnetCIDR, localSubnetGateway string) error 
 		}
 	}
 	if err == nil {
-		route := &netlink.Route{
-			LinkIndex: l.Attrs().Index,
-			Dst:       plugin.networkInfo.ServiceNetwork,
+		for _, sn := range plugin.networkInfo.ServiceNetworks {
+			route := &netlink.Route{
+				LinkIndex: l.Attrs().Index,
+				Dst:       sn,
+			}
+			err = netlink.RouteAdd(route)
 		}
-		err = netlink.RouteAdd(route)
 	}
 	if err != nil {
 		return err

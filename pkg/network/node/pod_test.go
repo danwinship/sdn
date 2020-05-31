@@ -307,7 +307,8 @@ func TestPodManager(t *testing.T) {
 		podManager := newDefaultPodManager()
 		podManager.podHandler = podTester
 		_, cidr, _ := net.ParseCIDR("1.2.0.0/16")
-		err := podManager.Start(tmpDir, "1.2.3.0/24", []common.ParsedClusterNetworkEntry{{ClusterCIDR: cidr, HostSubnetLength: 8}}, "172.30.0.0/16")
+		_, serviceCIDR, _ := net.ParseCIDR("172.30.0.0/16")
+		err := podManager.Start(tmpDir, "1.2.3.0/24", []common.ParsedClusterNetworkEntry{{ClusterCIDR: cidr, HostSubnetLength: 8}}, []*net.IPNet{serviceCIDR})
 		if err != nil {
 			t.Fatalf("could not start PodManager: %v", err)
 		}
@@ -406,7 +407,8 @@ func TestDirectPodUpdate(t *testing.T) {
 	podManager := newDefaultPodManager()
 	podManager.podHandler = podTester
 	_, cidr, _ := net.ParseCIDR("1.2.0.0/16")
-	err = podManager.Start(tmpDir, "1.2.3.0/24", []common.ParsedClusterNetworkEntry{{ClusterCIDR: cidr, HostSubnetLength: 8}}, "172.30.0.0/16")
+	_, serviceCIDR, _ := net.ParseCIDR("172.30.0.0/16")
+	err = podManager.Start(tmpDir, "1.2.3.0/24", []common.ParsedClusterNetworkEntry{{ClusterCIDR: cidr, HostSubnetLength: 8}}, []*net.IPNet{serviceCIDR})
 	if err != nil {
 		t.Fatalf("could not start PodManager: %v", err)
 	}
