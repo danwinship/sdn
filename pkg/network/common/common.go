@@ -19,15 +19,6 @@ func HostSubnetToString(subnet *networkv1.HostSubnet) string {
 	return fmt.Sprintf("%s (host: %q, ip: %q, subnet: %q)", subnet.Name, subnet.Host, subnet.HostIP, subnet.Subnet)
 }
 
-func ClusterNetworkListContains(clusterNetworks []ParsedClusterNetworkEntry, ipaddr net.IP) (*net.IPNet, bool) {
-	for _, cn := range clusterNetworks {
-		if cn.ClusterCIDR.Contains(ipaddr) {
-			return cn.ClusterCIDR, true
-		}
-	}
-	return nil, false
-}
-
 // IPSupport is used to track whether IPv4, IPv6, or both is supported. It maps from
 // the result of utilnet.IsIPv6() to whether it's supported...
 type IPSupport map[bool]bool
@@ -71,10 +62,6 @@ func (ipv IPSupport) ParseCIDR(cidrString string) (*net.IPNet, error) {
 	return cidr, nil
 }
 
-func cidrsOverlap(cidr1, cidr2 *net.IPNet) bool {
-	return cidr1.Contains(cidr2.IP) || cidr2.Contains(cidr1.IP)
-}
-
 type ParsedClusterNetwork struct {
 	IPFamilies      IPSupport
 	ClusterNetworks []ParsedClusterNetworkEntry
@@ -109,26 +96,22 @@ func ParseClusterNetwork(cn *networkv1.ClusterNetwork) (*ParsedClusterNetwork, e
 				entry.HostSubnetLength)
 		}
 
-		for _, pcnEntry := range pcn.ClusterNetworks {
-			if cidrsOverlap(cidr, pcnEntry.ClusterCIDR) {
-				return nil, fmt.Errorf("cluster CIDR %q overlaps another CIDR %q", entry.CIDR, pcnEntry.ClusterCIDR.String())
-			}
+		if _, _, overlap := pcn.Overlaps(cidr); overlap != nil {
+			return nil, fmt.Errorf("cluster CIDR %q overlaps another CIDR %q", entry.CIDR, overlap.String())
 		}
 
 		pcn.ClusterNetworks = append(pcn.ClusterNetworks, ParsedClusterNetworkEntry{ClusterCIDR: cidr, HostSubnetLength: entry.HostSubnetLength})
 		pcn.IPFamilies[utilnet.IsIPv6CIDR(cidr)] = true
 	}
 
-	var err error
-	pcn.ServiceNetwork, err = pcn.IPFamilies.ParseCIDR(cn.ServiceNetwork)
+	serviceNetwork, err := pcn.IPFamilies.ParseCIDR(cn.ServiceNetwork)
 	if err != nil {
 		return nil, fmt.Errorf("bad service CIDR value %q: %v", cn.ServiceNetwork, err)
 	}
-	for _, pcne := range pcn.ClusterNetworks {
-		if cidrsOverlap(pcne.ClusterCIDR, pcn.ServiceNetwork) {
-			return nil, fmt.Errorf("service CIDR %q overlaps with cluster CIDR %q", cn.ServiceNetwork, pcne.ClusterCIDR.String())
-		}
+	if _, _, overlap := pcn.Overlaps(serviceNetwork); overlap != nil {
+		return nil, fmt.Errorf("service CIDR %q overlaps with cluster CIDR %q", cn.ServiceNetwork, overlap.String())
 	}
+	pcn.ServiceNetwork = serviceNetwork
 
 	if cn.VXLANPort != nil {
 		pcn.VXLANPort = *cn.VXLANPort
@@ -147,6 +130,36 @@ func ParseClusterNetwork(cn *networkv1.ClusterNetwork) (*ParsedClusterNetwork, e
 	return pcn, nil
 }
 
+// Contains determines whether pcn contains ip
+func (pcn *ParsedClusterNetwork) Contains(ip net.IP) (inPodNetwork, isServiceNetwork bool, subnet *net.IPNet) {
+	for _, cn := range pcn.ClusterNetworks {
+		if cn.ClusterCIDR.Contains(ip) {
+			return true, false, cn.ClusterCIDR
+		}
+	}
+	if pcn.ServiceNetwork != nil {
+		if pcn.ServiceNetwork.Contains(ip) {
+			return false, true, pcn.ServiceNetwork
+		}
+	}
+	return false, false, nil
+}
+
+// Overlaps determines whether pcn overlaps cidr
+func (pcn *ParsedClusterNetwork) Overlaps(cidr *net.IPNet) (inPodNetwork, isServiceNetwork bool, subnet *net.IPNet) {
+	for _, cn := range pcn.ClusterNetworks {
+		if cn.ClusterCIDR.Contains(cidr.IP) || cidr.Contains(cn.ClusterCIDR.IP) {
+			return true, false, cn.ClusterCIDR
+		}
+	}
+	if pcn.ServiceNetwork != nil {
+		if pcn.ServiceNetwork.Contains(cidr.IP) || cidr.Contains(pcn.ServiceNetwork.IP) {
+			return false, true, pcn.ServiceNetwork
+		}
+	}
+	return false, false, nil
+}
+
 func (pcn *ParsedClusterNetwork) ValidateNodeIP(nodeIP string) error {
 	if nodeIP == "" || nodeIP == "127.0.0.1" || nodeIP == "::1" {
 		return fmt.Errorf("invalid node IP %q", nodeIP)
@@ -160,11 +173,8 @@ func (pcn *ParsedClusterNetwork) ValidateNodeIP(nodeIP string) error {
 
 	// Ensure each node's NodeIP is not contained by the cluster network,
 	// which could cause a routing loop. (rhbz#1295486)
-	if conflictingCIDR, found := ClusterNetworkListContains(pcn.ClusterNetworks, ipaddr); found {
+	if _, _, conflictingCIDR := pcn.Contains(ipaddr); conflictingCIDR != nil {
 		return fmt.Errorf("node IP %s conflicts with cluster network %s", nodeIP, conflictingCIDR.String())
-	}
-	if pcn.ServiceNetwork.Contains(ipaddr) {
-		return fmt.Errorf("node IP %s conflicts with service network %s", nodeIP, pcn.ServiceNetwork.String())
 	}
 
 	return nil
@@ -173,13 +183,8 @@ func (pcn *ParsedClusterNetwork) ValidateNodeIP(nodeIP string) error {
 func (pcn *ParsedClusterNetwork) CheckHostNetworks(hostIPNets []*net.IPNet) error {
 	errList := []error{}
 	for _, ipNet := range hostIPNets {
-		for _, clusterNetwork := range pcn.ClusterNetworks {
-			if cidrsOverlap(ipNet, clusterNetwork.ClusterCIDR) {
-				errList = append(errList, fmt.Errorf("cluster IP: %s conflicts with host network: %s", clusterNetwork.ClusterCIDR.IP.String(), ipNet.String()))
-			}
-		}
-		if cidrsOverlap(ipNet, pcn.ServiceNetwork) {
-			errList = append(errList, fmt.Errorf("service IP: %s conflicts with host network: %s", pcn.ServiceNetwork.String(), ipNet.String()))
+		if _, _, overlap := pcn.Overlaps(ipNet); overlap != nil {
+			errList = append(errList, fmt.Errorf("cluster network %q conflicts with host network %q", overlap.String(), ipNet.String()))
 		}
 	}
 	return kerrors.NewAggregate(errList)
@@ -192,7 +197,7 @@ func (pcn *ParsedClusterNetwork) CheckClusterObjects(subnets []networkv1.HostSub
 		subnetIP, err := pcn.IPFamilies.ParseCIDR(subnet.Subnet)
 		if err != nil {
 			errList = append(errList, fmt.Errorf("HostSubnet %q has bad subnet %q: %v", subnet.Name, subnet.Subnet, err))
-		} else if _, contains := ClusterNetworkListContains(pcn.ClusterNetworks, subnetIP.IP); !contains {
+		} else if inPodNetwork, _, _ := pcn.Contains(subnetIP.IP); !inPodNetwork {
 			errList = append(errList, fmt.Errorf("HostSubnet %q has subnet %q that is not in any cluster network CIDR", subnet.Name, subnet.Subnet))
 		}
 		if len(errList) >= 10 {
@@ -206,7 +211,7 @@ func (pcn *ParsedClusterNetwork) CheckClusterObjects(subnets []networkv1.HostSub
 		podIP, err := pcn.IPFamilies.ParseIP(pod.Status.PodIP)
 		if err != nil {
 			errList = append(errList, fmt.Errorf("pod '%s/%s' has bad IP %q: %v", pod.Namespace, pod.Name, pod.Status.PodIP, err))
-		} else if _, contains := ClusterNetworkListContains(pcn.ClusterNetworks, podIP); !contains {
+		} else if inPodNetwork, _, _ := pcn.Contains(podIP); !inPodNetwork {
 			errList = append(errList, fmt.Errorf("existing pod '%s/%s' with IP %s is not part of cluster network", pod.Namespace, pod.Name, pod.Status.PodIP))
 		}
 		if len(errList) >= 10 {
@@ -215,11 +220,14 @@ func (pcn *ParsedClusterNetwork) CheckClusterObjects(subnets []networkv1.HostSub
 	}
 	for _, svc := range services {
 		svcIP := net.ParseIP(svc.Spec.ClusterIP)
-		if svcIP != nil && !pcn.ServiceNetwork.Contains(svcIP) {
-			errList = append(errList, fmt.Errorf("existing service '%s/%s' with IP %s is not part of service network %s", svc.Namespace, svc.Name, svc.Spec.ClusterIP, pcn.ServiceNetwork.String()))
-			if len(errList) >= 10 {
-				break
-			}
+		if svcIP == nil {
+			continue
+		}
+		if _, inServiceNetwork, _ := pcn.Contains(svcIP); !inServiceNetwork {
+			errList = append(errList, fmt.Errorf("existing service '%s/%s' with IP %s is not part of service network", svc.Namespace, svc.Name, svc.Spec.ClusterIP))
+		}
+		if len(errList) >= 10 {
+			break
 		}
 	}
 
