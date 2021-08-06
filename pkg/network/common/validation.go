@@ -5,7 +5,6 @@ import (
 	"net"
 
 	"k8s.io/apimachinery/pkg/api/validation/path"
-	utilvalidation "k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/kubernetes/pkg/apis/core/validation"
 
@@ -33,93 +32,6 @@ func validateIPv4(ip string) (net.IP, error) {
 		return nil, fmt.Errorf("must be an IPv4 address")
 	}
 	return bytes, nil
-}
-
-// ValidateClusterNetwork tests if required fields in the ClusterNetwork are set, and ensures that the "default" ClusterNetwork can only be set to the correct values
-// IPV6FIXME: osdnv1.ClusterNetwork is required to be IPv4-only by its CRD
-func ValidateClusterNetwork(clusterNet *osdnv1.ClusterNetwork) error {
-	allErrs := validation.ValidateObjectMeta(&clusterNet.ObjectMeta, false, path.ValidatePathSegmentName, field.NewPath("metadata"))
-	var testedCIDRS []*net.IPNet
-
-	serviceIPNet, err := validateCIDRv4(clusterNet.ServiceNetwork)
-	if err != nil {
-		allErrs = append(allErrs, field.Invalid(field.NewPath("serviceNetwork"), clusterNet.ServiceNetwork, err.Error()))
-	}
-
-	if len(clusterNet.ClusterNetworks) == 0 {
-		// legacy ClusterNetwork; old fields must be set
-		if clusterNet.Network == "" {
-			allErrs = append(allErrs, field.Required(field.NewPath("network"), "network must be set (if clusterNetworks is empty)"))
-		} else if clusterNet.HostSubnetLength == 0 {
-			allErrs = append(allErrs, field.Required(field.NewPath("hostsubnetlength"), "hostsubnetlength must be set (if clusterNetworks is empty)"))
-		} else {
-			clusterIPNet, err := validateCIDRv4(clusterNet.Network)
-			if err != nil {
-				allErrs = append(allErrs, field.Invalid(field.NewPath("network"), clusterNet.Network, err.Error()))
-			}
-			maskLen, addrLen := clusterIPNet.Mask.Size()
-			if clusterNet.HostSubnetLength > uint32(addrLen-maskLen) {
-				allErrs = append(allErrs, field.Invalid(field.NewPath("hostsubnetlength"), clusterNet.HostSubnetLength, "subnet length is too large for cidr"))
-			} else if clusterNet.HostSubnetLength < 2 {
-				allErrs = append(allErrs, field.Invalid(field.NewPath("hostsubnetlength"), clusterNet.HostSubnetLength, "subnet length must be at least 2"))
-			}
-
-			if (clusterIPNet != nil) && (serviceIPNet != nil) && cidrsOverlap(clusterIPNet, serviceIPNet) {
-				allErrs = append(allErrs, field.Invalid(field.NewPath("serviceNetwork"), clusterNet.ServiceNetwork, "service network overlaps with cluster network"))
-			}
-		}
-	} else {
-		// "new" ClusterNetwork
-		if clusterNet.Name == osdnv1.ClusterNetworkDefault {
-			if clusterNet.Network != clusterNet.ClusterNetworks[0].CIDR {
-				allErrs = append(allErrs, field.Invalid(field.NewPath("network"), clusterNet.Network, "network must be identical to clusterNetworks[0].cidr"))
-			}
-			if clusterNet.HostSubnetLength != clusterNet.ClusterNetworks[0].HostSubnetLength {
-				allErrs = append(allErrs, field.Invalid(field.NewPath("hostsubnetlength"), clusterNet.HostSubnetLength, "hostsubnetlength must be identical to clusterNetworks[0].hostSubnetLength"))
-			}
-		} else if clusterNet.Network != "" || clusterNet.HostSubnetLength != 0 {
-			if clusterNet.Network != clusterNet.ClusterNetworks[0].CIDR || clusterNet.HostSubnetLength != clusterNet.ClusterNetworks[0].HostSubnetLength {
-				allErrs = append(allErrs, field.Invalid(field.NewPath("clusterNetworks").Index(0), clusterNet.ClusterNetworks[0], "network and hostsubnetlength must be unset or identical to clusterNetworks[0]"))
-			}
-		}
-	}
-
-	for i, cn := range clusterNet.ClusterNetworks {
-		clusterIPNet, err := validateCIDRv4(cn.CIDR)
-		if err != nil {
-			allErrs = append(allErrs, field.Invalid(field.NewPath("clusterNetworks").Index(i).Child("cidr"), cn.CIDR, err.Error()))
-			continue
-		}
-		maskLen, addrLen := clusterIPNet.Mask.Size()
-		if cn.HostSubnetLength > uint32(addrLen-maskLen) {
-			allErrs = append(allErrs, field.Invalid(field.NewPath("clusterNetworks").Index(i).Child("hostSubnetLength"), cn.HostSubnetLength, "subnet length is too large for clusterNetwork "))
-		} else if cn.HostSubnetLength < 2 {
-			allErrs = append(allErrs, field.Invalid(field.NewPath("clusterNetworks").Index(i).Child("hostSubnetLength"), cn.HostSubnetLength, "subnet length must be at least 2"))
-		}
-
-		for _, cidr := range testedCIDRS {
-			if cidrsOverlap(clusterIPNet, cidr) {
-				allErrs = append(allErrs, field.Invalid(field.NewPath("clusterNetworks").Index(i).Child("cidr"), cn.CIDR, fmt.Sprintf("cidr range overlaps with another cidr %q", cidr.String())))
-			}
-		}
-		testedCIDRS = append(testedCIDRS, clusterIPNet)
-
-		if (clusterIPNet != nil) && (serviceIPNet != nil) && cidrsOverlap(clusterIPNet, serviceIPNet) {
-			allErrs = append(allErrs, field.Invalid(field.NewPath("serviceNetwork"), clusterNet.ServiceNetwork, fmt.Sprintf("service network overlaps with cluster network cidr: %s", clusterIPNet.String())))
-		}
-	}
-
-	if clusterNet.VXLANPort != nil {
-		for _, msg := range utilvalidation.IsValidPortNum(int(*clusterNet.VXLANPort)) {
-			allErrs = append(allErrs, field.Invalid(field.NewPath("vxlanPort"), clusterNet.VXLANPort, msg))
-		}
-	}
-
-	if len(allErrs) > 0 {
-		return allErrs.ToAggregate()
-	} else {
-		return nil
-	}
 }
 
 // ValidateHostSubnet checks if the system-maintained fields of hostsubnet are valid.

@@ -19,6 +19,7 @@ import (
 	configv1 "github.com/openshift/api/config/v1"
 	osdnclient "github.com/openshift/client-go/network/clientset/versioned"
 	osdninformer "github.com/openshift/client-go/network/informers/externalversions"
+	operclient "github.com/openshift/client-go/operator/clientset/versioned"
 	leaderelectionconverter "github.com/openshift/library-go/pkg/config/leaderelection"
 	"github.com/openshift/library-go/pkg/serviceability"
 	sdncommon "github.com/openshift/sdn/pkg/network/common"
@@ -111,12 +112,17 @@ func newSDNClients(clientConfig *rest.Config) (*sdncommon.SDNClients, error) {
 	if err != nil {
 		return nil, err
 	}
+	operClient, err := operclient.NewForConfig(clientConfig)
+	if err != nil {
+		return nil, err
+	}
 
 	sdnClients := &sdncommon.SDNClients{
 		KubeClient:    kubeClient,
 		KubeInformers: informers.NewSharedInformerFactory(kubeClient, defaultInformerResyncPeriod),
 		OSDNClient:    osdnClient,
 		OSDNInformers: osdninformer.NewSharedInformerFactory(osdnClient, defaultInformerResyncPeriod),
+		OperClient:    operClient,
 	}
 
 	return sdnClients, nil

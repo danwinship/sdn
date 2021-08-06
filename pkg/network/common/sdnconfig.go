@@ -4,14 +4,13 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	kerrors "k8s.io/apimachinery/pkg/util/errors"
-	"k8s.io/klog/v2"
 
 	osdnv1 "github.com/openshift/api/network/v1"
+	operv1 "github.com/openshift/api/operator/v1"
 	"github.com/openshift/library-go/pkg/network/networkutils"
 )
 
@@ -36,61 +35,69 @@ type ClusterNetworkEntry struct {
 }
 
 func GetSDNConfig(clients *SDNClients) (*SDNConfig, error) {
-	cn, err := clients.OSDNClient.NetworkV1().ClusterNetworks().Get(context.TODO(), osdnv1.ClusterNetworkDefault, metav1.GetOptions{})
+	cfg, err := clients.OperClient.OperatorV1().Networks().Get(context.TODO(), "cluster", metav1.GetOptions{})
 	if err != nil {
 		return nil, err
 	}
-	if err = ValidateClusterNetwork(cn); err != nil {
-		return nil, fmt.Errorf("ClusterNetwork is invalid (%v)", err)
-	}
-	return ParseSDNConfig(cn)
+	return ParseSDNConfig(cfg)
 }
 
-func ParseSDNConfig(cn *osdnv1.ClusterNetwork) (*SDNConfig, error) {
-	sdnConfig := &SDNConfig{
-		PluginName:                strings.ToLower(cn.PluginName),
-		ClusterNetworks:           make([]ClusterNetworkEntry, 0, len(cn.ClusterNetworks)),
-		ClusterNetworkCIDRStrings: make([]string, 0, len(cn.ClusterNetworks)),
+var pluginNameMap = map[operv1.SDNMode]string {
+	operv1.SDNModeSubnet:        networkutils.SingleTenantPluginName,
+	operv1.SDNModeMultitenant:   networkutils.MultiTenantPluginName,
+	operv1.SDNModeNetworkPolicy: networkutils.NetworkPolicyPluginName,
+}
+
+func ParseSDNConfig(cfg *operv1.Network) (*SDNConfig, error) {
+	if cfg.Spec.DefaultNetwork.Type != operv1.NetworkTypeOpenShiftSDN {
+		return nil, fmt.Errorf("not an OpenShift SDN configuration (Type: %s)", cfg.Spec.DefaultNetwork.Type)
 	}
 
-	for _, entry := range cn.ClusterNetworks {
+	osdnConfig := cfg.Spec.DefaultNetwork.OpenShiftSDNConfig
+	if osdnConfig == nil {
+		osdnConfig = &operv1.OpenShiftSDNConfig{
+			Mode: operv1.SDNModeNetworkPolicy,
+		}
+	}
+
+	sdnConfig := &SDNConfig{
+		PluginName:                pluginNameMap[osdnConfig.Mode],
+		ClusterNetworks:           make([]ClusterNetworkEntry, 0, len(cfg.Spec.ClusterNetwork)),
+		ClusterNetworkCIDRStrings: make([]string, 0, len(cfg.Spec.ClusterNetwork)),
+	}
+
+	for _, entry := range cfg.Spec.ClusterNetwork {
 		cidr, err := networkutils.ParseCIDRMask(entry.CIDR)
 		if err != nil {
-			_, cidr, err = net.ParseCIDR(entry.CIDR)
-			if err != nil {
-				return nil, fmt.Errorf("failed to parse ClusterNetwork CIDR %s: %v", entry.CIDR, err)
-			}
-			klog.Errorf("Configured clusterNetworks value %q is invalid; treating it as %q", entry.CIDR, cidr.String())
+			return nil, fmt.Errorf("failed to parse ClusterNetwork CIDR %s: %v", entry.CIDR, err)
 		}
+
+		_, len := cidr.Mask.Size()
 		sdnConfig.ClusterNetworks = append(sdnConfig.ClusterNetworks,
 			ClusterNetworkEntry{
 				CIDR:             cidr,
-				HostSubnetLength: int(entry.HostSubnetLength),
+				HostSubnetLength: len - int(entry.HostPrefix),
 			},
 		)
 		sdnConfig.ClusterNetworkCIDRStrings = append(sdnConfig.ClusterNetworkCIDRStrings, entry.CIDR)
 	}
 
-	// IPV6FIXME: osdnv1.ClusterNetwork only supports a single ServiceNetwork value
+	// IPV6FIXME: dual-stack ServiceNetworks
 	var err error
-	sdnConfig.ServiceNetwork, err = networkutils.ParseCIDRMask(cn.ServiceNetwork)
+	sdnConfig.ServiceNetwork, err = networkutils.ParseCIDRMask(cfg.Spec.ServiceNetwork[0])
 	if err != nil {
-		_, sdnConfig.ServiceNetwork, err = net.ParseCIDR(cn.ServiceNetwork)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse ServiceNetwork CIDR %s: %v", cn.ServiceNetwork, err)
-		}
-		klog.Errorf("Configured serviceNetworkCIDR value %q is invalid; treating it as %q", cn.ServiceNetwork, sdnConfig.ServiceNetwork.String())
+		return nil, fmt.Errorf("failed to parse ServiceNetwork CIDR %s: %v", cfg.Spec.ServiceNetwork[0], err)
 	}
-	sdnConfig.ServiceNetworkCIDRString = cn.ServiceNetwork
+	sdnConfig.ServiceNetworkCIDRString = cfg.Spec.ServiceNetwork[0]
 
-	if cn.VXLANPort != nil {
-		sdnConfig.VXLANPort = int(*cn.VXLANPort)
+	if osdnConfig.VXLANPort != nil {
+		sdnConfig.VXLANPort = int(*osdnConfig.VXLANPort)
 	} else {
 		sdnConfig.VXLANPort = 4789
 	}
 
-	if cn.MTU != nil {
-		sdnConfig.MTU = int(*cn.MTU)
+	if osdnConfig.MTU != nil {
+		sdnConfig.MTU = int(*osdnConfig.MTU)
 	} else {
 		// IPV6FIXME: ipv4-specific default
 		sdnConfig.MTU = 1450
@@ -213,15 +220,21 @@ func (sdnConfig *SDNConfig) CheckClusterObjects(subnets []osdnv1.HostSubnet, pod
 // IPV6FIXME: will need to be able to test IPv6 and dual-stack configs
 func NewTestSDNConfig() *SDNConfig {
 	sdnConfig, err := ParseSDNConfig(
-		&osdnv1.ClusterNetwork{
-			PluginName: networkutils.NetworkPolicyPluginName,
-			ClusterNetworks: []osdnv1.ClusterNetworkEntry{
-				{
-					CIDR:             "10.128.0.0/14",
-					HostSubnetLength: 9,
+		&operv1.Network{
+			Spec: operv1.NetworkSpec{
+				DefaultNetwork: operv1.DefaultNetworkDefinition{
+					Type: operv1.NetworkTypeOpenShiftSDN,
+					OpenShiftSDNConfig: &operv1.OpenShiftSDNConfig{
+						Mode: operv1.SDNModeNetworkPolicy,
+					},
+				},
+				ClusterNetwork: []operv1.ClusterNetworkEntry{
+					{CIDR: "10.128.0.0/14", HostPrefix: 23},
+				},
+				ServiceNetwork: []string{
+					"172.30.0.0/16",
 				},
 			},
-			ServiceNetwork: "172.30.0.0/16",
 		},
 	)
 	if err != nil {

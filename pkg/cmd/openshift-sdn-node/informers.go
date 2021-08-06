@@ -11,6 +11,7 @@ import (
 
 	osdnclient "github.com/openshift/client-go/network/clientset/versioned"
 	osdninformers "github.com/openshift/client-go/network/informers/externalversions"
+	operclient "github.com/openshift/client-go/operator/clientset/versioned"
 	sdncommon "github.com/openshift/sdn/pkg/network/common"
 )
 
@@ -35,6 +36,10 @@ func (sdn *openShiftSDN) buildInformers() error {
 	if err != nil {
 		return err
 	}
+	operClient, err := operclient.NewForConfig(kubeConfig)
+	if err != nil {
+		return err
+	}
 
 	kubeInformers := kinformers.NewSharedInformerFactory(kubeClient, defaultInformerResyncPeriod)
 	osdnInformers := osdninformers.NewSharedInformerFactory(osdnClient, defaultInformerResyncPeriod)
@@ -42,6 +47,7 @@ func (sdn *openShiftSDN) buildInformers() error {
 	sdn.clients = &sdncommon.SDNClients{
 		KubeClient: kubeClient,
 		OSDNClient: osdnClient,
+		OperClient: operClient,
 
 		KubeInformers: kubeInformers,
 		OSDNInformers: osdnInformers,

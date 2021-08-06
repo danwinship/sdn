@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	osdnv1 "github.com/openshift/api/network/v1"
+	operv1 "github.com/openshift/api/operator/v1"
 	corev1 "k8s.io/api/core/v1"
 	kerrors "k8s.io/apimachinery/pkg/util/errors"
 )
@@ -18,74 +19,93 @@ func TestCheckHostNetworks(t *testing.T) {
 
 	tests := []struct {
 		name        string
-		cn          osdnv1.ClusterNetwork
+		cfg         operv1.NetworkSpec
 		expectError bool
 	}{
 		{
 			name: "valid",
-			cn: osdnv1.ClusterNetwork{
-				ClusterNetworks: []osdnv1.ClusterNetworkEntry{
-					{CIDR: "10.128.0.0/14", HostSubnetLength: 8},
+			cfg: operv1.NetworkSpec{
+				ClusterNetwork: []operv1.ClusterNetworkEntry{
+					{CIDR: "10.128.0.0/14", HostPrefix: 24},
 				},
-				ServiceNetwork: "172.30.0.0/16",
+				ServiceNetwork: []string{
+					"172.30.0.0/16",
+				},
 			},
 			expectError: false,
 		},
 		{
 			name: "valid multiple networks",
-			cn: osdnv1.ClusterNetwork{
-				ClusterNetworks: []osdnv1.ClusterNetworkEntry{
-					{CIDR: "10.128.0.0/14", HostSubnetLength: 8},
-					{CIDR: "15.128.0.0/14", HostSubnetLength: 8},
+			cfg: operv1.NetworkSpec{
+				ClusterNetwork: []operv1.ClusterNetworkEntry{
+					{CIDR: "10.128.0.0/14", HostPrefix: 24},
+					{CIDR: "15.128.0.0/14", HostPrefix: 24},
 				},
-				ServiceNetwork: "172.30.0.0/16",
+				ServiceNetwork: []string{
+					"172.30.0.0/16",
+				},
 			},
 			expectError: false,
 		},
 		{
 			name: "hostIPNet inside ClusterNetwork",
-			cn: osdnv1.ClusterNetwork{
-				ClusterNetworks: []osdnv1.ClusterNetworkEntry{
-					{CIDR: "10.0.0.0/8", HostSubnetLength: 8},
+			cfg: operv1.NetworkSpec{
+				ClusterNetwork: []operv1.ClusterNetworkEntry{
+					{CIDR: "10.0.0.0/8", HostPrefix: 24},
 				},
-				ServiceNetwork: "172.30.0.0/16",
+				ServiceNetwork: []string{
+					"172.30.0.0/16",
+				},
 			},
 			expectError: true,
 		},
 		{
 			name: "ClusterNetwork inside hostIPNet",
-			cn: osdnv1.ClusterNetwork{
-				ClusterNetworks: []osdnv1.ClusterNetworkEntry{
-					{CIDR: "10.1.0.0/16", HostSubnetLength: 8},
+			cfg: operv1.NetworkSpec{
+				ClusterNetwork: []operv1.ClusterNetworkEntry{
+					{CIDR: "10.1.0.0/16", HostPrefix: 24},
 				},
-				ServiceNetwork: "172.30.0.0/16",
+				ServiceNetwork: []string{
+					"172.30.0.0/16",
+				},
 			},
 			expectError: true,
 		},
 		{
 			name: "hostIPNet inside ServiceNetwork",
-			cn: osdnv1.ClusterNetwork{
-				ClusterNetworks: []osdnv1.ClusterNetworkEntry{
-					{CIDR: "10.128.0.0/14", HostSubnetLength: 8},
+			cfg: operv1.NetworkSpec{
+				ClusterNetwork: []operv1.ClusterNetworkEntry{
+					{CIDR: "10.128.0.0/14", HostPrefix: 24},
 				},
-				ServiceNetwork: "172.0.0.0/8",
+				ServiceNetwork: []string{
+					"172.0.0.0/8",
+				},
 			},
 			expectError: true,
 		},
 		{
 			name: "ServiceNetwork inside hostIPNet",
-			cn: osdnv1.ClusterNetwork{
-				ClusterNetworks: []osdnv1.ClusterNetworkEntry{
-					{CIDR: "10.128.0.0/14", HostSubnetLength: 8},
+			cfg: operv1.NetworkSpec{
+				ClusterNetwork: []operv1.ClusterNetworkEntry{
+					{CIDR: "10.128.0.0/14", HostPrefix: 24},
 				},
-				ServiceNetwork: "172.20.30.0/8",
+				ServiceNetwork: []string{
+					"172.20.30.0/24",
+				},
 			},
 			expectError: true,
 		},
 	}
 
 	for _, test := range tests {
-		sdnConfig, err := ParseSDNConfig(&test.cn)
+		cfg := &operv1.Network{Spec: test.cfg}
+		cfg.Spec.DefaultNetwork = operv1.DefaultNetworkDefinition{
+			Type: operv1.NetworkTypeOpenShiftSDN,
+			OpenShiftSDNConfig: &operv1.OpenShiftSDNConfig{
+				Mode: operv1.SDNModeNetworkPolicy,
+			},
+		}
+		sdnConfig, err := ParseSDNConfig(cfg)
 		if err != nil {
 			t.Fatalf("unexpected error parsing sdnConfig %q: %v", test.name, err)
 		}
@@ -141,53 +161,68 @@ func Test_checkClusterObjects(t *testing.T) {
 
 	tests := []struct {
 		name string
-		cn   osdnv1.ClusterNetwork
+		cfg  operv1.NetworkSpec
 		errs []string
 	}{
 		{
 			name: "valid",
-			cn: osdnv1.ClusterNetwork{
-				ClusterNetworks: []osdnv1.ClusterNetworkEntry{
-					{CIDR: "10.128.0.0/14", HostSubnetLength: 8},
+			cfg: operv1.NetworkSpec{
+				ClusterNetwork: []operv1.ClusterNetworkEntry{
+					{CIDR: "10.128.0.0/14", HostPrefix: 24},
 				},
-				ServiceNetwork: "172.30.0.0/16",
+				ServiceNetwork: []string{
+					"172.30.0.0/16",
+				},
 			},
 			errs: []string{},
 		},
 		{
 			name: "Subnet 10.130.0.0/23 and Pod 10.130.0.10 outside of ClusterNetwork",
-			cn: osdnv1.ClusterNetwork{
-				ClusterNetworks: []osdnv1.ClusterNetworkEntry{
-					{CIDR: "10.128.0.0/15", HostSubnetLength: 8},
+			cfg: operv1.NetworkSpec{
+				ClusterNetwork: []operv1.ClusterNetworkEntry{
+					{CIDR: "10.128.0.0/15", HostPrefix: 24},
 				},
-				ServiceNetwork: "172.30.0.0/16",
+				ServiceNetwork: []string{
+					"172.30.0.0/16",
+				},
 			},
 			errs: []string{"10.130.0.0/23", "10.130.0.10"},
 		},
 		{
 			name: "Service 172.30.99.99 outside of ServiceNetwork",
-			cn: osdnv1.ClusterNetwork{
-				ClusterNetworks: []osdnv1.ClusterNetworkEntry{
-					{CIDR: "10.128.0.0/14", HostSubnetLength: 8},
+			cfg: operv1.NetworkSpec{
+				ClusterNetwork: []operv1.ClusterNetworkEntry{
+					{CIDR: "10.128.0.0/14", HostPrefix: 24},
 				},
-				ServiceNetwork: "172.30.0.0/24",
+				ServiceNetwork: []string{
+					"172.30.0.0/24",
+				},
 			},
 			errs: []string{"172.30.99.99"},
 		},
 		{
 			name: "Too-many-error truncation",
-			cn: osdnv1.ClusterNetwork{
-				ClusterNetworks: []osdnv1.ClusterNetworkEntry{
-					{CIDR: "1.2.3.0/24", HostSubnetLength: 8},
+			cfg: operv1.NetworkSpec{
+				ClusterNetwork: []operv1.ClusterNetworkEntry{
+					{CIDR: "1.2.3.0/24", HostPrefix: 24},
 				},
-				ServiceNetwork: "4.5.6.0/24",
+				ServiceNetwork: []string{
+					"4.5.6.0/24",
+				},
 			},
 			errs: []string{"10.128.0.0/23", "10.129.0.0/23", "10.130.0.0/23", "10.128.0.2", "10.128.0.4", "10.128.0.6", "10.128.0.8", "10.129.0.3", "10.129.0.5", "10.129.0.7", "172.30.0.1", "too many errors"},
 		},
 	}
 
 	for _, test := range tests {
-		sdnConfig, err := ParseSDNConfig(&test.cn)
+		cfg := &operv1.Network{Spec: test.cfg}
+		cfg.Spec.DefaultNetwork = operv1.DefaultNetworkDefinition{
+			Type: operv1.NetworkTypeOpenShiftSDN,
+			OpenShiftSDNConfig: &operv1.OpenShiftSDNConfig{
+				Mode: operv1.SDNModeNetworkPolicy,
+			},
+		}
+		sdnConfig, err := ParseSDNConfig(cfg)
 		if err != nil {
 			t.Fatalf("unexpected error parsing sdnConfig %q: %v", test.name, err)
 		}
@@ -214,44 +249,93 @@ func Test_checkClusterObjects(t *testing.T) {
 func TestParseSDNConfig(t *testing.T) {
 	tests := []struct {
 		name string
-		cn   osdnv1.ClusterNetwork
+		cfg  operv1.Network
 		err  string
 	}{
 		{
 			name: "valid single cidr",
-			cn: osdnv1.ClusterNetwork{
-				ClusterNetworks: []osdnv1.ClusterNetworkEntry{{CIDR: "10.0.0.0/16"}},
-				ServiceNetwork:  "172.30.0.0/16",
+			cfg: operv1.Network{
+				Spec: operv1.NetworkSpec{
+					DefaultNetwork: operv1.DefaultNetworkDefinition{
+						Type: operv1.NetworkTypeOpenShiftSDN,
+						OpenShiftSDNConfig: &operv1.OpenShiftSDNConfig{
+							Mode: operv1.SDNModeNetworkPolicy,
+						},
+					},
+					ClusterNetwork: []operv1.ClusterNetworkEntry{
+						{CIDR: "10.0.0.0/16", HostPrefix: 24},
+					},
+					ServiceNetwork: []string{
+						"172.30.0.0/16",
+					},
+				},
 			},
 			err: "",
 		},
 		{
 			name: "valid multiple cidr",
-			cn: osdnv1.ClusterNetwork{
-				ClusterNetworks: []osdnv1.ClusterNetworkEntry{{CIDR: "10.0.0.0/16"}, {CIDR: "10.4.0.0/16"}},
-				ServiceNetwork:  "172.30.0.0/16",
+			cfg: operv1.Network{
+				Spec: operv1.NetworkSpec{
+					DefaultNetwork: operv1.DefaultNetworkDefinition{
+						Type: operv1.NetworkTypeOpenShiftSDN,
+						OpenShiftSDNConfig: &operv1.OpenShiftSDNConfig{
+							Mode: operv1.SDNModeNetworkPolicy,
+						},
+					},
+					ClusterNetwork: []operv1.ClusterNetworkEntry{
+						{CIDR: "10.0.0.0/16", HostPrefix: 24},
+						{CIDR: "10.4.0.0/16", HostPrefix: 24},
+					},
+					ServiceNetwork: []string{
+						"172.30.0.0/16",
+					},
+				},
 			},
 			err: "",
 		},
 		{
 			name: "invalid CIDR address",
-			cn: osdnv1.ClusterNetwork{
-				ClusterNetworks: []osdnv1.ClusterNetworkEntry{{CIDR: "Invalid"}},
-				ServiceNetwork:  "172.30.0.0/16",
+			cfg: operv1.Network{
+				Spec: operv1.NetworkSpec{
+					DefaultNetwork: operv1.DefaultNetworkDefinition{
+						Type: operv1.NetworkTypeOpenShiftSDN,
+						OpenShiftSDNConfig: &operv1.OpenShiftSDNConfig{
+							Mode: operv1.SDNModeNetworkPolicy,
+						},
+					},
+					ClusterNetwork: []operv1.ClusterNetworkEntry{
+						{CIDR: "Invalid", HostPrefix: 24},
+					},
+					ServiceNetwork: []string{
+						"172.30.0.0/16",
+					},
+				},
 			},
 			err: "Invalid",
 		},
 		{
 			name: "invalid serviceNetwork",
-			cn: osdnv1.ClusterNetwork{
-				ClusterNetworks: []osdnv1.ClusterNetworkEntry{{CIDR: "10.0.0.0/16"}},
-				ServiceNetwork:  "172.30.0.0i/16",
+			cfg: operv1.Network{
+				Spec: operv1.NetworkSpec{
+					DefaultNetwork: operv1.DefaultNetworkDefinition{
+						Type: operv1.NetworkTypeOpenShiftSDN,
+						OpenShiftSDNConfig: &operv1.OpenShiftSDNConfig{
+							Mode: operv1.SDNModeNetworkPolicy,
+						},
+					},
+					ClusterNetwork: []operv1.ClusterNetworkEntry{
+						{CIDR: "10.0.0.0/16", HostPrefix: 24},
+					},
+					ServiceNetwork: []string{
+						"172.30.0.0i/16",
+					},
+				},
 			},
 			err: "172.30.0.0i/16",
 		},
 	}
 	for _, test := range tests {
-		_, err := ParseSDNConfig(&test.cn)
+		_, err := ParseSDNConfig(&test.cfg)
 		if err == nil {
 			if len(test.err) > 0 {
 				t.Fatalf("test %q unexpectedly did not get an error", test.name)

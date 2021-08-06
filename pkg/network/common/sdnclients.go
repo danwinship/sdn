@@ -16,12 +16,15 @@ import (
 	osdnclient "github.com/openshift/client-go/network/clientset/versioned"
 	osdnfake "github.com/openshift/client-go/network/clientset/versioned/fake"
 	osdninformers "github.com/openshift/client-go/network/informers/externalversions"
+	operclient "github.com/openshift/client-go/operator/clientset/versioned"
+	operfake "github.com/openshift/client-go/operator/clientset/versioned/fake"
 )
 
 // SDNClients holds the clients and informers used by openshift-sdn
 type SDNClients struct {
 	KubeClient kubernetes.Interface
 	OSDNClient osdnclient.Interface
+	OperClient operclient.Interface
 
 	KubeInformers kinformers.SharedInformerFactory
 	OSDNInformers osdninformers.SharedInformerFactory
@@ -49,6 +52,7 @@ func NewFakeSDNClients() *SDNClients {
 	clients := &SDNClients{
 		KubeClient: kfake.NewSimpleClientset(),
 		OSDNClient: osdnfake.NewSimpleClientset(),
+		OperClient: operfake.NewSimpleClientset(),
 	}
 	clients.KubeInformers = kinformers.NewSharedInformerFactory(clients.KubeClient, time.Hour)
 	clients.OSDNInformers = osdninformers.NewSharedInformerFactory(clients.OSDNClient, time.Hour)

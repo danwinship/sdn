@@ -193,6 +193,8 @@ github.com/opencontainers/runtime-spec/specs-go
 ## explicit
 github.com/openshift/api/config/v1
 github.com/openshift/api/network/v1
+github.com/openshift/api/operator/v1
+github.com/openshift/api/operator/v1alpha1
 github.com/openshift/api/unidling/v1alpha1
 # github.com/openshift/build-machinery-go v0.0.0-20210712174854-1bb7fd1518d3
 ## explicit
@@ -216,6 +218,13 @@ github.com/openshift/client-go/network/informers/externalversions/internalinterf
 github.com/openshift/client-go/network/informers/externalversions/network
 github.com/openshift/client-go/network/informers/externalversions/network/v1
 github.com/openshift/client-go/network/listers/network/v1
+github.com/openshift/client-go/operator/clientset/versioned
+github.com/openshift/client-go/operator/clientset/versioned/fake
+github.com/openshift/client-go/operator/clientset/versioned/scheme
+github.com/openshift/client-go/operator/clientset/versioned/typed/operator/v1
+github.com/openshift/client-go/operator/clientset/versioned/typed/operator/v1/fake
+github.com/openshift/client-go/operator/clientset/versioned/typed/operator/v1alpha1
+github.com/openshift/client-go/operator/clientset/versioned/typed/operator/v1alpha1/fake
 # github.com/openshift/library-go v0.0.0-20210729061737-1f51a749a2f3
 ## explicit
 github.com/openshift/library-go/pkg/config/leaderelection

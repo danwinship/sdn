@@ -14,10 +14,6 @@ func HostSubnetToString(subnet *osdnv1.HostSubnet) string {
 	return fmt.Sprintf("%s (host: %q, ip: %q, subnet: %q)", subnet.Name, subnet.Host, subnet.HostIP, subnet.Subnet)
 }
 
-func ClusterNetworkToString(n *osdnv1.ClusterNetwork) string {
-	return fmt.Sprintf("%s (network: %q, hostSubnetBits: %d, serviceNetwork: %q, pluginName: %q)", n.Name, n.Network, n.HostSubnetLength, n.ServiceNetwork, n.PluginName)
-}
-
 // Generate the default gateway IP Address for a subnet
 func GenerateDefaultGateway(sna *net.IPNet) net.IP {
 	ip := append([]byte{}, sna.IP...)
