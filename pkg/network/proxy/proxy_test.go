@@ -304,11 +304,11 @@ func newTestOsdnProxy(usesEndpointSlices bool) (*OsdnProxy, *testProxy, *testPro
 	kubeClient := fake.NewSimpleClientset()
 	kubeInformers := informers.NewSharedInformerFactory(kubeClient, time.Hour)
 
-	proxy, err := New(kubeClient, kubeInformers, nil, nil, 0)
+	sdnConfig := common.NewTestSDNConfig()
+	proxy, err := New(kubeClient, kubeInformers, nil, nil, sdnConfig, 0)
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	proxy.sdnConfig = common.NewTestSDNConfig()
 
 	mainProxy := newTestProxy("main", usesEndpointSlices)
 	unidlingProxy := newTestProxy("unidling", false)

@@ -76,6 +76,7 @@ func New(kClient kubernetes.Interface,
 	kubeInformers informers.SharedInformerFactory,
 	osdnClient osdnclient.Interface,
 	osdnInformers osdninformers.SharedInformerFactory,
+	sdnConfig *common.SDNConfig,
 	minSyncPeriod time.Duration) (*OsdnProxy, error) {
 
 	egressDNS, err := common.NewEgressDNS(true, false)
@@ -87,6 +88,7 @@ func New(kClient kubernetes.Interface,
 		kubeInformers: kubeInformers,
 		osdnClient:    osdnClient,
 		osdnInformers: osdnInformers,
+		sdnConfig:     sdnConfig,
 		minSyncPeriod: minSyncPeriod,
 		egressDNS:     egressDNS,
 		namespaces:    make(map[string]*proxyNamespace),
@@ -108,11 +110,6 @@ func (proxy *OsdnProxy) SetBaseProxies(mainProxy, unidlingProxy HybridizableProx
 func (proxy *OsdnProxy) Start(waitChan chan<- bool) error {
 	klog.Infof("Starting multitenant SDN proxy endpoint filter")
 
-	var err error
-	proxy.sdnConfig, err = common.GetSDNConfig(proxy.osdnClient)
-	if err != nil {
-		return fmt.Errorf("could not get network info: %s", err)
-	}
 	proxy.waitChan = waitChan
 
 	policies, err := proxy.osdnClient.NetworkV1().EgressNetworkPolicies(metav1.NamespaceAll).List(context.TODO(), metav1.ListOptions{})

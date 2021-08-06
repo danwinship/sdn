@@ -47,13 +47,9 @@ type OsdnMaster struct {
 func Start(kClient kclientset.Interface,
 	kubeInformers informers.SharedInformerFactory,
 	osdnClient osdnclient.Interface,
-	osdnInformers osdninformers.SharedInformerFactory) error {
+	osdnInformers osdninformers.SharedInformerFactory,
+	sdnConfig *common.SDNConfig) error {
 	klog.Infof("Initializing SDN master")
-
-	sdnConfig, err := common.GetSDNConfig(osdnClient)
-	if err != nil {
-		return err
-	}
 
 	master := &OsdnMaster{
 		kClient:    kClient,
@@ -68,10 +64,10 @@ func Start(kClient kclientset.Interface,
 		hostSubnetNodeIPs: map[ktypes.UID]string{},
 	}
 
-	if err = master.checkClusterNetworkAgainstLocalNetworks(); err != nil {
+	if err := master.checkClusterNetworkAgainstLocalNetworks(); err != nil {
 		return err
 	}
-	if err = master.checkClusterNetworkAgainstClusterObjects(); err != nil {
+	if err := master.checkClusterNetworkAgainstClusterObjects(); err != nil {
 		klog.Errorf("Cluster contains objects incompatible with ClusterNetwork: %v", err)
 	}
 

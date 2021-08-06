@@ -23,10 +23,11 @@ func (sdn *openShiftSDN) initSDN() error {
 	sdn.osdnNode, err = sdnnode.New(&sdnnode.OsdnNodeConfig{
 		NodeName:      sdn.nodeName,
 		NodeIP:        sdn.nodeIP,
-		OSDNClient:    sdn.informers.osdnClient,
 		KClient:       sdn.informers.kubeClient,
 		KubeInformers: sdn.informers.kubeInformers,
+		OSDNClient:    sdn.informers.osdnClient,
 		OSDNInformers: sdn.informers.osdnInformers,
+		SDNConfig:     sdn.sdnConfig,
 		IPTables:      sdn.ipt,
 		MasqueradeBit: sdn.proxyConfig.IPTables.MasqueradeBit,
 		ProxyMode:     sdn.proxyConfig.Mode,

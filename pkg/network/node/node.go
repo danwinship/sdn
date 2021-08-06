@@ -72,21 +72,25 @@ type OsdnNodeConfig struct {
 	KubeInformers informers.SharedInformerFactory
 	OSDNInformers osdninformers.SharedInformerFactory
 
+	SDNConfig *common.SDNConfig
+
 	IPTables      iptables.Interface
 	ProxyMode     kubeproxyconfig.ProxyMode
 	MasqueradeBit *int32
 }
 
 type OsdnNode struct {
-	policy           osdnPolicy
-	kClient          kubernetes.Interface
-	osdnClient       osdnclient.Interface
-	recorder         record.EventRecorder
-	oc               *ovsController
-	sdnConfig        *common.SDNConfig
-	podManager       *podManager
-	ipt              iptables.Interface
-	nodeIPTables     *NodeIPTables
+	sdnConfig *common.SDNConfig
+
+	policy       osdnPolicy
+	kClient      kubernetes.Interface
+	osdnClient   osdnclient.Interface
+	recorder     record.EventRecorder
+	oc           *ovsController
+	podManager   *podManager
+	ipt          iptables.Interface
+	nodeIPTables *NodeIPTables
+
 	localSubnetCIDR  string
 	localGatewayCIDR string
 	localIP          string
@@ -111,6 +115,7 @@ type OsdnNode struct {
 // Called by higher layers to create the SDN node instance
 func New(c *OsdnNodeConfig) (*OsdnNode, error) {
 	node := &OsdnNode{
+		sdnConfig:     c.SDNConfig,
 		kClient:       c.KClient,
 		osdnClient:    c.OSDNClient,
 		recorder:      c.Recorder,
@@ -121,19 +126,12 @@ func New(c *OsdnNodeConfig) (*OsdnNode, error) {
 		osdnInformers: c.OSDNInformers,
 	}
 
-	sdnConfig, err := common.GetSDNConfig(c.OSDNClient)
-	if err != nil {
-		return nil, fmt.Errorf("could not get ClusterNetwork resource: %v", err)
-	}
-
-	if err := c.validateNodeIP(sdnConfig); err != nil {
+	if err := c.validateNodeIP(); err != nil {
 		return nil, err
 	}
 
-	node.sdnConfig = sdnConfig
-
 	var pluginId int
-	switch sdnConfig.PluginName {
+	switch node.sdnConfig.PluginName {
 	case networkutils.SingleTenantPluginName:
 		node.policy = NewSingleTenantPlugin()
 		pluginId = 0
@@ -149,14 +147,14 @@ func New(c *OsdnNodeConfig) (*OsdnNode, error) {
 		pluginId = 2
 		node.useConnTrack = true
 	default:
-		return nil, fmt.Errorf("Unknown plugin name %q", sdnConfig.PluginName)
+		return nil, fmt.Errorf("Unknown plugin name %q", node.sdnConfig.PluginName)
 	}
 
 	if node.useConnTrack && c.ProxyMode == kubeproxyconfig.ProxyModeUserspace {
-		return nil, fmt.Errorf("%q plugin is not compatible with proxy-mode %q", sdnConfig.PluginName, c.ProxyMode)
+		return nil, fmt.Errorf("%q plugin is not compatible with proxy-mode %q", node.sdnConfig.PluginName, c.ProxyMode)
 	}
 
-	klog.Infof("Initializing SDN node %q (%s) of type %q", c.NodeName, c.NodeIP, sdnConfig.PluginName)
+	klog.Infof("Initializing SDN node %q (%s) of type %q", c.NodeName, c.NodeIP, node.sdnConfig.PluginName)
 
 	ovsif, err := ovs.New(kexec.New(), Br0)
 	if err != nil {
@@ -164,7 +162,7 @@ func New(c *OsdnNodeConfig) (*OsdnNode, error) {
 	}
 	node.oc = NewOVSController(ovsif, pluginId, node.useConnTrack, node.localIP)
 
-	node.podManager = newPodManager(c.KClient, node.policy, sdnConfig.MTU, node.oc)
+	node.podManager = newPodManager(c.KClient, node.policy, node.sdnConfig.MTU, node.oc)
 
 	if c.MasqueradeBit != nil {
 		node.masqueradeBit = uint32(*c.MasqueradeBit)
@@ -183,7 +181,7 @@ func New(c *OsdnNodeConfig) (*OsdnNode, error) {
 	return node, nil
 }
 
-func (c *OsdnNodeConfig) validateNodeIP(sdnConfig *common.SDNConfig) error {
+func (c *OsdnNodeConfig) validateNodeIP() error {
 	if _, _, err := GetLinkDetails(c.NodeIP); err != nil {
 		if err == ErrorNetworkInterfaceNotFound {
 			err = fmt.Errorf("node IP %q is not a local/private address (hostname %q)", c.NodeIP, c.NodeName)
@@ -195,7 +193,7 @@ func (c *OsdnNodeConfig) validateNodeIP(sdnConfig *common.SDNConfig) error {
 	if err != nil {
 		return fmt.Errorf("failed to get host network information: %v", err)
 	}
-	if err := sdnConfig.CheckHostNetworks(hostIPNets); err != nil {
+	if err := c.SDNConfig.CheckHostNetworks(hostIPNets); err != nil {
 		// checkHostNetworks() errors *should* be fatal, but we didn't used to check this, and we can't break (mostly-)working nodes on upgrade.
 		klog.Errorf("Local networks conflict with SDN; this will eventually cause problems: %v", err)
 	}

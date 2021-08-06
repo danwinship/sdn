@@ -20,6 +20,7 @@ import (
 	kexec "k8s.io/utils/exec"
 
 	"github.com/openshift/library-go/pkg/serviceability"
+	sdncommon "github.com/openshift/sdn/pkg/network/common"
 	sdnnode "github.com/openshift/sdn/pkg/network/node"
 	sdnproxy "github.com/openshift/sdn/pkg/network/proxy"
 	"github.com/openshift/sdn/pkg/version"
@@ -30,6 +31,8 @@ import (
 type openShiftSDN struct {
 	nodeName string
 	nodeIP   string
+
+	sdnConfig *sdncommon.SDNConfig
 
 	proxyConfigFilePath string
 	proxyConfig         *kubeproxyconfig.KubeProxyConfiguration
@@ -134,6 +137,11 @@ func (sdn *openShiftSDN) init() error {
 	err = sdn.buildInformers()
 	if err != nil {
 		return fmt.Errorf("failed to build informers: %v", err)
+	}
+
+	sdn.sdnConfig, err = sdncommon.GetSDNConfig(sdn.informers.osdnClient)
+	if err != nil {
+		return fmt.Errorf("failed to get SDN config: %v", err)
 	}
 
 	sdn.ipt = iptables.New(kexec.New(), iptables.ProtocolIPv4)

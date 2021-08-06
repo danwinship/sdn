@@ -17,6 +17,7 @@ import (
 	configv1 "github.com/openshift/api/config/v1"
 	leaderelectionconverter "github.com/openshift/library-go/pkg/config/leaderelection"
 	"github.com/openshift/library-go/pkg/serviceability"
+	sdncommon "github.com/openshift/sdn/pkg/network/common"
 	sdnmaster "github.com/openshift/sdn/pkg/network/master"
 
 	// for metrics
@@ -42,11 +43,18 @@ func RunOpenShiftNetworkController() error {
 		if err != nil {
 			klog.Fatal(err)
 		}
+
+		sdnConfig, err := sdncommon.GetSDNConfig(controllerContext.osdnClient)
+		if err != nil {
+			klog.Fatalf("failed to get SDN config: %v", err)
+		}
+
 		if err := sdnmaster.Start(
 			controllerContext.kubernetesClient,
 			controllerContext.kubernetesInformers,
 			controllerContext.osdnClient,
 			controllerContext.osdnInformers,
+			sdnConfig,
 		); err != nil {
 			klog.Fatalf("Error starting OpenShift Network Controller: %v", err)
 		}

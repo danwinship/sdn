@@ -37,6 +37,7 @@ func (sdn *openShiftSDN) initProxy() error {
 		sdn.informers.kubeInformers,
 		sdn.informers.osdnClient,
 		sdn.informers.osdnInformers,
+		sdn.sdnConfig,
 		sdn.proxyConfig.IPTables.MinSyncPeriod.Duration)
 	return err
 }
