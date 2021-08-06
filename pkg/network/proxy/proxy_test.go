@@ -309,7 +309,7 @@ func newTestOsdnProxy(usesEndpointSlices bool) (*OsdnProxy, *testProxy, *testPro
 		return nil, nil, nil, err
 	}
 
-	proxy.networkInfo = &common.ParsedClusterNetwork{
+	proxy.sdnConfig = &common.SDNConfig{
 		ClusterNetworks: []common.ParsedClusterNetworkEntry{
 			{ClusterCIDR: mustParseCIDR("10.128.0.0/14"), HostSubnetLength: 8},
 		},

@@ -38,12 +38,12 @@ func TestCheckHostNetworks(t *testing.T) {
 
 	tests := []struct {
 		name        string
-		networkInfo *ParsedClusterNetwork
+		sdnConfig   *SDNConfig
 		expectError bool
 	}{
 		{
 			name: "valid",
-			networkInfo: &ParsedClusterNetwork{
+			sdnConfig: &SDNConfig{
 				ClusterNetworks: []ParsedClusterNetworkEntry{
 					{ClusterCIDR: mustParseCIDR("10.128.0.0/14"), HostSubnetLength: 8},
 				},
@@ -53,7 +53,7 @@ func TestCheckHostNetworks(t *testing.T) {
 		},
 		{
 			name: "valid multiple networks",
-			networkInfo: &ParsedClusterNetwork{
+			sdnConfig: &SDNConfig{
 				ClusterNetworks: []ParsedClusterNetworkEntry{
 					{ClusterCIDR: mustParseCIDR("10.128.0.0/14"), HostSubnetLength: 8},
 					{ClusterCIDR: mustParseCIDR("15.128.0.0/14"), HostSubnetLength: 8},
@@ -64,7 +64,7 @@ func TestCheckHostNetworks(t *testing.T) {
 		},
 		{
 			name: "hostIPNet inside ClusterNetwork",
-			networkInfo: &ParsedClusterNetwork{
+			sdnConfig: &SDNConfig{
 				ClusterNetworks: []ParsedClusterNetworkEntry{
 					{ClusterCIDR: mustParseCIDR("10.0.0.0/8"), HostSubnetLength: 8},
 				},
@@ -74,7 +74,7 @@ func TestCheckHostNetworks(t *testing.T) {
 		},
 		{
 			name: "ClusterNetwork inside hostIPNet",
-			networkInfo: &ParsedClusterNetwork{
+			sdnConfig: &SDNConfig{
 				ClusterNetworks: []ParsedClusterNetworkEntry{
 					{ClusterCIDR: mustParseCIDR("10.1.0.0/16"), HostSubnetLength: 8},
 				},
@@ -84,7 +84,7 @@ func TestCheckHostNetworks(t *testing.T) {
 		},
 		{
 			name: "hostIPNet inside ServiceNetwork",
-			networkInfo: &ParsedClusterNetwork{
+			sdnConfig: &SDNConfig{
 				ClusterNetworks: []ParsedClusterNetworkEntry{
 					{ClusterCIDR: mustParseCIDR("10.128.0.0/14"), HostSubnetLength: 8},
 				},
@@ -94,7 +94,7 @@ func TestCheckHostNetworks(t *testing.T) {
 		},
 		{
 			name: "ServiceNetwork inside hostIPNet",
-			networkInfo: &ParsedClusterNetwork{
+			sdnConfig: &SDNConfig{
 				ClusterNetworks: []ParsedClusterNetworkEntry{
 					{ClusterCIDR: mustParseCIDR("10.128.0.0/14"), HostSubnetLength: 8},
 				},
@@ -105,7 +105,7 @@ func TestCheckHostNetworks(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		err := test.networkInfo.CheckHostNetworks(hostIPNets)
+		err := test.sdnConfig.CheckHostNetworks(hostIPNets)
 		if test.expectError {
 			if err == nil {
 				t.Fatalf("unexpected lack of error checking %q", test.name)
@@ -155,13 +155,13 @@ func Test_checkClusterObjects(t *testing.T) {
 	}
 
 	tests := []struct {
-		name string
-		ni   *ParsedClusterNetwork
-		errs []string
+		name      string
+		sdnConfig *SDNConfig
+		errs      []string
 	}{
 		{
 			name: "valid",
-			ni: &ParsedClusterNetwork{
+			sdnConfig: &SDNConfig{
 				ClusterNetworks: []ParsedClusterNetworkEntry{
 					{ClusterCIDR: mustParseCIDR("10.128.0.0/14"), HostSubnetLength: 8},
 				},
@@ -171,7 +171,7 @@ func Test_checkClusterObjects(t *testing.T) {
 		},
 		{
 			name: "Subnet 10.130.0.0/23 and Pod 10.130.0.10 outside of ClusterNetwork",
-			ni: &ParsedClusterNetwork{
+			sdnConfig: &SDNConfig{
 				ClusterNetworks: []ParsedClusterNetworkEntry{
 					{ClusterCIDR: mustParseCIDR("10.128.0.0/15"), HostSubnetLength: 8},
 				},
@@ -181,7 +181,7 @@ func Test_checkClusterObjects(t *testing.T) {
 		},
 		{
 			name: "Service 172.30.99.99 outside of ServiceNetwork",
-			ni: &ParsedClusterNetwork{
+			sdnConfig: &SDNConfig{
 				ClusterNetworks: []ParsedClusterNetworkEntry{
 					{ClusterCIDR: mustParseCIDR("10.128.0.0/14"), HostSubnetLength: 8},
 				},
@@ -191,7 +191,7 @@ func Test_checkClusterObjects(t *testing.T) {
 		},
 		{
 			name: "Too-many-error truncation",
-			ni: &ParsedClusterNetwork{
+			sdnConfig: &SDNConfig{
 				ClusterNetworks: []ParsedClusterNetworkEntry{
 					{ClusterCIDR: mustParseCIDR("1.2.3.0/24"), HostSubnetLength: 8},
 				},
@@ -202,7 +202,7 @@ func Test_checkClusterObjects(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		err := test.ni.CheckClusterObjects(subnets, pods, services)
+		err := test.sdnConfig.CheckClusterObjects(subnets, pods, services)
 		if err == nil {
 			if len(test.errs) > 0 {
 				t.Fatalf("test %q unexpectedly did not get an error", test.name)
@@ -221,7 +221,7 @@ func Test_checkClusterObjects(t *testing.T) {
 	}
 }
 
-func TestParseClusterNetwork(t *testing.T) {
+func TestParseSDNConfig(t *testing.T) {
 	tests := []struct {
 		name string
 		cn   osdnv1.ClusterNetwork
@@ -261,7 +261,7 @@ func TestParseClusterNetwork(t *testing.T) {
 		},
 	}
 	for _, test := range tests {
-		_, err := ParseClusterNetwork(&test.cn)
+		_, err := ParseSDNConfig(&test.cn)
 		if err == nil {
 			if len(test.err) > 0 {
 				t.Fatalf("test %q unexpectedly did not get an error", test.name)

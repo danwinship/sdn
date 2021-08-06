@@ -56,7 +56,7 @@ type OsdnProxy struct {
 	kubeInformers informers.SharedInformerFactory
 	osdnClient    osdnclient.Interface
 	osdnInformers osdninformers.SharedInformerFactory
-	networkInfo   *common.ParsedClusterNetwork
+	sdnConfig     *common.SDNConfig
 	egressDNS     *common.EgressDNS
 	minSyncPeriod time.Duration
 
@@ -109,7 +109,7 @@ func (proxy *OsdnProxy) Start(waitChan chan<- bool) error {
 	klog.Infof("Starting multitenant SDN proxy endpoint filter")
 
 	var err error
-	proxy.networkInfo, err = common.GetParsedClusterNetwork(proxy.osdnClient)
+	proxy.sdnConfig, err = common.GetSDNConfig(proxy.osdnClient)
 	if err != nil {
 		return fmt.Errorf("could not get network info: %s", err)
 	}
@@ -314,7 +314,7 @@ func (proxy *OsdnProxy) endpointsBlockable(ns *proxyNamespace, ep *corev1.Endpoi
 	for _, ss := range ep.Subsets {
 		for _, addr := range ss.Addresses {
 			ip := net.ParseIP(addr.IP)
-			if !proxy.networkInfo.PodNetworkContains(ip) && !proxy.networkInfo.ServiceNetworkContains(ip) {
+			if !proxy.sdnConfig.PodNetworkContains(ip) && !proxy.sdnConfig.ServiceNetworkContains(ip) {
 				return true
 			}
 		}
@@ -328,7 +328,7 @@ func (proxy *OsdnProxy) endpointSliceBlockable(ns *proxyNamespace, slice *discov
 	for _, ep := range slice.Endpoints {
 		for _, addr := range ep.Addresses {
 			ip := net.ParseIP(addr)
-			if !proxy.networkInfo.PodNetworkContains(ip) && !proxy.networkInfo.ServiceNetworkContains(ip) {
+			if !proxy.sdnConfig.PodNetworkContains(ip) && !proxy.sdnConfig.ServiceNetworkContains(ip) {
 				return true
 			}
 		}

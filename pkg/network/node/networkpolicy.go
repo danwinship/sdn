@@ -113,7 +113,7 @@ func (np *networkPolicyPlugin) Start(node *OsdnNode) error {
 	}
 
 	otx := node.oc.NewTransaction()
-	for _, cn := range np.node.networkInfo.ClusterNetworks {
+	for _, cn := range np.node.sdnConfig.ClusterNetworks {
 		// Must pass packets through CT NAT to ensure NAT state is handled
 		// correctly by OVS when NAT-ed packets have tuple collisions.
 		// https://bugzilla.redhat.com/show_bug.cgi?id=1910378

@@ -20,18 +20,18 @@ import (
 )
 
 type hostSubnetWatcher struct {
-	oc          *ovsController
-	localIP     string
-	networkInfo *common.ParsedClusterNetwork
+	oc        *ovsController
+	localIP   string
+	sdnConfig *common.SDNConfig
 
 	hostSubnetMap map[ktypes.UID]*osdnv1.HostSubnet
 }
 
-func newHostSubnetWatcher(oc *ovsController, localIP string, networkInfo *common.ParsedClusterNetwork) *hostSubnetWatcher {
+func newHostSubnetWatcher(oc *ovsController, localIP string, sdnConfig *common.SDNConfig) *hostSubnetWatcher {
 	return &hostSubnetWatcher{
-		oc:          oc,
-		localIP:     localIP,
-		networkInfo: networkInfo,
+		oc:        oc,
+		localIP:   localIP,
+		sdnConfig: sdnConfig,
 
 		hostSubnetMap: make(map[ktypes.UID]*osdnv1.HostSubnet),
 	}
@@ -78,7 +78,7 @@ func (hsw *hostSubnetWatcher) updateHostSubnet(hs *osdnv1.HostSubnet) error {
 			hsw.oc.DeleteHostSubnetRules(oldSubnet)
 		}
 	}
-	if err := hsw.networkInfo.ValidateNodeIP(hs.HostIP); err != nil {
+	if err := hsw.sdnConfig.ValidateNodeIP(hs.HostIP); err != nil {
 		return fmt.Errorf("ignoring invalid subnet for node %s: %v", hs.HostIP, err)
 	}
 
@@ -163,7 +163,7 @@ func (node *OsdnNode) getLocalSubnet() (string, error) {
 		return "", fmt.Errorf("failed to get subnet for this host: %s, error: %v", node.hostName, err)
 	}
 
-	if err = node.networkInfo.ValidateNodeIP(subnet.HostIP); err != nil {
+	if err = node.sdnConfig.ValidateNodeIP(subnet.HostIP); err != nil {
 		return "", fmt.Errorf("failed to validate own HostSubnet: %v", err)
 	}
 

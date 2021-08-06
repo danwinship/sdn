@@ -27,10 +27,10 @@ const (
 )
 
 type OsdnMaster struct {
-	kClient     kclientset.Interface
-	osdnClient  osdnclient.Interface
-	networkInfo *common.ParsedClusterNetwork
-	vnids       *masterVNIDMap
+	kClient    kclientset.Interface
+	osdnClient osdnclient.Interface
+	sdnConfig  *common.SDNConfig
+	vnids      *masterVNIDMap
 
 	nodeInformer         kcoreinformers.NodeInformer
 	namespaceInformer    kcoreinformers.NamespaceInformer
@@ -50,15 +50,15 @@ func Start(kClient kclientset.Interface,
 	osdnInformers osdninformers.SharedInformerFactory) error {
 	klog.Infof("Initializing SDN master")
 
-	networkInfo, err := common.GetParsedClusterNetwork(osdnClient)
+	sdnConfig, err := common.GetSDNConfig(osdnClient)
 	if err != nil {
 		return err
 	}
 
 	master := &OsdnMaster{
-		kClient:     kClient,
-		osdnClient:  osdnClient,
-		networkInfo: networkInfo,
+		kClient:    kClient,
+		osdnClient: osdnClient,
+		sdnConfig:  sdnConfig,
 
 		nodeInformer:         kubeInformers.Core().V1().Nodes(),
 		namespaceInformer:    kubeInformers.Core().V1().Namespaces(),
@@ -82,7 +82,7 @@ func Start(kClient kclientset.Interface,
 	master.hostSubnetInformer.Informer().GetController()
 	master.netNamespaceInformer.Informer().GetController()
 
-	go master.startSubSystems(master.networkInfo.PluginName)
+	go master.startSubSystems(master.sdnConfig.PluginName)
 
 	return nil
 }
@@ -122,7 +122,7 @@ func (master *OsdnMaster) checkClusterNetworkAgainstLocalNetworks() error {
 	if err != nil {
 		return err
 	}
-	return master.networkInfo.CheckHostNetworks(hostIPNets)
+	return master.sdnConfig.CheckHostNetworks(hostIPNets)
 }
 
 func (master *OsdnMaster) checkClusterNetworkAgainstClusterObjects() error {
@@ -139,5 +139,5 @@ func (master *OsdnMaster) checkClusterNetworkAgainstClusterObjects() error {
 		services = serviceList.Items
 	}
 
-	return master.networkInfo.CheckClusterObjects(subnets, pods, services)
+	return master.sdnConfig.CheckClusterObjects(subnets, pods, services)
 }

@@ -32,7 +32,7 @@ func ClusterNetworkListContains(clusterNetworks []ParsedClusterNetworkEntry, ipa
 	return nil, false
 }
 
-type ParsedClusterNetwork struct {
+type SDNConfig struct {
 	PluginName      string
 	ClusterNetworks []ParsedClusterNetworkEntry
 	ServiceNetwork  *net.IPNet
@@ -45,8 +45,8 @@ type ParsedClusterNetworkEntry struct {
 	HostSubnetLength uint32
 }
 
-func ParseClusterNetwork(cn *osdnv1.ClusterNetwork) (*ParsedClusterNetwork, error) {
-	pcn := &ParsedClusterNetwork{
+func ParseSDNConfig(cn *osdnv1.ClusterNetwork) (*SDNConfig, error) {
+	sdnConfig := &SDNConfig{
 		PluginName:      cn.PluginName,
 		ClusterNetworks: make([]ParsedClusterNetworkEntry, 0, len(cn.ClusterNetworks)),
 	}
@@ -60,37 +60,37 @@ func ParseClusterNetwork(cn *osdnv1.ClusterNetwork) (*ParsedClusterNetwork, erro
 			}
 			klog.Errorf("Configured clusterNetworks value %q is invalid; treating it as %q", entry.CIDR, cidr.String())
 		}
-		pcn.ClusterNetworks = append(pcn.ClusterNetworks, ParsedClusterNetworkEntry{ClusterCIDR: cidr, HostSubnetLength: entry.HostSubnetLength})
+		sdnConfig.ClusterNetworks = append(sdnConfig.ClusterNetworks, ParsedClusterNetworkEntry{ClusterCIDR: cidr, HostSubnetLength: entry.HostSubnetLength})
 	}
 
 	var err error
-	pcn.ServiceNetwork, err = networkutils.ParseCIDRMask(cn.ServiceNetwork)
+	sdnConfig.ServiceNetwork, err = networkutils.ParseCIDRMask(cn.ServiceNetwork)
 	if err != nil {
-		_, pcn.ServiceNetwork, err = net.ParseCIDR(cn.ServiceNetwork)
+		_, sdnConfig.ServiceNetwork, err = net.ParseCIDR(cn.ServiceNetwork)
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse ServiceNetwork CIDR %s: %v", cn.ServiceNetwork, err)
 		}
-		klog.Errorf("Configured serviceNetworkCIDR value %q is invalid; treating it as %q", cn.ServiceNetwork, pcn.ServiceNetwork.String())
+		klog.Errorf("Configured serviceNetworkCIDR value %q is invalid; treating it as %q", cn.ServiceNetwork, sdnConfig.ServiceNetwork.String())
 	}
 
 	if cn.VXLANPort != nil {
-		pcn.VXLANPort = *cn.VXLANPort
+		sdnConfig.VXLANPort = *cn.VXLANPort
 	} else {
-		pcn.VXLANPort = 4789
+		sdnConfig.VXLANPort = 4789
 	}
 
 	if cn.MTU != nil {
-		pcn.MTU = *cn.MTU
+		sdnConfig.MTU = *cn.MTU
 	} else {
-		pcn.MTU = 1450
+		sdnConfig.MTU = 1450
 	}
 
-	return pcn, nil
+	return sdnConfig, nil
 }
 
-// PodNetworkContains determines whether pcn's pod network contains ip
-func (pcn *ParsedClusterNetwork) PodNetworkContains(ip net.IP) bool {
-	for _, cn := range pcn.ClusterNetworks {
+// PodNetworkContains determines whether sdnConfig's pod network contains ip
+func (sdnConfig *SDNConfig) PodNetworkContains(ip net.IP) bool {
+	for _, cn := range sdnConfig.ClusterNetworks {
 		if cn.ClusterCIDR.Contains(ip) {
 			return true
 		}
@@ -98,17 +98,17 @@ func (pcn *ParsedClusterNetwork) PodNetworkContains(ip net.IP) bool {
 	return false
 }
 
-// ServiceNetworkContains determines whether pcn's service network contains ip
-func (pcn *ParsedClusterNetwork) ServiceNetworkContains(ip net.IP) bool {
-	if pcn.ServiceNetwork != nil {
-		if pcn.ServiceNetwork.Contains(ip) {
+// ServiceNetworkContains determines whether sdnConfig's service network contains ip
+func (sdnConfig *SDNConfig) ServiceNetworkContains(ip net.IP) bool {
+	if sdnConfig.ServiceNetwork != nil {
+		if sdnConfig.ServiceNetwork.Contains(ip) {
 			return true
 		}
 	}
 	return false
 }
 
-func (pcn *ParsedClusterNetwork) ValidateNodeIP(nodeIP string) error {
+func (sdnConfig *SDNConfig) ValidateNodeIP(nodeIP string) error {
 	if nodeIP == "" || nodeIP == "127.0.0.1" {
 		return fmt.Errorf("invalid node IP %q", nodeIP)
 	}
@@ -120,39 +120,39 @@ func (pcn *ParsedClusterNetwork) ValidateNodeIP(nodeIP string) error {
 		return fmt.Errorf("failed to parse node IP %s", nodeIP)
 	}
 
-	if conflictingCIDR, found := ClusterNetworkListContains(pcn.ClusterNetworks, ipaddr); found {
+	if conflictingCIDR, found := ClusterNetworkListContains(sdnConfig.ClusterNetworks, ipaddr); found {
 		return fmt.Errorf("node IP %s conflicts with cluster network %s", nodeIP, conflictingCIDR.String())
 	}
-	if pcn.ServiceNetwork.Contains(ipaddr) {
-		return fmt.Errorf("node IP %s conflicts with service network %s", nodeIP, pcn.ServiceNetwork.String())
+	if sdnConfig.ServiceNetwork.Contains(ipaddr) {
+		return fmt.Errorf("node IP %s conflicts with service network %s", nodeIP, sdnConfig.ServiceNetwork.String())
 	}
 
 	return nil
 }
 
-func (pcn *ParsedClusterNetwork) CheckHostNetworks(hostIPNets []*net.IPNet) error {
+func (sdnConfig *SDNConfig) CheckHostNetworks(hostIPNets []*net.IPNet) error {
 	errList := []error{}
 	for _, ipNet := range hostIPNets {
-		for _, clusterNetwork := range pcn.ClusterNetworks {
+		for _, clusterNetwork := range sdnConfig.ClusterNetworks {
 			if cidrsOverlap(ipNet, clusterNetwork.ClusterCIDR) {
 				errList = append(errList, fmt.Errorf("cluster IP: %s conflicts with host network: %s", clusterNetwork.ClusterCIDR.IP.String(), ipNet.String()))
 			}
 		}
-		if cidrsOverlap(ipNet, pcn.ServiceNetwork) {
-			errList = append(errList, fmt.Errorf("service IP: %s conflicts with host network: %s", pcn.ServiceNetwork.String(), ipNet.String()))
+		if cidrsOverlap(ipNet, sdnConfig.ServiceNetwork) {
+			errList = append(errList, fmt.Errorf("service IP: %s conflicts with host network: %s", sdnConfig.ServiceNetwork.String(), ipNet.String()))
 		}
 	}
 	return kerrors.NewAggregate(errList)
 }
 
-func (pcn *ParsedClusterNetwork) CheckClusterObjects(subnets []osdnv1.HostSubnet, pods []corev1.Pod, services []corev1.Service) error {
+func (sdnConfig *SDNConfig) CheckClusterObjects(subnets []osdnv1.HostSubnet, pods []corev1.Pod, services []corev1.Service) error {
 	var errList []error
 
 	for _, subnet := range subnets {
 		subnetIP, _, _ := net.ParseCIDR(subnet.Subnet)
 		if subnetIP == nil {
 			errList = append(errList, fmt.Errorf("failed to parse network address: %s", subnet.Subnet))
-		} else if !pcn.PodNetworkContains(subnetIP) {
+		} else if !sdnConfig.PodNetworkContains(subnetIP) {
 			errList = append(errList, fmt.Errorf("existing node subnet: %s is not part of any cluster network CIDR", subnet.Subnet))
 		}
 		if len(errList) >= 10 {
@@ -167,7 +167,7 @@ func (pcn *ParsedClusterNetwork) CheckClusterObjects(subnets []osdnv1.HostSubnet
 		if podIP == nil {
 			continue
 		}
-		if !pcn.PodNetworkContains(podIP) {
+		if !sdnConfig.PodNetworkContains(podIP) {
 			errList = append(errList, fmt.Errorf("existing pod %s:%s with IP %s is not part of cluster network", pod.Namespace, pod.Name, pod.Status.PodIP))
 			if len(errList) >= 10 {
 				break
@@ -179,8 +179,8 @@ func (pcn *ParsedClusterNetwork) CheckClusterObjects(subnets []osdnv1.HostSubnet
 		if svcIP == nil {
 			continue
 		}
-		if !pcn.ServiceNetworkContains(svcIP) {
-			errList = append(errList, fmt.Errorf("existing service %s:%s with IP %s is not part of service network %s", svc.Namespace, svc.Name, svc.Spec.ClusterIP, pcn.ServiceNetwork.String()))
+		if !sdnConfig.ServiceNetworkContains(svcIP) {
+			errList = append(errList, fmt.Errorf("existing service %s:%s with IP %s is not part of service network %s", svc.Namespace, svc.Name, svc.Spec.ClusterIP, sdnConfig.ServiceNetwork.String()))
 			if len(errList) >= 10 {
 				break
 			}
@@ -193,7 +193,7 @@ func (pcn *ParsedClusterNetwork) CheckClusterObjects(subnets []osdnv1.HostSubnet
 	return kerrors.NewAggregate(errList)
 }
 
-func GetParsedClusterNetwork(osdnClient osdnclient.Interface) (*ParsedClusterNetwork, error) {
+func GetSDNConfig(osdnClient osdnclient.Interface) (*SDNConfig, error) {
 	cn, err := osdnClient.NetworkV1().ClusterNetworks().Get(context.TODO(), osdnv1.ClusterNetworkDefault, metav1.GetOptions{})
 	if err != nil {
 		return nil, err
@@ -201,7 +201,7 @@ func GetParsedClusterNetwork(osdnClient osdnclient.Interface) (*ParsedClusterNet
 	if err = ValidateClusterNetwork(cn); err != nil {
 		return nil, fmt.Errorf("ClusterNetwork is invalid (%v)", err)
 	}
-	return ParseClusterNetwork(cn)
+	return ParseSDNConfig(cn)
 }
 
 // Generate the default gateway IP Address for a subnet

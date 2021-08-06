@@ -20,7 +20,7 @@ import (
 
 func (master *OsdnMaster) startSubnetMaster() error {
 	master.subnetAllocator = masterutil.NewSubnetAllocator()
-	for _, cn := range master.networkInfo.ClusterNetworks {
+	for _, cn := range master.sdnConfig.ClusterNetworks {
 		err := master.subnetAllocator.AddNetworkRange(cn.ClusterCIDR.String(), cn.HostSubnetLength)
 		if err != nil {
 			return err
@@ -94,7 +94,7 @@ func (master *OsdnMaster) handleDeleteNode(obj interface{}) {
 // Creates or updates a HostSubnet if needed
 func (master *OsdnMaster) addNode(nodeName string, nodeUID string, nodeIP string, hsAnnotations map[string]string) error {
 	// Validate node IP before proceeding
-	if err := master.networkInfo.ValidateNodeIP(nodeIP); err != nil {
+	if err := master.sdnConfig.ValidateNodeIP(nodeIP); err != nil {
 		return err
 	}
 
@@ -238,7 +238,7 @@ func (master *OsdnMaster) handleAddOrUpdateSubnet(obj, _ interface{}, eventType 
 	if err := master.reconcileHostSubnet(hs); err != nil {
 		klog.Errorf("Error reconciling HostSubnet: %v", err)
 	}
-	if err := master.networkInfo.ValidateNodeIP(hs.HostIP); err != nil {
+	if err := master.sdnConfig.ValidateNodeIP(hs.HostIP); err != nil {
 		// Don't error out; just warn so the error can be corrected with 'oc'
 		klog.Errorf("Failed to validate HostSubnet %s: %v", common.HostSubnetToString(hs), err)
 	}

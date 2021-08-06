@@ -57,7 +57,7 @@ func (node *OsdnNode) alreadySetUp() error {
 		}
 	}
 
-	if !node.oc.AlreadySetUp(node.networkInfo.VXLANPort) {
+	if !node.oc.AlreadySetUp(node.sdnConfig.VXLANPort) {
 		return errors.New("openshift-sdn is not setup")
 	}
 
@@ -152,9 +152,9 @@ func (node *OsdnNode) FinishSetupSDN() error {
 }
 
 func (node *OsdnNode) setup(localSubnetCIDR, localSubnetGateway string) error {
-	serviceNetworkCIDR := node.networkInfo.ServiceNetwork.String()
+	serviceNetworkCIDR := node.sdnConfig.ServiceNetwork.String()
 
-	if err := node.oc.SetupOVS(node.clusterCIDRs, serviceNetworkCIDR, localSubnetCIDR, localSubnetGateway, node.networkInfo.MTU, node.networkInfo.VXLANPort); err != nil {
+	if err := node.oc.SetupOVS(node.clusterCIDRs, serviceNetworkCIDR, localSubnetCIDR, localSubnetGateway, node.sdnConfig.MTU, node.sdnConfig.VXLANPort); err != nil {
 		return err
 	}
 
@@ -170,7 +170,7 @@ func (node *OsdnNode) setup(localSubnetCIDR, localSubnetGateway string) error {
 		err = netlink.LinkSetUp(l)
 	}
 	if err == nil {
-		for _, clusterNetwork := range node.networkInfo.ClusterNetworks {
+		for _, clusterNetwork := range node.sdnConfig.ClusterNetworks {
 			route := &netlink.Route{
 				LinkIndex: l.Attrs().Index,
 				Scope:     netlink.SCOPE_LINK,
@@ -184,7 +184,7 @@ func (node *OsdnNode) setup(localSubnetCIDR, localSubnetGateway string) error {
 	if err == nil {
 		route := &netlink.Route{
 			LinkIndex: l.Attrs().Index,
-			Dst:       node.networkInfo.ServiceNetwork,
+			Dst:       node.sdnConfig.ServiceNetwork,
 		}
 		err = netlink.RouteAdd(route)
 	}
