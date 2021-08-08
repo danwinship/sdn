@@ -308,13 +308,7 @@ func newTestOsdnProxy(usesEndpointSlices bool) (*OsdnProxy, *testProxy, *testPro
 	if err != nil {
 		return nil, nil, nil, err
 	}
-
-	proxy.sdnConfig = &common.SDNConfig{
-		ClusterNetworks: []common.ParsedClusterNetworkEntry{
-			{ClusterCIDR: mustParseCIDR("10.128.0.0/14"), HostSubnetLength: 8},
-		},
-		ServiceNetwork: mustParseCIDR("172.30.0.0/16"),
-	}
+	proxy.sdnConfig = common.NewTestSDNConfig()
 
 	mainProxy := newTestProxy("main", usesEndpointSlices)
 	unidlingProxy := newTestProxy("unidling", false)

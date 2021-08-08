@@ -30,21 +30,7 @@ func assertHostSubnetFlowChanges(hsw *hostSubnetWatcher, flows *[]string, change
 func setupHostSubnetWatcher(t *testing.T) (*hostSubnetWatcher, []string) {
 	_, oc, _ := setupOVSController(t)
 
-	sdnConfig, err := common.ParseSDNConfig(
-		&osdnv1.ClusterNetwork{
-			ClusterNetworks: []osdnv1.ClusterNetworkEntry{
-				{
-					CIDR:             "10.128.0.0/14",
-					HostSubnetLength: 9,
-				},
-			},
-			ServiceNetwork: "172.30.0.0/16",
-		},
-	)
-	if err != nil {
-		t.Fatalf("unexpected error parsing network info: %v", err)
-	}
-
+	sdnConfig := common.NewTestSDNConfig()
 	hsw := newHostSubnetWatcher(oc, oc.localIP, sdnConfig)
 
 	flows, err := hsw.oc.ovs.DumpFlows("")

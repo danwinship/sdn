@@ -188,3 +188,23 @@ func (sdnConfig *SDNConfig) CheckClusterObjects(subnets []osdnv1.HostSubnet, pod
 	}
 	return kerrors.NewAggregate(errList)
 }
+
+// NewTestSDNConfig creates a new basic SDNConfig for unit tests
+func NewTestSDNConfig() *SDNConfig {
+	sdnConfig, err := ParseSDNConfig(
+		&osdnv1.ClusterNetwork{
+			PluginName: networkutils.NetworkPolicyPluginName,
+			ClusterNetworks: []osdnv1.ClusterNetworkEntry{
+				{
+					CIDR:             "10.128.0.0/14",
+					HostSubnetLength: 9,
+				},
+			},
+			ServiceNetwork: "172.30.0.0/16",
+		},
+	)
+	if err != nil {
+		panic(fmt.Sprintf("unexpected error parsing network info: %v", err))
+	}
+	return sdnConfig
+}

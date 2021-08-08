@@ -18,74 +18,79 @@ func TestCheckHostNetworks(t *testing.T) {
 
 	tests := []struct {
 		name        string
-		sdnConfig   *SDNConfig
+		cn          osdnv1.ClusterNetwork
 		expectError bool
 	}{
 		{
 			name: "valid",
-			sdnConfig: &SDNConfig{
-				ClusterNetworks: []ParsedClusterNetworkEntry{
-					{ClusterCIDR: mustParseCIDR("10.128.0.0/14"), HostSubnetLength: 8},
+			cn: osdnv1.ClusterNetwork{
+				ClusterNetworks: []osdnv1.ClusterNetworkEntry{
+					{CIDR: "10.128.0.0/14", HostSubnetLength: 8},
 				},
-				ServiceNetwork: mustParseCIDR("172.30.0.0/16"),
+				ServiceNetwork: "172.30.0.0/16",
 			},
 			expectError: false,
 		},
 		{
 			name: "valid multiple networks",
-			sdnConfig: &SDNConfig{
-				ClusterNetworks: []ParsedClusterNetworkEntry{
-					{ClusterCIDR: mustParseCIDR("10.128.0.0/14"), HostSubnetLength: 8},
-					{ClusterCIDR: mustParseCIDR("15.128.0.0/14"), HostSubnetLength: 8},
+			cn: osdnv1.ClusterNetwork{
+				ClusterNetworks: []osdnv1.ClusterNetworkEntry{
+					{CIDR: "10.128.0.0/14", HostSubnetLength: 8},
+					{CIDR: "15.128.0.0/14", HostSubnetLength: 8},
 				},
-				ServiceNetwork: mustParseCIDR("172.30.0.0/16"),
+				ServiceNetwork: "172.30.0.0/16",
 			},
 			expectError: false,
 		},
 		{
 			name: "hostIPNet inside ClusterNetwork",
-			sdnConfig: &SDNConfig{
-				ClusterNetworks: []ParsedClusterNetworkEntry{
-					{ClusterCIDR: mustParseCIDR("10.0.0.0/8"), HostSubnetLength: 8},
+			cn: osdnv1.ClusterNetwork{
+				ClusterNetworks: []osdnv1.ClusterNetworkEntry{
+					{CIDR: "10.0.0.0/8", HostSubnetLength: 8},
 				},
-				ServiceNetwork: mustParseCIDR("172.30.0.0/16"),
+				ServiceNetwork: "172.30.0.0/16",
 			},
 			expectError: true,
 		},
 		{
 			name: "ClusterNetwork inside hostIPNet",
-			sdnConfig: &SDNConfig{
-				ClusterNetworks: []ParsedClusterNetworkEntry{
-					{ClusterCIDR: mustParseCIDR("10.1.0.0/16"), HostSubnetLength: 8},
+			cn: osdnv1.ClusterNetwork{
+				ClusterNetworks: []osdnv1.ClusterNetworkEntry{
+					{CIDR: "10.1.0.0/16", HostSubnetLength: 8},
 				},
-				ServiceNetwork: mustParseCIDR("172.30.0.0/16"),
+				ServiceNetwork: "172.30.0.0/16",
 			},
 			expectError: true,
 		},
 		{
 			name: "hostIPNet inside ServiceNetwork",
-			sdnConfig: &SDNConfig{
-				ClusterNetworks: []ParsedClusterNetworkEntry{
-					{ClusterCIDR: mustParseCIDR("10.128.0.0/14"), HostSubnetLength: 8},
+			cn: osdnv1.ClusterNetwork{
+				ClusterNetworks: []osdnv1.ClusterNetworkEntry{
+					{CIDR: "10.128.0.0/14", HostSubnetLength: 8},
 				},
-				ServiceNetwork: mustParseCIDR("172.0.0.0/8"),
+				ServiceNetwork: "172.0.0.0/8",
 			},
 			expectError: true,
 		},
 		{
 			name: "ServiceNetwork inside hostIPNet",
-			sdnConfig: &SDNConfig{
-				ClusterNetworks: []ParsedClusterNetworkEntry{
-					{ClusterCIDR: mustParseCIDR("10.128.0.0/14"), HostSubnetLength: 8},
+			cn: osdnv1.ClusterNetwork{
+				ClusterNetworks: []osdnv1.ClusterNetworkEntry{
+					{CIDR: "10.128.0.0/14", HostSubnetLength: 8},
 				},
-				ServiceNetwork: mustParseCIDR("172.20.30.0/8"),
+				ServiceNetwork: "172.20.30.0/8",
 			},
 			expectError: true,
 		},
 	}
 
 	for _, test := range tests {
-		err := test.sdnConfig.CheckHostNetworks(hostIPNets)
+		sdnConfig, err := ParseSDNConfig(&test.cn)
+		if err != nil {
+			t.Fatalf("unexpected error parsing sdnConfig %q: %v", test.name, err)
+		}
+
+		err = sdnConfig.CheckHostNetworks(hostIPNets)
 		if test.expectError {
 			if err == nil {
 				t.Fatalf("unexpected lack of error checking %q", test.name)
@@ -135,54 +140,59 @@ func Test_checkClusterObjects(t *testing.T) {
 	}
 
 	tests := []struct {
-		name      string
-		sdnConfig *SDNConfig
-		errs      []string
+		name string
+		cn   osdnv1.ClusterNetwork
+		errs []string
 	}{
 		{
 			name: "valid",
-			sdnConfig: &SDNConfig{
-				ClusterNetworks: []ParsedClusterNetworkEntry{
-					{ClusterCIDR: mustParseCIDR("10.128.0.0/14"), HostSubnetLength: 8},
+			cn: osdnv1.ClusterNetwork{
+				ClusterNetworks: []osdnv1.ClusterNetworkEntry{
+					{CIDR: "10.128.0.0/14", HostSubnetLength: 8},
 				},
-				ServiceNetwork: mustParseCIDR("172.30.0.0/16"),
+				ServiceNetwork: "172.30.0.0/16",
 			},
 			errs: []string{},
 		},
 		{
 			name: "Subnet 10.130.0.0/23 and Pod 10.130.0.10 outside of ClusterNetwork",
-			sdnConfig: &SDNConfig{
-				ClusterNetworks: []ParsedClusterNetworkEntry{
-					{ClusterCIDR: mustParseCIDR("10.128.0.0/15"), HostSubnetLength: 8},
+			cn: osdnv1.ClusterNetwork{
+				ClusterNetworks: []osdnv1.ClusterNetworkEntry{
+					{CIDR: "10.128.0.0/15", HostSubnetLength: 8},
 				},
-				ServiceNetwork: mustParseCIDR("172.30.0.0/16"),
+				ServiceNetwork: "172.30.0.0/16",
 			},
 			errs: []string{"10.130.0.0/23", "10.130.0.10"},
 		},
 		{
 			name: "Service 172.30.99.99 outside of ServiceNetwork",
-			sdnConfig: &SDNConfig{
-				ClusterNetworks: []ParsedClusterNetworkEntry{
-					{ClusterCIDR: mustParseCIDR("10.128.0.0/14"), HostSubnetLength: 8},
+			cn: osdnv1.ClusterNetwork{
+				ClusterNetworks: []osdnv1.ClusterNetworkEntry{
+					{CIDR: "10.128.0.0/14", HostSubnetLength: 8},
 				},
-				ServiceNetwork: mustParseCIDR("172.30.0.0/24"),
+				ServiceNetwork: "172.30.0.0/24",
 			},
 			errs: []string{"172.30.99.99"},
 		},
 		{
 			name: "Too-many-error truncation",
-			sdnConfig: &SDNConfig{
-				ClusterNetworks: []ParsedClusterNetworkEntry{
-					{ClusterCIDR: mustParseCIDR("1.2.3.0/24"), HostSubnetLength: 8},
+			cn: osdnv1.ClusterNetwork{
+				ClusterNetworks: []osdnv1.ClusterNetworkEntry{
+					{CIDR: "1.2.3.0/24", HostSubnetLength: 8},
 				},
-				ServiceNetwork: mustParseCIDR("4.5.6.0/24"),
+				ServiceNetwork: "4.5.6.0/24",
 			},
 			errs: []string{"10.128.0.0/23", "10.129.0.0/23", "10.130.0.0/23", "10.128.0.2", "10.128.0.4", "10.128.0.6", "10.128.0.8", "10.129.0.3", "10.129.0.5", "10.129.0.7", "172.30.0.1", "too many errors"},
 		},
 	}
 
 	for _, test := range tests {
-		err := test.sdnConfig.CheckClusterObjects(subnets, pods, services)
+		sdnConfig, err := ParseSDNConfig(&test.cn)
+		if err != nil {
+			t.Fatalf("unexpected error parsing sdnConfig %q: %v", test.name, err)
+		}
+
+		err = sdnConfig.CheckClusterObjects(subnets, pods, services)
 		if err == nil {
 			if len(test.errs) > 0 {
 				t.Fatalf("test %q unexpectedly did not get an error", test.name)
