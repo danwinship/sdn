@@ -68,15 +68,13 @@ type OsdnNodeConfig struct {
 	OSDNClient osdnclient.Interface
 	KClient    kubernetes.Interface
 	Recorder   record.EventRecorder
+	IPTables   iptables.Interface
 
 	KubeInformers informers.SharedInformerFactory
 	OSDNInformers osdninformers.SharedInformerFactory
 
-	SDNConfig *common.SDNConfig
-
-	IPTables      iptables.Interface
-	ProxyMode     kubeproxyconfig.ProxyMode
-	MasqueradeBit *int32
+	SDNConfig   *common.SDNConfig
+	ProxyConfig *kubeproxyconfig.KubeProxyConfiguration
 }
 
 type OsdnNode struct {
@@ -91,12 +89,12 @@ type OsdnNode struct {
 	ipt          iptables.Interface
 	nodeIPTables *NodeIPTables
 
-	localSubnetCIDR  string
-	localGatewayCIDR string
-	localIP          string
-	hostName         string
-	useConnTrack     bool
-	masqueradeBit    uint32
+	localSubnetCIDR   string
+	localGatewayCIDR  string
+	localIP           string
+	hostName          string
+	useConnTrack      bool
+	masqueradeBitMask uint32
 
 	// Synchronizes operations on egressPolicies
 	egressPoliciesLock sync.Mutex
@@ -139,7 +137,7 @@ func New(c *OsdnNodeConfig) (*OsdnNode, error) {
 		node.policy = NewMultiTenantPlugin()
 		pluginId = 1
 		// Userspace proxy is incompatible with conntrack.
-		if c.ProxyMode != kubeproxyconfig.ProxyModeUserspace {
+		if c.ProxyConfig.Mode != kubeproxyconfig.ProxyModeUserspace {
 			node.useConnTrack = true
 		}
 	case networkutils.NetworkPolicyPluginName:
@@ -150,8 +148,8 @@ func New(c *OsdnNodeConfig) (*OsdnNode, error) {
 		return nil, fmt.Errorf("Unknown plugin name %q", node.sdnConfig.PluginName)
 	}
 
-	if node.useConnTrack && c.ProxyMode == kubeproxyconfig.ProxyModeUserspace {
-		return nil, fmt.Errorf("%q plugin is not compatible with proxy-mode %q", node.sdnConfig.PluginName, c.ProxyMode)
+	if node.useConnTrack && c.ProxyConfig.Mode == kubeproxyconfig.ProxyModeUserspace {
+		return nil, fmt.Errorf("%q plugin is not compatible with proxy-mode %q", node.sdnConfig.PluginName, c.ProxyConfig.Mode)
 	}
 
 	klog.Infof("Initializing SDN node %q (%s) of type %q", c.NodeName, c.NodeIP, node.sdnConfig.PluginName)
@@ -164,8 +162,8 @@ func New(c *OsdnNodeConfig) (*OsdnNode, error) {
 
 	node.podManager = newPodManager(node.sdnConfig, c.KClient, node.policy, node.oc)
 
-	if c.MasqueradeBit != nil {
-		node.masqueradeBit = uint32(*c.MasqueradeBit)
+	if c.ProxyConfig.IPTables.MasqueradeBit != nil {
+		node.masqueradeBitMask = 1 << uint32(*c.ProxyConfig.IPTables.MasqueradeBit)
 	}
 
 	node.egressPolicies = make(map[uint32][]osdnv1.EgressNetworkPolicy)
@@ -174,7 +172,7 @@ func New(c *OsdnNodeConfig) (*OsdnNode, error) {
 		return nil, err
 	}
 
-	node.egressIP = newEgressIPWatcher(node.oc, node.localIP, c.MasqueradeBit)
+	node.egressIP = newEgressIPWatcher(node.oc, node.localIP, node.masqueradeBitMask)
 
 	metrics.RegisterMetrics()
 
@@ -347,7 +345,7 @@ func (node *OsdnNode) Start() error {
 		return err
 	}
 
-	node.nodeIPTables = newNodeIPTables(node.sdnConfig, node.ipt, !node.useConnTrack, node.masqueradeBit)
+	node.nodeIPTables = newNodeIPTables(node.sdnConfig, node.ipt, !node.useConnTrack, node.masqueradeBitMask)
 	if err = node.nodeIPTables.Setup(); err != nil {
 		return fmt.Errorf("failed to set up iptables: %v", err)
 	}

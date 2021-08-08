@@ -17,6 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
+	kubeproxyconfig "k8s.io/kubernetes/pkg/proxy/apis/config"
 
 	osdnv1 "github.com/openshift/api/network/v1"
 	osdnclient "github.com/openshift/client-go/network/clientset/versioned"
@@ -77,7 +78,7 @@ func New(kClient kubernetes.Interface,
 	osdnClient osdnclient.Interface,
 	osdnInformers osdninformers.SharedInformerFactory,
 	sdnConfig *common.SDNConfig,
-	minSyncPeriod time.Duration) (*OsdnProxy, error) {
+	proxyConfig *kubeproxyconfig.KubeProxyConfiguration) (*OsdnProxy, error) {
 
 	egressDNS, err := common.NewEgressDNS(true, false)
 	if err != nil {
@@ -89,7 +90,7 @@ func New(kClient kubernetes.Interface,
 		osdnClient:    osdnClient,
 		osdnInformers: osdnInformers,
 		sdnConfig:     sdnConfig,
-		minSyncPeriod: minSyncPeriod,
+		minSyncPeriod: proxyConfig.IPTables.MinSyncPeriod.Duration,
 		egressDNS:     egressDNS,
 		namespaces:    make(map[string]*proxyNamespace),
 	}, nil

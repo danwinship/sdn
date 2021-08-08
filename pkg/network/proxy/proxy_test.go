@@ -15,6 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes/fake"
+	kubeproxyconfig "k8s.io/kubernetes/pkg/proxy/apis/config"
 	"k8s.io/kubernetes/pkg/util/async"
 
 	osdnv1 "github.com/openshift/api/network/v1"
@@ -305,7 +306,9 @@ func newTestOsdnProxy(usesEndpointSlices bool) (*OsdnProxy, *testProxy, *testPro
 	kubeInformers := informers.NewSharedInformerFactory(kubeClient, time.Hour)
 
 	sdnConfig := common.NewTestSDNConfig()
-	proxy, err := New(kubeClient, kubeInformers, nil, nil, sdnConfig, 0)
+	proxyConfig := &kubeproxyconfig.KubeProxyConfiguration{}
+
+	proxy, err := New(kubeClient, kubeInformers, nil, nil, sdnConfig, proxyConfig)
 	if err != nil {
 		return nil, nil, nil, err
 	}

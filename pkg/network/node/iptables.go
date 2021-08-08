@@ -68,7 +68,7 @@ func newNodeIPTables(sdnConfig *common.SDNConfig, ipt iptables.Interface, masque
 		clusterNetworkCIDR: sdnConfig.ClusterNetworkCIDRStrings,
 		masqueradeServices: masqueradeServices,
 		vxlanPort:          sdnConfig.VXLANPort,
-		masqueradeBitHex:   fmt.Sprintf("%#x", 1<<masqueradeBit),
+		masqueradeBitHex:   fmt.Sprintf("%#x", masqueradeBit),
 		egressIPs:          make(map[string]string),
 	}
 }
