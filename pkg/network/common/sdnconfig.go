@@ -16,6 +16,7 @@ import (
 	"github.com/openshift/library-go/pkg/network/networkutils"
 )
 
+// SDNConfig holds the openshift-sdn configuration
 type SDNConfig struct {
 	PluginName      string
 	ClusterNetworks []ClusterNetworkEntry

@@ -37,7 +37,7 @@ type openShiftSDN struct {
 	proxyConfigFilePath string
 	proxyConfig         *kubeproxyconfig.KubeProxyConfiguration
 
-	informers   *sdnInformers
+	clients     *sdncommon.SDNClients
 	osdnNode    *sdnnode.OsdnNode
 	sdnRecorder record.EventRecorder
 	osdnProxy   *sdnproxy.OsdnProxy
@@ -139,7 +139,7 @@ func (sdn *openShiftSDN) init() error {
 		return fmt.Errorf("failed to build informers: %v", err)
 	}
 
-	sdn.sdnConfig, err = sdncommon.GetSDNConfig(sdn.informers.osdnClient)
+	sdn.sdnConfig, err = sdncommon.GetSDNConfig(sdn.clients.OSDNClient)
 	if err != nil {
 		return fmt.Errorf("failed to get SDN config: %v", err)
 	}
@@ -172,7 +172,7 @@ func (sdn *openShiftSDN) start(stopCh <-chan struct{}) error {
 	}
 	proxyInitChan := make(chan bool)
 	sdn.runProxy(proxyInitChan)
-	sdn.informers.start(stopCh)
+	sdn.clients.Start(stopCh)
 
 	klog.V(2).Infof("openshift-sdn network plugin waiting for proxy startup to complete")
 	<-proxyInitChan

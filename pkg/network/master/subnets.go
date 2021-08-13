@@ -28,7 +28,7 @@ func (master *OsdnMaster) startSubnetMaster() error {
 	}
 
 	// Populate subnet allocator
-	subnets, err := master.osdnClient.NetworkV1().HostSubnets().List(context.TODO(), metav1.ListOptions{})
+	subnets, err := master.clients.OSDNClient.NetworkV1().HostSubnets().List(context.TODO(), metav1.ListOptions{})
 	if err != nil {
 		return err
 	}
@@ -99,18 +99,18 @@ func (master *OsdnMaster) addNode(nodeName string, nodeUID string, nodeIP string
 	}
 
 	// Check if subnet needs to be created or updated
-	sub, err := master.osdnClient.NetworkV1().HostSubnets().Get(context.TODO(), nodeName, metav1.GetOptions{})
+	sub, err := master.clients.OSDNClient.NetworkV1().HostSubnets().Get(context.TODO(), nodeName, metav1.GetOptions{})
 	if err == nil {
 		if err = common.ValidateHostSubnet(sub); err != nil {
 			klog.Errorf("Deleting invalid HostSubnet %q: %v", nodeName, err)
-			_ = master.osdnClient.NetworkV1().HostSubnets().Delete(context.TODO(), nodeName, metav1.DeleteOptions{})
+			_ = master.clients.OSDNClient.NetworkV1().HostSubnets().Delete(context.TODO(), nodeName, metav1.DeleteOptions{})
 			// fall through to create new subnet below
 		} else if sub.HostIP == nodeIP {
 			return nil
 		} else {
 			// Node IP changed, update old subnet
 			sub.HostIP = nodeIP
-			sub, err = master.osdnClient.NetworkV1().HostSubnets().Update(context.TODO(), sub, metav1.UpdateOptions{})
+			sub, err = master.clients.OSDNClient.NetworkV1().HostSubnets().Update(context.TODO(), sub, metav1.UpdateOptions{})
 			if err != nil {
 				return fmt.Errorf("error updating subnet %s for node %s: %v", sub.Subnet, nodeName, err)
 			}
@@ -137,7 +137,7 @@ func (master *OsdnMaster) addNode(nodeName string, nodeUID string, nodeIP string
 		HostIP:     nodeIP,
 		Subnet:     network,
 	}
-	sub, err = master.osdnClient.NetworkV1().HostSubnets().Create(context.TODO(), sub, metav1.CreateOptions{})
+	sub, err = master.clients.OSDNClient.NetworkV1().HostSubnets().Create(context.TODO(), sub, metav1.CreateOptions{})
 	if err != nil {
 		if er := master.subnetAllocator.ReleaseNetwork(network); er != nil {
 			klog.Errorf("Error releasing allocated subnet: %v", err)
@@ -156,7 +156,7 @@ func (master *OsdnMaster) deleteNode(nodeName string) error {
 	if sub, err := master.hostSubnetInformer.Lister().Get(nodeName); err == nil {
 		subInfo = common.HostSubnetToString(sub)
 	}
-	if err := master.osdnClient.NetworkV1().HostSubnets().Delete(context.TODO(), nodeName, metav1.DeleteOptions{}); err != nil {
+	if err := master.clients.OSDNClient.NetworkV1().HostSubnets().Delete(context.TODO(), nodeName, metav1.DeleteOptions{}); err != nil {
 		return fmt.Errorf("error deleting subnet for node %q: %v", nodeName, err)
 	}
 
@@ -194,7 +194,7 @@ func (master *OsdnMaster) clearInitialNodeNetworkUnavailableCondition(origNode *
 					condition.Message = "openshift-sdn cleared kubelet-set NoRouteCreated"
 					condition.LastTransitionTime = metav1.Now()
 
-					if knode, err = master.kClient.CoreV1().Nodes().UpdateStatus(context.TODO(), knode, metav1.UpdateOptions{}); err == nil {
+					if knode, err = master.clients.KubeClient.CoreV1().Nodes().UpdateStatus(context.TODO(), knode, metav1.UpdateOptions{}); err == nil {
 						cleared = true
 					}
 				}
@@ -272,7 +272,7 @@ func (master *OsdnMaster) reconcileHostSubnet(subnet *osdnv1.HostSubnet) error {
 	var err error
 	node, err = master.nodeInformer.Lister().Get(subnet.Name)
 	if err != nil {
-		node, err = master.kClient.CoreV1().Nodes().Get(context.TODO(), subnet.Name, metav1.GetOptions{})
+		node, err = master.clients.KubeClient.CoreV1().Nodes().Get(context.TODO(), subnet.Name, metav1.GetOptions{})
 		if err != nil {
 			if kerrs.IsNotFound(err) {
 				node = nil
@@ -292,19 +292,19 @@ func (master *OsdnMaster) reconcileHostSubnet(subnet *osdnv1.HostSubnet) error {
 			sn.Annotations = make(map[string]string)
 		}
 		sn.Annotations[osdnv1.NodeUIDAnnotation] = string(node.UID)
-		if _, err = master.osdnClient.NetworkV1().HostSubnets().Update(context.TODO(), sn, metav1.UpdateOptions{}); err != nil {
+		if _, err = master.clients.OSDNClient.NetworkV1().HostSubnets().Update(context.TODO(), sn, metav1.UpdateOptions{}); err != nil {
 			return fmt.Errorf("error updating subnet %v for node %s: %v", sn, sn.Name, err)
 		}
 	} else if node == nil && len(subnet.Annotations[osdnv1.NodeUIDAnnotation]) > 0 {
 		// Missed Node event, delete stale subnet.
 		klog.Infof("Setup found no node associated with hostsubnet %s, deleting the hostsubnet", subnet.Name)
-		if err = master.osdnClient.NetworkV1().HostSubnets().Delete(context.TODO(), subnet.Name, metav1.DeleteOptions{}); err != nil {
+		if err = master.clients.OSDNClient.NetworkV1().HostSubnets().Delete(context.TODO(), subnet.Name, metav1.DeleteOptions{}); err != nil {
 			return fmt.Errorf("error deleting subnet %v: %v", subnet, err)
 		}
 	} else if string(node.UID) != subnet.Annotations[osdnv1.NodeUIDAnnotation] {
 		// Missed Node event, node with the same name exists delete stale subnet.
 		klog.Infof("Missed node event, hostsubnet %s has the UID of an incorrect object, deleting the hostsubnet", subnet.Name)
-		if err = master.osdnClient.NetworkV1().HostSubnets().Delete(context.TODO(), subnet.Name, metav1.DeleteOptions{}); err != nil {
+		if err = master.clients.OSDNClient.NetworkV1().HostSubnets().Delete(context.TODO(), subnet.Name, metav1.DeleteOptions{}); err != nil {
 			return fmt.Errorf("error deleting subnet %v: %v", subnet, err)
 		}
 	}
@@ -319,7 +319,7 @@ func (master *OsdnMaster) handleAssignHostSubnetAnnotation(hs *osdnv1.HostSubnet
 	// will skip the event if it finds that the hostsubnet has the same host
 	// And we cannot fix the watchSubnets code for node because it will break migration if
 	// nodes are upgraded after the master
-	if err := master.osdnClient.NetworkV1().HostSubnets().Delete(context.TODO(), hs.Name, metav1.DeleteOptions{}); err != nil {
+	if err := master.clients.OSDNClient.NetworkV1().HostSubnets().Delete(context.TODO(), hs.Name, metav1.DeleteOptions{}); err != nil {
 		return fmt.Errorf("error in deleting annotated subnet: %s, %v", hs.Name, err)
 	}
 	klog.Infof("Deleted HostSubnet not backed by node: %s", common.HostSubnetToString(hs))

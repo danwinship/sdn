@@ -20,8 +20,6 @@ import (
 	"k8s.io/apimachinery/pkg/util/strategicpatch"
 	kwait "k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/apimachinery/pkg/watch"
-	"k8s.io/client-go/informers"
-	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/retry"
 	kubeletapi "k8s.io/cri-api/pkg/apis"
@@ -35,8 +33,6 @@ import (
 	kexec "k8s.io/utils/exec"
 
 	osdnv1 "github.com/openshift/api/network/v1"
-	osdnclient "github.com/openshift/client-go/network/clientset/versioned"
-	osdninformers "github.com/openshift/client-go/network/informers/externalversions"
 	"github.com/openshift/library-go/pkg/network/networkutils"
 	"github.com/openshift/sdn/pkg/network/common"
 	"github.com/openshift/sdn/pkg/network/common/cniserver"
@@ -65,24 +61,19 @@ type OsdnNodeConfig struct {
 	NodeName string
 	NodeIP   string
 
-	OSDNClient osdnclient.Interface
-	KClient    kubernetes.Interface
-	Recorder   record.EventRecorder
-	IPTables   iptables.Interface
-
-	KubeInformers informers.SharedInformerFactory
-	OSDNInformers osdninformers.SharedInformerFactory
-
+	SDNClients  *common.SDNClients
 	SDNConfig   *common.SDNConfig
 	ProxyConfig *kubeproxyconfig.KubeProxyConfiguration
+
+	Recorder record.EventRecorder
+	IPTables iptables.Interface
 }
 
 type OsdnNode struct {
+	clients   *common.SDNClients
 	sdnConfig *common.SDNConfig
 
 	policy       osdnPolicy
-	kClient      kubernetes.Interface
-	osdnClient   osdnclient.Interface
 	recorder     record.EventRecorder
 	oc           *ovsController
 	podManager   *podManager
@@ -101,9 +92,6 @@ type OsdnNode struct {
 	egressPolicies     map[uint32][]osdnv1.EgressNetworkPolicy
 	egressDNS          *common.EgressDNS
 
-	kubeInformers informers.SharedInformerFactory
-	osdnInformers osdninformers.SharedInformerFactory
-
 	// Holds runtime endpoint shim to make SDN <-> runtime communication
 	runtimeService kubeletapi.RuntimeService
 
@@ -113,15 +101,12 @@ type OsdnNode struct {
 // Called by higher layers to create the SDN node instance
 func New(c *OsdnNodeConfig) (*OsdnNode, error) {
 	node := &OsdnNode{
-		sdnConfig:     c.SDNConfig,
-		kClient:       c.KClient,
-		osdnClient:    c.OSDNClient,
-		recorder:      c.Recorder,
-		localIP:       c.NodeIP,
-		hostName:      c.NodeName,
-		ipt:           c.IPTables,
-		kubeInformers: c.KubeInformers,
-		osdnInformers: c.OSDNInformers,
+		clients:   c.SDNClients,
+		sdnConfig: c.SDNConfig,
+		recorder:  c.Recorder,
+		localIP:   c.NodeIP,
+		hostName:  c.NodeName,
+		ipt:       c.IPTables,
 	}
 
 	if err := c.validateNodeIP(); err != nil {
@@ -160,7 +145,7 @@ func New(c *OsdnNodeConfig) (*OsdnNode, error) {
 	}
 	node.oc = NewOVSController(node.sdnConfig, ovsif, pluginId, node.useConnTrack, node.localIP)
 
-	node.podManager = newPodManager(node.sdnConfig, c.KClient, node.policy, node.oc)
+	node.podManager = newPodManager(node.sdnConfig, node.clients.KubeClient, node.policy, node.oc)
 
 	if c.ProxyConfig.IPTables.MasqueradeBit != nil {
 		node.masqueradeBitMask = 1 << uint32(*c.ProxyConfig.IPTables.MasqueradeBit)
@@ -280,14 +265,14 @@ func (node *OsdnNode) validateMTU() error {
 	needsTaint := mtu < node.sdnConfig.MTU+50
 	const MTUTaintKey string = "network.openshift.io/mtu-too-small"
 	mtuTooSmallTaint := &corev1.Taint{Key: MTUTaintKey, Value: "value", Effect: "NoSchedule"}
-	nodeObj, err := node.kClient.CoreV1().Nodes().Get(context.TODO(), node.hostName, metav1.GetOptions{})
+	nodeObj, err := node.clients.KubeClient.CoreV1().Nodes().Get(context.TODO(), node.hostName, metav1.GetOptions{})
 	if err != nil {
 		return fmt.Errorf("could not get Kubernetes Node object by hostname: %v", err)
 	}
 	tainted := taints.TaintExists(nodeObj.Spec.Taints, mtuTooSmallTaint)
 	if needsTaint != tainted {
 		resultErr := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
-			nodeObj, err = node.kClient.CoreV1().Nodes().Get(context.TODO(), node.hostName, metav1.GetOptions{})
+			nodeObj, err = node.clients.KubeClient.CoreV1().Nodes().Get(context.TODO(), node.hostName, metav1.GetOptions{})
 			if err != nil {
 				return fmt.Errorf("could not get Kubernetes Node object by hostname: %v", err)
 			}
@@ -323,7 +308,7 @@ func (node *OsdnNode) validateMTU() error {
 				return fmt.Errorf("could not create patch for object: %v", err)
 			}
 
-			_, err = node.kClient.CoreV1().Nodes().Patch(context.TODO(), node.hostName, types.StrategicMergePatchType, patchBytes, metav1.PatchOptions{})
+			_, err = node.clients.KubeClient.CoreV1().Nodes().Patch(context.TODO(), node.hostName, types.StrategicMergePatchType, patchBytes, metav1.PatchOptions{})
 
 			return err
 		})
@@ -356,7 +341,7 @@ func (node *OsdnNode) Start() error {
 	}
 
 	hsw := newHostSubnetWatcher(node.oc, node.localIP, node.sdnConfig)
-	hsw.Start(node.osdnInformers)
+	hsw.Start(node.clients.OSDNInformers)
 
 	if err = node.policy.Start(node); err != nil {
 		return err
@@ -365,7 +350,7 @@ func (node *OsdnNode) Start() error {
 		if err := node.SetupEgressNetworkPolicy(); err != nil {
 			return err
 		}
-		if err := node.egressIP.Start(node.osdnInformers, node.nodeIPTables); err != nil {
+		if err := node.egressIP.Start(node.clients.OSDNInformers, node.nodeIPTables); err != nil {
 			return err
 		}
 	}
@@ -495,7 +480,7 @@ func (node *OsdnNode) GetRunningPods(namespace string) ([]corev1.Pod, error) {
 		LabelSelector: labels.Everything().String(),
 		FieldSelector: fieldSelector.String(),
 	}
-	podList, err := node.kClient.CoreV1().Pods(namespace).List(context.TODO(), opts)
+	podList, err := node.clients.KubeClient.CoreV1().Pods(namespace).List(context.TODO(), opts)
 	if err != nil {
 		return nil, err
 	}
@@ -525,7 +510,7 @@ func isServiceChanged(oldsvc, newsvc *corev1.Service) bool {
 
 func (node *OsdnNode) watchServices() {
 	funcs := common.InformerFuncs(&kapi.Service{}, node.handleAddOrUpdateService, node.handleDeleteService)
-	node.kubeInformers.Core().V1().Services().Informer().AddEventHandler(funcs)
+	node.clients.KubeInformers.Core().V1().Services().Informer().AddEventHandler(funcs)
 }
 
 func (node *OsdnNode) handleAddOrUpdateService(obj, oldObj interface{}, eventType watch.EventType) {

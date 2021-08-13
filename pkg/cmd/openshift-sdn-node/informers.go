@@ -5,23 +5,16 @@ import (
 	"net/http"
 	"time"
 
-	osdnclient "github.com/openshift/client-go/network/clientset/versioned"
-	osdninformers "github.com/openshift/client-go/network/informers/externalversions"
 	kinformers "k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+
+	osdnclient "github.com/openshift/client-go/network/clientset/versioned"
+	osdninformers "github.com/openshift/client-go/network/informers/externalversions"
+	sdncommon "github.com/openshift/sdn/pkg/network/common"
 )
 
 var defaultInformerResyncPeriod = 30 * time.Minute
-
-// sdnInformers is a small bag of data that holds our informers
-type sdnInformers struct {
-	kubeClient kubernetes.Interface
-	osdnClient osdnclient.Interface
-
-	kubeInformers kinformers.SharedInformerFactory
-	osdnInformers osdninformers.SharedInformerFactory
-}
 
 // buildInformers creates all the informer factories.
 func (sdn *openShiftSDN) buildInformers() error {
@@ -46,20 +39,14 @@ func (sdn *openShiftSDN) buildInformers() error {
 	kubeInformers := kinformers.NewSharedInformerFactory(kubeClient, defaultInformerResyncPeriod)
 	osdnInformers := osdninformers.NewSharedInformerFactory(osdnClient, defaultInformerResyncPeriod)
 
-	sdn.informers = &sdnInformers{
-		kubeClient: kubeClient,
-		osdnClient: osdnClient,
+	sdn.clients = &sdncommon.SDNClients{
+		KubeClient: kubeClient,
+		OSDNClient: osdnClient,
 
-		kubeInformers: kubeInformers,
-		osdnInformers: osdnInformers,
+		KubeInformers: kubeInformers,
+		OSDNInformers: osdnInformers,
 	}
 	return nil
-}
-
-// start starts the informers.
-func (i *sdnInformers) start(stopCh <-chan struct{}) {
-	i.kubeInformers.Start(stopCh)
-	i.osdnInformers.Start(stopCh)
 }
 
 // getInClusterConfig loads in-cluster config, then applies default overrides.

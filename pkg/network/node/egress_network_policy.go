@@ -15,7 +15,7 @@ import (
 )
 
 func (node *OsdnNode) SetupEgressNetworkPolicy() error {
-	policies, err := node.osdnClient.NetworkV1().EgressNetworkPolicies(metav1.NamespaceAll).List(context.TODO(), metav1.ListOptions{})
+	policies, err := node.clients.OSDNClient.NetworkV1().EgressNetworkPolicies(metav1.NamespaceAll).List(context.TODO(), metav1.ListOptions{})
 	if err != nil {
 		return fmt.Errorf("could not get EgressNetworkPolicies: %s", err)
 	}
@@ -45,7 +45,7 @@ func (node *OsdnNode) SetupEgressNetworkPolicy() error {
 
 func (node *OsdnNode) watchEgressNetworkPolicies() {
 	funcs := common.InformerFuncs(&osdnv1.EgressNetworkPolicy{}, node.handleAddOrUpdateEgressNetworkPolicy, node.handleDeleteEgressNetworkPolicy)
-	node.osdnInformers.Network().V1().EgressNetworkPolicies().Informer().AddEventHandler(funcs)
+	node.clients.OSDNInformers.Network().V1().EgressNetworkPolicies().Informer().AddEventHandler(funcs)
 }
 
 func (node *OsdnNode) handleAddOrUpdateEgressNetworkPolicy(obj, _ interface{}, eventType watch.EventType) {

@@ -16,20 +16,17 @@ const openshiftCNIFile string = "/etc/cni/net.d/80-openshift-network.conf"
 // initSDN sets up the sdn process.
 func (sdn *openShiftSDN) initSDN() error {
 	eventBroadcaster := record.NewBroadcaster()
-	eventBroadcaster.StartRecordingToSink(&corev1client.EventSinkImpl{Interface: sdn.informers.kubeClient.CoreV1().Events("")})
+	eventBroadcaster.StartRecordingToSink(&corev1client.EventSinkImpl{Interface: sdn.clients.KubeClient.CoreV1().Events("")})
 	sdn.sdnRecorder = eventBroadcaster.NewRecorder(scheme.Scheme, corev1.EventSource{Component: "openshift-sdn", Host: sdn.nodeName})
 
 	var err error
 	sdn.osdnNode, err = sdnnode.New(&sdnnode.OsdnNodeConfig{
-		NodeName:      sdn.nodeName,
-		NodeIP:        sdn.nodeIP,
-		KClient:       sdn.informers.kubeClient,
-		KubeInformers: sdn.informers.kubeInformers,
-		OSDNClient:    sdn.informers.osdnClient,
-		OSDNInformers: sdn.informers.osdnInformers,
-		SDNConfig:     sdn.sdnConfig,
-		IPTables:      sdn.ipt,
-		Recorder:      sdn.sdnRecorder,
+		NodeName:   sdn.nodeName,
+		NodeIP:     sdn.nodeIP,
+		SDNClients: sdn.clients,
+		SDNConfig:  sdn.sdnConfig,
+		IPTables:   sdn.ipt,
+		Recorder:   sdn.sdnRecorder,
 	})
 	return err
 }

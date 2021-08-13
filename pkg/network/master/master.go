@@ -6,16 +6,10 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ktypes "k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/wait"
-	"k8s.io/client-go/informers"
 	kcoreinformers "k8s.io/client-go/informers/core/v1"
-	kclientset "k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog/v2"
 
 	osdnv1 "github.com/openshift/api/network/v1"
-	osdnclient "github.com/openshift/client-go/network/clientset/versioned"
-	osdninformers "github.com/openshift/client-go/network/informers/externalversions"
 	osdninformersv1 "github.com/openshift/client-go/network/informers/externalversions/network/v1"
 	"github.com/openshift/library-go/pkg/network/networkutils"
 	"github.com/openshift/sdn/pkg/network/common"
@@ -27,10 +21,10 @@ const (
 )
 
 type OsdnMaster struct {
-	kClient    kclientset.Interface
-	osdnClient osdnclient.Interface
-	sdnConfig  *common.SDNConfig
-	vnids      *masterVNIDMap
+	clients   *common.SDNClients
+	sdnConfig *common.SDNConfig
+
+	vnids *masterVNIDMap
 
 	nodeInformer         kcoreinformers.NodeInformer
 	namespaceInformer    kcoreinformers.NamespaceInformer
@@ -44,22 +38,17 @@ type OsdnMaster struct {
 	hostSubnetNodeIPs map[ktypes.UID]string
 }
 
-func Start(kClient kclientset.Interface,
-	kubeInformers informers.SharedInformerFactory,
-	osdnClient osdnclient.Interface,
-	osdnInformers osdninformers.SharedInformerFactory,
-	sdnConfig *common.SDNConfig) error {
+func Start(clients *common.SDNClients, sdnConfig *common.SDNConfig) error {
 	klog.Infof("Initializing SDN master")
 
 	master := &OsdnMaster{
-		kClient:    kClient,
-		osdnClient: osdnClient,
-		sdnConfig:  sdnConfig,
+		clients:   clients,
+		sdnConfig: sdnConfig,
 
-		nodeInformer:         kubeInformers.Core().V1().Nodes(),
-		namespaceInformer:    kubeInformers.Core().V1().Namespaces(),
-		hostSubnetInformer:   osdnInformers.Network().V1().HostSubnets(),
-		netNamespaceInformer: osdnInformers.Network().V1().NetNamespaces(),
+		nodeInformer:         clients.KubeInformers.Core().V1().Nodes(),
+		namespaceInformer:    clients.KubeInformers.Core().V1().Namespaces(),
+		hostSubnetInformer:   clients.OSDNInformers.Network().V1().HostSubnets(),
+		netNamespaceInformer: clients.OSDNInformers.Network().V1().NetNamespaces(),
 
 		hostSubnetNodeIPs: map[ktypes.UID]string{},
 	}
@@ -85,13 +74,11 @@ func Start(kClient kclientset.Interface,
 
 func (master *OsdnMaster) startSubSystems(pluginName string) {
 	// Wait for informer sync
-	if !cache.WaitForCacheSync(wait.NeverStop,
-		master.nodeInformer.Informer().GetController().HasSynced,
-		master.namespaceInformer.Informer().GetController().HasSynced,
-		master.hostSubnetInformer.Informer().GetController().HasSynced,
-		master.netNamespaceInformer.Informer().GetController().HasSynced) {
-		klog.Fatalf("failed to sync SDN master informers")
-	}
+	master.clients.WaitForCacheSync("SDN master",
+		master.nodeInformer.Informer(),
+		master.namespaceInformer.Informer(),
+		master.hostSubnetInformer.Informer(),
+		master.netNamespaceInformer.Informer())
 
 	if err := master.startSubnetMaster(); err != nil {
 		klog.Fatalf("failed to start subnet master: %v", err)
@@ -110,7 +97,7 @@ func (master *OsdnMaster) startSubSystems(pluginName string) {
 	}
 
 	eim := newEgressIPManager()
-	eim.Start(master.osdnClient, master.hostSubnetInformer, master.netNamespaceInformer, master.nodeInformer)
+	eim.Start(master.clients.OSDNClient, master.hostSubnetInformer, master.netNamespaceInformer, master.nodeInformer)
 }
 
 func (master *OsdnMaster) checkClusterNetworkAgainstLocalNetworks() error {
@@ -125,13 +112,13 @@ func (master *OsdnMaster) checkClusterNetworkAgainstClusterObjects() error {
 	var subnets []osdnv1.HostSubnet
 	var pods []corev1.Pod
 	var services []corev1.Service
-	if subnetList, err := master.osdnClient.NetworkV1().HostSubnets().List(context.TODO(), metav1.ListOptions{}); err == nil {
+	if subnetList, err := master.clients.OSDNClient.NetworkV1().HostSubnets().List(context.TODO(), metav1.ListOptions{}); err == nil {
 		subnets = subnetList.Items
 	}
-	if podList, err := master.kClient.CoreV1().Pods(metav1.NamespaceAll).List(context.TODO(), metav1.ListOptions{}); err == nil {
+	if podList, err := master.clients.KubeClient.CoreV1().Pods(metav1.NamespaceAll).List(context.TODO(), metav1.ListOptions{}); err == nil {
 		pods = podList.Items
 	}
-	if serviceList, err := master.kClient.CoreV1().Services(metav1.NamespaceAll).List(context.TODO(), metav1.ListOptions{}); err == nil {
+	if serviceList, err := master.clients.KubeClient.CoreV1().Services(metav1.NamespaceAll).List(context.TODO(), metav1.ListOptions{}); err == nil {
 		services = serviceList.Items
 	}
 

@@ -107,8 +107,8 @@ func (np *networkPolicyPlugin) Start(node *OsdnNode) error {
 	defer np.lock.Unlock()
 
 	np.node = node
-	np.vnids = newNodeVNIDMap(np, node.osdnClient)
-	if err := np.vnids.Start(node.osdnInformers); err != nil {
+	np.vnids = newNodeVNIDMap(np, node.clients.OSDNClient)
+	if err := np.vnids.Start(node.clients.OSDNInformers); err != nil {
 		return err
 	}
 
@@ -143,7 +143,7 @@ func (np *networkPolicyPlugin) Start(node *OsdnNode) error {
 func (np *networkPolicyPlugin) initNamespaces() error {
 	inUseVNIDs := np.node.oc.FindPolicyVNIDs()
 
-	namespaces, err := np.node.kClient.CoreV1().Namespaces().List(context.TODO(), metav1.ListOptions{})
+	namespaces, err := np.node.clients.KubeClient.CoreV1().Namespaces().List(context.TODO(), metav1.ListOptions{})
 	if err != nil {
 		return err
 	}
@@ -163,7 +163,7 @@ func (np *networkPolicyPlugin) initNamespaces() error {
 		}
 	}
 
-	policies, err := np.node.kClient.NetworkingV1().NetworkPolicies(corev1.NamespaceAll).List(context.TODO(), metav1.ListOptions{})
+	policies, err := np.node.clients.KubeClient.NetworkingV1().NetworkPolicies(corev1.NamespaceAll).List(context.TODO(), metav1.ListOptions{})
 	if err != nil {
 		return err
 	}
@@ -436,7 +436,7 @@ func (np *networkPolicyPlugin) selectPodsFromNamespaces(nsLabelSel, podLabelSel 
 		return nil
 	}
 
-	nsLister := np.node.kubeInformers.Core().V1().Pods().Lister()
+	nsLister := np.node.clients.KubeInformers.Core().V1().Pods().Lister()
 	for namespace, vnid := range np.selectNamespacesInternal(nsSel) {
 		pods, err := nsLister.Pods(namespace).List(podSel)
 		if err != nil {
@@ -479,7 +479,7 @@ func (np *networkPolicyPlugin) selectPods(npns *npNamespace, lsel *metav1.LabelS
 		return ips
 	}
 
-	pods, err := np.node.kubeInformers.Core().V1().Pods().Lister().Pods(npns.name).List(sel)
+	pods, err := np.node.clients.KubeInformers.Core().V1().Pods().Lister().Pods(npns.name).List(sel)
 	if err != nil {
 		// Shouldn't happen
 		klog.Errorf("Could not find matching pods in namespace %q: %v", npns.name, err)
@@ -639,7 +639,7 @@ func (np *networkPolicyPlugin) updateNetworkPolicy(npns *npNamespace, policy *ne
 
 func (np *networkPolicyPlugin) watchNetworkPolicies() {
 	funcs := common.InformerFuncs(&networkingv1.NetworkPolicy{}, np.handleAddOrUpdateNetworkPolicy, np.handleDeleteNetworkPolicy)
-	np.node.kubeInformers.Networking().V1().NetworkPolicies().Informer().AddEventHandler(funcs)
+	np.node.clients.KubeInformers.Networking().V1().NetworkPolicies().Informer().AddEventHandler(funcs)
 }
 
 func (np *networkPolicyPlugin) handleAddOrUpdateNetworkPolicy(obj, _ interface{}, eventType watch.EventType) {
@@ -688,7 +688,7 @@ func (np *networkPolicyPlugin) handleDeleteNetworkPolicy(obj interface{}) {
 
 func (np *networkPolicyPlugin) watchPods() {
 	funcs := common.InformerFuncs(&corev1.Pod{}, np.handleAddOrUpdatePod, np.handleDeletePod)
-	np.node.kubeInformers.Core().V1().Pods().Informer().AddEventHandler(funcs)
+	np.node.clients.KubeInformers.Core().V1().Pods().Informer().AddEventHandler(funcs)
 }
 
 func isOnPodNetwork(pod *corev1.Pod) bool {
@@ -731,7 +731,7 @@ func (np *networkPolicyPlugin) handleDeletePod(obj interface{}) {
 
 func (np *networkPolicyPlugin) watchNamespaces() {
 	funcs := common.InformerFuncs(&corev1.Namespace{}, np.handleAddOrUpdateNamespace, np.handleDeleteNamespace)
-	np.node.kubeInformers.Core().V1().Namespaces().Informer().AddEventHandler(funcs)
+	np.node.clients.KubeInformers.Core().V1().Namespaces().Informer().AddEventHandler(funcs)
 }
 
 func (np *networkPolicyPlugin) handleAddOrUpdateNamespace(obj, _ interface{}, eventType watch.EventType) {

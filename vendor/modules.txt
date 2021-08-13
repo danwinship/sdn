@@ -207,8 +207,10 @@ github.com/openshift/build-machinery-go/scripts
 # github.com/openshift/client-go v0.0.0-20210521082421-73d9475a9142
 ## explicit
 github.com/openshift/client-go/network/clientset/versioned
+github.com/openshift/client-go/network/clientset/versioned/fake
 github.com/openshift/client-go/network/clientset/versioned/scheme
 github.com/openshift/client-go/network/clientset/versioned/typed/network/v1
+github.com/openshift/client-go/network/clientset/versioned/typed/network/v1/fake
 github.com/openshift/client-go/network/informers/externalversions
 github.com/openshift/client-go/network/informers/externalversions/internalinterfaces
 github.com/openshift/client-go/network/informers/externalversions/network

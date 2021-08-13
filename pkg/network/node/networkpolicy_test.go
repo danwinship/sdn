@@ -15,19 +15,16 @@ import (
 	"k8s.io/apimachinery/pkg/util/sets"
 	utilwait "k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/apimachinery/pkg/watch"
-	"k8s.io/client-go/informers"
-	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/kubernetes/pkg/util/async"
 
 	osdnv1 "github.com/openshift/api/network/v1"
+	"github.com/openshift/sdn/pkg/network/common"
 )
 
 func newTestNPP() (*networkPolicyPlugin, *atomic.Value, chan struct{}) {
-	kubeClient := fake.NewSimpleClientset()
 	np := &networkPolicyPlugin{
 		node: &OsdnNode{
-			kClient:       kubeClient,
-			kubeInformers: informers.NewSharedInformerFactory(kubeClient, time.Hour),
+			clients: common.NewFakeSDNClients(),
 		},
 
 		namespaces:       make(map[uint32]*npNamespace),
@@ -56,7 +53,7 @@ func newTestNPP() (*networkPolicyPlugin, *atomic.Value, chan struct{}) {
 	np.watchPods()
 	np.watchNetworkPolicies()
 
-	np.node.kubeInformers.Start(stopCh)
+	np.node.clients.Start(stopCh)
 
 	return np, synced, stopCh
 }
@@ -89,7 +86,7 @@ func addNamespace(np *networkPolicyPlugin, name string, vnid uint32, labels map[
 			Labels: labels,
 		},
 	}
-	_, err := np.node.kClient.CoreV1().Namespaces().Create(context.TODO(), ns, metav1.CreateOptions{})
+	_, err := np.node.clients.KubeClient.CoreV1().Namespaces().Create(context.TODO(), ns, metav1.CreateOptions{})
 	if err != nil {
 		panic(fmt.Sprintf("Unexpected error creating namespace %q: %v", name, err))
 	}
@@ -122,7 +119,7 @@ func delNamespace(np *networkPolicyPlugin, name string, vnid uint32) {
 		NetID:   vnid,
 	})
 
-	err := np.node.kClient.CoreV1().Namespaces().Delete(context.TODO(), name, metav1.DeleteOptions{})
+	err := np.node.clients.KubeClient.CoreV1().Namespaces().Delete(context.TODO(), name, metav1.DeleteOptions{})
 	if err != nil {
 		panic(fmt.Sprintf("Unexpected error deleting namespace %q: %v", name, err))
 	}
@@ -133,7 +130,7 @@ func delNamespace(np *networkPolicyPlugin, name string, vnid uint32) {
 }
 
 func addNetworkPolicy(np *networkPolicyPlugin, policy *networkingv1.NetworkPolicy) {
-	_, err := np.node.kClient.NetworkingV1().NetworkPolicies(policy.Namespace).Create(context.TODO(), policy, metav1.CreateOptions{})
+	_, err := np.node.clients.KubeClient.NetworkingV1().NetworkPolicies(policy.Namespace).Create(context.TODO(), policy, metav1.CreateOptions{})
 	if err != nil {
 		panic(fmt.Sprintf("Unexpected error creating policy %q: %v", policy.Name, err))
 	}
@@ -144,7 +141,7 @@ func addNetworkPolicy(np *networkPolicyPlugin, policy *networkingv1.NetworkPolic
 }
 
 func delNetworkPolicy(np *networkPolicyPlugin, policy *networkingv1.NetworkPolicy) {
-	err := np.node.kClient.NetworkingV1().NetworkPolicies(policy.Namespace).Delete(context.TODO(), policy.Name, metav1.DeleteOptions{})
+	err := np.node.clients.KubeClient.NetworkingV1().NetworkPolicies(policy.Namespace).Delete(context.TODO(), policy.Name, metav1.DeleteOptions{})
 	if err != nil {
 		panic(fmt.Sprintf("Unexpected error deleting policy %q: %v", policy.Name, err))
 	}
@@ -243,11 +240,11 @@ func addPods(np *networkPolicyPlugin, npns *npNamespace) {
 		},
 	}
 
-	_, err := np.node.kClient.CoreV1().Pods(npns.name).Create(context.TODO(), client, metav1.CreateOptions{})
+	_, err := np.node.clients.KubeClient.CoreV1().Pods(npns.name).Create(context.TODO(), client, metav1.CreateOptions{})
 	if err != nil {
 		panic(fmt.Sprintf("Unexpected error creating client pod: %v", err))
 	}
-	_, err = np.node.kClient.CoreV1().Pods(npns.name).Create(context.TODO(), server, metav1.CreateOptions{})
+	_, err = np.node.clients.KubeClient.CoreV1().Pods(npns.name).Create(context.TODO(), server, metav1.CreateOptions{})
 	if err != nil {
 		panic(fmt.Sprintf("Unexpected error creating server pod: %v", err))
 	}
@@ -287,11 +284,11 @@ func addBadPods(np *networkPolicyPlugin, npns *npNamespace) {
 		},
 	}
 
-	_, err := np.node.kClient.CoreV1().Pods(npns.name).Create(context.TODO(), hostNetwork, metav1.CreateOptions{})
+	_, err := np.node.clients.KubeClient.CoreV1().Pods(npns.name).Create(context.TODO(), hostNetwork, metav1.CreateOptions{})
 	if err != nil {
 		panic(fmt.Sprintf("Unexpected error creating hostNetwork pod: %v", err))
 	}
-	_, err = np.node.kClient.CoreV1().Pods(npns.name).Create(context.TODO(), pending, metav1.CreateOptions{})
+	_, err = np.node.clients.KubeClient.CoreV1().Pods(npns.name).Create(context.TODO(), pending, metav1.CreateOptions{})
 	if err != nil {
 		panic(fmt.Sprintf("Unexpected error creating pending pod: %v", err))
 	}

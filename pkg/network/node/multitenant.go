@@ -45,8 +45,8 @@ func (mp *multiTenantPlugin) Start(node *OsdnNode) error {
 	mp.node = node
 	mp.vnidInUse = node.oc.FindPolicyVNIDs()
 
-	mp.vnids = newNodeVNIDMap(mp, node.osdnClient)
-	if err := mp.vnids.Start(node.osdnInformers); err != nil {
+	mp.vnids = newNodeVNIDMap(mp, node.clients.OSDNClient)
+	if err := mp.vnids.Start(node.clients.OSDNInformers); err != nil {
 		return err
 	}
 
@@ -69,7 +69,7 @@ func (mp *multiTenantPlugin) updatePodNetwork(namespace string, oldNetID, netID 
 	if err != nil {
 		klog.Errorf("Could not get list of local pods in namespace %q: %v", namespace, err)
 	}
-	services, err := mp.node.kClient.CoreV1().Services(namespace).List(context.TODO(), metav1.ListOptions{})
+	services, err := mp.node.clients.KubeClient.CoreV1().Services(namespace).List(context.TODO(), metav1.ListOptions{})
 	if err != nil {
 		klog.Errorf("Could not get list of services in namespace %q: %v", namespace, err)
 		services = &corev1.ServiceList{}

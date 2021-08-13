@@ -3,8 +3,10 @@ package openshift_sdn_controller
 import (
 	"context"
 	"os"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	corev1client "k8s.io/client-go/kubernetes/typed/core/v1"
 	"k8s.io/client-go/rest"
@@ -15,6 +17,8 @@ import (
 	"k8s.io/kubernetes/pkg/api/legacyscheme"
 
 	configv1 "github.com/openshift/api/config/v1"
+	osdnclient "github.com/openshift/client-go/network/clientset/versioned"
+	osdninformer "github.com/openshift/client-go/network/informers/externalversions"
 	leaderelectionconverter "github.com/openshift/library-go/pkg/config/leaderelection"
 	"github.com/openshift/library-go/pkg/serviceability"
 	sdncommon "github.com/openshift/sdn/pkg/network/common"
@@ -39,27 +43,21 @@ func RunOpenShiftNetworkController() error {
 	}
 
 	originControllerManager := func(ctx context.Context) {
-		controllerContext, err := newControllerContext(clientConfig)
+		sdnClients, err := newSDNClients(clientConfig)
 		if err != nil {
 			klog.Fatal(err)
 		}
 
-		sdnConfig, err := sdncommon.GetSDNConfig(controllerContext.osdnClient)
+		sdnConfig, err := sdncommon.GetSDNConfig(sdnClients.OSDNClient)
 		if err != nil {
 			klog.Fatalf("failed to get SDN config: %v", err)
 		}
 
-		if err := sdnmaster.Start(
-			controllerContext.kubernetesClient,
-			controllerContext.kubernetesInformers,
-			controllerContext.osdnClient,
-			controllerContext.osdnInformers,
-			sdnConfig,
-		); err != nil {
+		if err := sdnmaster.Start(sdnClients, sdnConfig); err != nil {
 			klog.Fatalf("Error starting OpenShift Network Controller: %v", err)
 		}
 		klog.Infof("Started OpenShift Network Controller")
-		controllerContext.StartInformers()
+		sdnClients.Start(nil)
 	}
 
 	eventBroadcaster := record.NewBroadcaster()
@@ -100,4 +98,26 @@ func RunOpenShiftNetworkController() error {
 		})
 
 	return nil
+}
+
+const defaultInformerResyncPeriod = 10 * time.Minute
+
+func newSDNClients(clientConfig *rest.Config) (*sdncommon.SDNClients, error) {
+	kubeClient, err := kubernetes.NewForConfig(clientConfig)
+	if err != nil {
+		return nil, err
+	}
+	osdnClient, err := osdnclient.NewForConfig(clientConfig)
+	if err != nil {
+		return nil, err
+	}
+
+	sdnClients := &sdncommon.SDNClients{
+		KubeClient:    kubeClient,
+		KubeInformers: informers.NewSharedInformerFactory(kubeClient, defaultInformerResyncPeriod),
+		OSDNClient:    osdnClient,
+		OSDNInformers: osdninformer.NewSharedInformerFactory(osdnClient, defaultInformerResyncPeriod),
+	}
+
+	return sdnClients, nil
 }

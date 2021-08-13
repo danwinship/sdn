@@ -5,7 +5,6 @@ import (
 	"net"
 	"strings"
 	"testing"
-	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
@@ -13,8 +12,6 @@ import (
 	ktypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/watch"
-	"k8s.io/client-go/informers"
-	"k8s.io/client-go/kubernetes/fake"
 	kubeproxyconfig "k8s.io/kubernetes/pkg/proxy/apis/config"
 	"k8s.io/kubernetes/pkg/util/async"
 
@@ -302,13 +299,11 @@ func makeEndpoints(namespace, name string, ips ...string) (*corev1.Endpoints, *d
 }
 
 func newTestOsdnProxy(usesEndpointSlices bool) (*OsdnProxy, *testProxy, *testProxy, error) {
-	kubeClient := fake.NewSimpleClientset()
-	kubeInformers := informers.NewSharedInformerFactory(kubeClient, time.Hour)
-
+	clients := common.NewFakeSDNClients()
 	sdnConfig := common.NewTestSDNConfig()
 	proxyConfig := &kubeproxyconfig.KubeProxyConfiguration{}
 
-	proxy, err := New(kubeClient, kubeInformers, nil, nil, sdnConfig, proxyConfig)
+	proxy, err := New(clients, sdnConfig, proxyConfig)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -318,7 +313,7 @@ func newTestOsdnProxy(usesEndpointSlices bool) (*OsdnProxy, *testProxy, *testPro
 	proxy.SetBaseProxies(mainProxy, unidlingProxy)
 
 	stopCh := make(chan struct{})
-	proxy.kubeInformers.Start(stopCh)
+	proxy.clients.Start(stopCh)
 
 	return proxy, mainProxy, unidlingProxy, nil
 }

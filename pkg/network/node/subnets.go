@@ -141,7 +141,7 @@ func (node *OsdnNode) getLocalSubnet() (string, error) {
 	}
 	err := utilwait.ExponentialBackoff(backoff, func() (bool, error) {
 		var err error
-		subnet, err = node.osdnClient.NetworkV1().HostSubnets().Get(context.TODO(), node.hostName, metav1.GetOptions{})
+		subnet, err = node.clients.OSDNClient.NetworkV1().HostSubnets().Get(context.TODO(), node.hostName, metav1.GetOptions{})
 		if err == nil {
 			if err = common.ValidateHostSubnet(subnet); err != nil {
 				return false, err
