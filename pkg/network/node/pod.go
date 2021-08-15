@@ -91,7 +91,7 @@ func newDefaultPodManager() *podManager {
 // Generates a CNI IPAM config from a given node cluster and local subnet that
 // CNI 'host-local' IPAM plugin will use to create an IP address lease for the
 // container
-func getIPAMConfig(clusterNetworks []common.ParsedClusterNetworkEntry, localSubnet string) ([]byte, error) {
+func getIPAMConfig(clusterNetworks []common.ClusterNetworkEntry, localSubnet string) ([]byte, error) {
 	nodeNet, err := cnitypes.ParseCIDR(localSubnet)
 	if err != nil {
 		return nil, fmt.Errorf("error parsing node network '%s': %v", localSubnet, err)
@@ -129,7 +129,7 @@ func getIPAMConfig(clusterNetworks []common.ParsedClusterNetworkEntry, localSubn
 	}
 
 	for _, cn := range clusterNetworks {
-		routes = append(routes, cnitypes.Route{Dst: *cn.ClusterCIDR})
+		routes = append(routes, cnitypes.Route{Dst: *cn.CIDR})
 	}
 
 	return json.Marshal(&cniNetworkConfig{
@@ -149,7 +149,7 @@ func getIPAMConfig(clusterNetworks []common.ParsedClusterNetworkEntry, localSubn
 }
 
 // Start the CNI server and start processing requests from it
-func (m *podManager) Start(rundir string, localSubnetCIDR string, clusterNetworks []common.ParsedClusterNetworkEntry, serviceNetworkCIDR string) error {
+func (m *podManager) Start(rundir string, localSubnetCIDR string, clusterNetworks []common.ClusterNetworkEntry, serviceNetworkCIDR string) error {
 	var err error
 	if m.ipamConfig, err = getIPAMConfig(clusterNetworks, localSubnetCIDR); err != nil {
 		return err

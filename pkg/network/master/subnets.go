@@ -21,7 +21,7 @@ import (
 func (master *OsdnMaster) startSubnetMaster() error {
 	master.subnetAllocator = masterutil.NewSubnetAllocator()
 	for _, cn := range master.sdnConfig.ClusterNetworks {
-		err := master.subnetAllocator.AddNetworkRange(cn.ClusterCIDR.String(), cn.HostSubnetLength)
+		err := master.subnetAllocator.AddNetworkRange(cn.CIDR.String(), cn.HostSubnetLength)
 		if err != nil {
 			return err
 		}

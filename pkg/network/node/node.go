@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
-	"strings"
 	"sync"
 	"time"
 
@@ -88,7 +87,6 @@ type OsdnNode struct {
 	podManager       *podManager
 	ipt              iptables.Interface
 	nodeIPTables     *NodeIPTables
-	clusterCIDRs     []string
 	localSubnetCIDR  string
 	localGatewayCIDR string
 	localIP          string
@@ -135,7 +133,7 @@ func New(c *OsdnNodeConfig) (*OsdnNode, error) {
 	node.sdnConfig = sdnConfig
 
 	var pluginId int
-	switch strings.ToLower(sdnConfig.PluginName) {
+	switch sdnConfig.PluginName {
 	case networkutils.SingleTenantPluginName:
 		node.policy = NewSingleTenantPlugin()
 		pluginId = 0
@@ -351,11 +349,7 @@ func (node *OsdnNode) Start() error {
 		return err
 	}
 
-	for _, cn := range node.sdnConfig.ClusterNetworks {
-		node.clusterCIDRs = append(node.clusterCIDRs, cn.ClusterCIDR.String())
-	}
-
-	node.nodeIPTables = newNodeIPTables(node.ipt, node.clusterCIDRs, !node.useConnTrack, node.sdnConfig.VXLANPort, node.masqueradeBit)
+	node.nodeIPTables = newNodeIPTables(node.ipt, node.sdnConfig.ClusterNetworkCIDRStrings, !node.useConnTrack, node.sdnConfig.VXLANPort, node.masqueradeBit)
 	if err = node.nodeIPTables.Setup(); err != nil {
 		return fmt.Errorf("failed to set up iptables: %v", err)
 	}
@@ -394,7 +388,7 @@ func (node *OsdnNode) Start() error {
 
 	klog.V(2).Infof("Starting openshift-sdn pod manager")
 	if err := node.podManager.Start(cniserver.CNIServerRunDir, node.localSubnetCIDR,
-		node.sdnConfig.ClusterNetworks, node.sdnConfig.ServiceNetwork.String()); err != nil {
+		node.sdnConfig.ClusterNetworks, node.sdnConfig.ServiceNetworkCIDRString); err != nil {
 		return err
 	}
 

@@ -44,7 +44,7 @@ func (node *OsdnNode) alreadySetUp() error {
 	if err != nil {
 		return err
 	}
-	for _, clusterCIDR := range node.clusterCIDRs {
+	for _, clusterCIDR := range node.sdnConfig.ClusterNetworkCIDRStrings {
 		found = false
 		for _, route := range routes {
 			if route.Dst != nil && route.Dst.String() == clusterCIDR {
@@ -152,9 +152,7 @@ func (node *OsdnNode) FinishSetupSDN() error {
 }
 
 func (node *OsdnNode) setup(localSubnetCIDR, localSubnetGateway string) error {
-	serviceNetworkCIDR := node.sdnConfig.ServiceNetwork.String()
-
-	if err := node.oc.SetupOVS(node.clusterCIDRs, serviceNetworkCIDR, localSubnetCIDR, localSubnetGateway, node.sdnConfig.MTU, node.sdnConfig.VXLANPort); err != nil {
+	if err := node.oc.SetupOVS(node.sdnConfig.ClusterNetworkCIDRStrings, node.sdnConfig.ServiceNetworkCIDRString, localSubnetCIDR, localSubnetGateway, node.sdnConfig.MTU, node.sdnConfig.VXLANPort); err != nil {
 		return err
 	}
 
@@ -174,7 +172,7 @@ func (node *OsdnNode) setup(localSubnetCIDR, localSubnetGateway string) error {
 			route := &netlink.Route{
 				LinkIndex: l.Attrs().Index,
 				Scope:     netlink.SCOPE_LINK,
-				Dst:       clusterNetwork.ClusterCIDR,
+				Dst:       clusterNetwork.CIDR,
 			}
 			if err = netlink.RouteAdd(route); err != nil {
 				return err
