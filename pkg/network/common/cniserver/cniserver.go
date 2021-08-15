@@ -54,7 +54,7 @@ const CNIServerConfigFilePath string = CNIServerRunDir + "/" + CNIServerConfigFi
 
 // Server-to-plugin config data
 type Config struct {
-	MTU                uint32 `json:"mtu"`
+	MTU                int    `json:"mtu"`
 	ServiceNetworkCIDR string `json:"serviceNetworkCIDR"`
 }
 

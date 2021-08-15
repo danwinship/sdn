@@ -24,13 +24,13 @@ type SDNConfig struct {
 	ClusterNetworkCIDRStrings []string
 	ServiceNetworkCIDRString  string
 
-	VXLANPort uint32
-	MTU       uint32
+	VXLANPort int
+	MTU       int
 }
 
 type ClusterNetworkEntry struct {
 	CIDR             *net.IPNet
-	HostSubnetLength uint32
+	HostSubnetLength int
 }
 
 func GetSDNConfig(osdnClient osdnclient.Interface) (*SDNConfig, error) {
@@ -63,7 +63,7 @@ func ParseSDNConfig(cn *osdnv1.ClusterNetwork) (*SDNConfig, error) {
 		sdnConfig.ClusterNetworks = append(sdnConfig.ClusterNetworks,
 			ClusterNetworkEntry{
 				CIDR:             cidr,
-				HostSubnetLength: entry.HostSubnetLength,
+				HostSubnetLength: int(entry.HostSubnetLength),
 			},
 		)
 		sdnConfig.ClusterNetworkCIDRStrings = append(sdnConfig.ClusterNetworkCIDRStrings, entry.CIDR)
@@ -81,13 +81,13 @@ func ParseSDNConfig(cn *osdnv1.ClusterNetwork) (*SDNConfig, error) {
 	sdnConfig.ServiceNetworkCIDRString = cn.ServiceNetwork
 
 	if cn.VXLANPort != nil {
-		sdnConfig.VXLANPort = *cn.VXLANPort
+		sdnConfig.VXLANPort = int(*cn.VXLANPort)
 	} else {
 		sdnConfig.VXLANPort = 4789
 	}
 
 	if cn.MTU != nil {
-		sdnConfig.MTU = *cn.MTU
+		sdnConfig.MTU = int(*cn.MTU)
 	} else {
 		sdnConfig.MTU = 1450
 	}

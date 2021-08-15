@@ -279,7 +279,7 @@ func (node *OsdnNode) validateMTU() error {
 		return fmt.Errorf("unable to determine MTU while performing validation")
 	}
 
-	needsTaint := mtu < int(node.sdnConfig.MTU)+50
+	needsTaint := mtu < node.sdnConfig.MTU+50
 	const MTUTaintKey string = "network.openshift.io/mtu-too-small"
 	mtuTooSmallTaint := &corev1.Taint{Key: MTUTaintKey, Value: "value", Effect: "NoSchedule"}
 	nodeObj, err := node.kClient.CoreV1().Nodes().Get(context.TODO(), node.hostName, metav1.GetOptions{})

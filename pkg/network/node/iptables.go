@@ -21,7 +21,7 @@ type NodeIPTables struct {
 	ipt                iptables.Interface
 	clusterNetworkCIDR []string
 	masqueradeServices bool
-	vxlanPort          uint32
+	vxlanPort          int
 	masqueradeBitHex   string // the masquerade bit as hex value
 
 	mu sync.Mutex // Protects concurrent access to syncIPTableRules()
