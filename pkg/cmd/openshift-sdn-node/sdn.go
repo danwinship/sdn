@@ -19,14 +19,19 @@ func (sdn *openShiftSDN) initSDN() error {
 	eventBroadcaster.StartRecordingToSink(&corev1client.EventSinkImpl{Interface: sdn.clients.KubeClient.CoreV1().Events("")})
 	sdn.sdnRecorder = eventBroadcaster.NewRecorder(scheme.Scheme, corev1.EventSource{Component: "openshift-sdn", Host: sdn.nodeName})
 
-	var err error
+	nodeConfig, err := sdnnode.NewNodeConfig(sdn.nodeName, sdn.nodeIP, sdn.sdnConfig, sdn.proxyConfig)
+	if err != nil {
+		return err
+	}
+
 	sdn.osdnNode, err = sdnnode.New(&sdnnode.OsdnNodeConfig{
-		NodeName:   sdn.nodeName,
-		NodeIP:     sdn.nodeIP,
-		SDNClients: sdn.clients,
-		SDNConfig:  sdn.sdnConfig,
-		IPTables:   sdn.ipt,
-		Recorder:   sdn.sdnRecorder,
+		SDNClients:  sdn.clients,
+		SDNConfig:   sdn.sdnConfig,
+		NodeConfig:  nodeConfig,
+		ProxyConfig: sdn.proxyConfig,
+
+		IPTables: sdn.ipt,
+		Recorder: sdn.sdnRecorder,
 	})
 	return err
 }

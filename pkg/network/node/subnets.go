@@ -1,17 +1,12 @@
 package node
 
 import (
-	"context"
 	"fmt"
-	"time"
 
 	"k8s.io/klog/v2"
 
-	kapierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ktypes "k8s.io/apimachinery/pkg/types"
 	kerrors "k8s.io/apimachinery/pkg/util/errors"
-	utilwait "k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/apimachinery/pkg/watch"
 
 	osdnv1 "github.com/openshift/api/network/v1"
@@ -125,47 +120,4 @@ func (hsw *hostSubnetWatcher) updateVXLANMulticastRules() error {
 		}
 	}
 	return hsw.oc.UpdateVXLANMulticastFlows(remoteIPs)
-}
-
-func (node *OsdnNode) getLocalSubnet() (string, error) {
-	var subnet *osdnv1.HostSubnet
-	// The HostSubnet should already have been created by the SDN master in response
-	// to the kubelet creating its Node. Sometimes this takes unexpectedly long
-	// though. (The timeout here is based on no-longer-correct assumptions and is
-	// probably far longer than it really needs to be, but whatever.)
-	backoff := utilwait.Backoff{
-		// ~2 mins total
-		Duration: time.Second,
-		Factor:   1.5,
-		Steps:    11,
-	}
-	err := utilwait.ExponentialBackoff(backoff, func() (bool, error) {
-		var err error
-		subnet, err = node.clients.OSDNClient.NetworkV1().HostSubnets().Get(context.TODO(), node.hostName, metav1.GetOptions{})
-		if err == nil {
-			if err = common.ValidateHostSubnet(subnet); err != nil {
-				return false, err
-			} else if subnet.HostIP == node.localIP {
-				return true, nil
-			} else {
-				klog.Warningf("HostIP %q for local subnet does not match with nodeIP %q, "+
-					"Waiting for master to update subnet for node %q ...", subnet.HostIP, node.localIP, node.hostName)
-				return false, nil
-			}
-		} else if kapierrors.IsNotFound(err) {
-			klog.Warningf("Could not find an allocated subnet for node: %s, Waiting...", node.hostName)
-			return false, nil
-		} else {
-			return false, err
-		}
-	})
-	if err != nil {
-		return "", fmt.Errorf("failed to get subnet for this host: %s, error: %v", node.hostName, err)
-	}
-
-	if err = node.sdnConfig.ValidateNodeIP(subnet.HostIP); err != nil {
-		return "", fmt.Errorf("failed to validate own HostSubnet: %v", err)
-	}
-
-	return subnet.Subnet, nil
 }

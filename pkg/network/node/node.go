@@ -58,11 +58,9 @@ type osdnPolicy interface {
 }
 
 type OsdnNodeConfig struct {
-	NodeName string
-	NodeIP   string
-
 	SDNClients  *common.SDNClients
 	SDNConfig   *common.SDNConfig
+	NodeConfig  *NodeConfig
 	ProxyConfig *kubeproxyconfig.KubeProxyConfiguration
 
 	Recorder record.EventRecorder
@@ -70,8 +68,9 @@ type OsdnNodeConfig struct {
 }
 
 type OsdnNode struct {
-	clients   *common.SDNClients
-	sdnConfig *common.SDNConfig
+	clients    *common.SDNClients
+	sdnConfig  *common.SDNConfig
+	nodeConfig *NodeConfig
 
 	policy       osdnPolicy
 	recorder     record.EventRecorder
@@ -79,13 +78,6 @@ type OsdnNode struct {
 	podManager   *podManager
 	ipt          iptables.Interface
 	nodeIPTables *NodeIPTables
-
-	localSubnetCIDR   string
-	localGatewayCIDR  string
-	localIP           string
-	hostName          string
-	useConnTrack      bool
-	masqueradeBitMask uint32
 
 	// Synchronizes operations on egressPolicies
 	egressPoliciesLock sync.Mutex
@@ -101,57 +93,40 @@ type OsdnNode struct {
 // Called by higher layers to create the SDN node instance
 func New(c *OsdnNodeConfig) (*OsdnNode, error) {
 	node := &OsdnNode{
-		clients:   c.SDNClients,
-		sdnConfig: c.SDNConfig,
-		recorder:  c.Recorder,
-		localIP:   c.NodeIP,
-		hostName:  c.NodeName,
-		ipt:       c.IPTables,
+		clients:    c.SDNClients,
+		sdnConfig:  c.SDNConfig,
+		nodeConfig: c.NodeConfig,
+
+		recorder: c.Recorder,
+		ipt:      c.IPTables,
 	}
 
 	if err := c.validateNodeIP(); err != nil {
 		return nil, err
 	}
 
-	var pluginId int
 	switch node.sdnConfig.PluginName {
 	case networkutils.SingleTenantPluginName:
 		node.policy = NewSingleTenantPlugin()
-		pluginId = 0
 	case networkutils.MultiTenantPluginName:
 		node.policy = NewMultiTenantPlugin()
-		pluginId = 1
-		// Userspace proxy is incompatible with conntrack.
-		if c.ProxyConfig.Mode != kubeproxyconfig.ProxyModeUserspace {
-			node.useConnTrack = true
-		}
 	case networkutils.NetworkPolicyPluginName:
 		node.policy = NewNetworkPolicyPlugin()
-		pluginId = 2
-		node.useConnTrack = true
 	default:
 		return nil, fmt.Errorf("Unknown plugin name %q", node.sdnConfig.PluginName)
 	}
 
-	if node.useConnTrack && c.ProxyConfig.Mode == kubeproxyconfig.ProxyModeUserspace {
-		return nil, fmt.Errorf("%q plugin is not compatible with proxy-mode %q", node.sdnConfig.PluginName, c.ProxyConfig.Mode)
-	}
-
-	klog.Infof("Initializing SDN node %q (%s) of type %q", c.NodeName, c.NodeIP, node.sdnConfig.PluginName)
+	klog.Infof("Initializing SDN node %q (%s) of type %q", node.nodeConfig.Name, node.nodeConfig.IPString, node.sdnConfig.PluginName)
 
 	ovsif, err := ovs.New(kexec.New(), Br0)
 	if err != nil {
 		return nil, err
 	}
-	node.oc = NewOVSController(node.sdnConfig, ovsif, pluginId, node.useConnTrack, node.localIP)
+	node.oc = NewOVSController(node.sdnConfig, ovsif, node.nodeConfig.PluginID, node.nodeConfig.UseConnTrack, node.nodeConfig.IPString)
 
 	node.podManager = newPodManager(node.clients, node.sdnConfig, node.policy, node.oc)
 
-	if c.ProxyConfig.IPTables.MasqueradeBit != nil {
-		node.masqueradeBitMask = 1 << uint32(*c.ProxyConfig.IPTables.MasqueradeBit)
-	}
-
-	node.nodeIPTables = newNodeIPTables(node.sdnConfig, c.IPTables, !node.useConnTrack, node.masqueradeBitMask)
+	node.nodeIPTables = newNodeIPTables(node.sdnConfig, c.IPTables, !node.nodeConfig.UseConnTrack, node.nodeConfig.MasqueradeBitMask)
 
 	node.egressPolicies = make(map[uint32][]osdnv1.EgressNetworkPolicy)
 	node.egressDNS, err = common.NewEgressDNS(true, false)
@@ -159,7 +134,7 @@ func New(c *OsdnNodeConfig) (*OsdnNode, error) {
 		return nil, err
 	}
 
-	node.egressIP = newEgressIPWatcher(node.clients, node.oc, node.nodeIPTables, node.localIP, node.masqueradeBitMask)
+	node.egressIP = newEgressIPWatcher(node.clients, node.oc, node.nodeIPTables, node.nodeConfig.IPString, node.nodeConfig.MasqueradeBitMask)
 
 	metrics.RegisterMetrics()
 
@@ -167,9 +142,9 @@ func New(c *OsdnNodeConfig) (*OsdnNode, error) {
 }
 
 func (c *OsdnNodeConfig) validateNodeIP() error {
-	if _, _, err := GetLinkDetails(c.NodeIP); err != nil {
+	if _, _, err := GetLinkDetails(c.NodeConfig.IPString); err != nil {
 		if err == ErrorNetworkInterfaceNotFound {
-			err = fmt.Errorf("node IP %q is not a local/private address (hostname %q)", c.NodeIP, c.NodeName)
+			err = fmt.Errorf("node IP %q is not a local/private address (hostname %q)", c.NodeConfig.IPString, c.NodeConfig.Name)
 		}
 		klog.Errorf("Unable to find network interface for node IP; some features will not work! (%v)", err)
 	}
@@ -246,7 +221,7 @@ func (node *OsdnNode) validateMTU() error {
 		found := false
 		addresses, err := netlink.AddrList(link, netlink.FAMILY_V4)
 		for _, address := range addresses {
-			if node.localIP == address.IP.String() {
+			if node.nodeConfig.IP.Equal(address.IP) {
 				found = true
 				break
 			}
@@ -267,14 +242,14 @@ func (node *OsdnNode) validateMTU() error {
 	needsTaint := mtu < node.sdnConfig.MTU+50
 	const MTUTaintKey string = "network.openshift.io/mtu-too-small"
 	mtuTooSmallTaint := &corev1.Taint{Key: MTUTaintKey, Value: "value", Effect: "NoSchedule"}
-	nodeObj, err := node.clients.KubeClient.CoreV1().Nodes().Get(context.TODO(), node.hostName, metav1.GetOptions{})
+	nodeObj, err := node.clients.KubeClient.CoreV1().Nodes().Get(context.TODO(), node.nodeConfig.Name, metav1.GetOptions{})
 	if err != nil {
 		return fmt.Errorf("could not get Kubernetes Node object by hostname: %v", err)
 	}
 	tainted := taints.TaintExists(nodeObj.Spec.Taints, mtuTooSmallTaint)
 	if needsTaint != tainted {
 		resultErr := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
-			nodeObj, err = node.clients.KubeClient.CoreV1().Nodes().Get(context.TODO(), node.hostName, metav1.GetOptions{})
+			nodeObj, err = node.clients.KubeClient.CoreV1().Nodes().Get(context.TODO(), node.nodeConfig.Name, metav1.GetOptions{})
 			if err != nil {
 				return fmt.Errorf("could not get Kubernetes Node object by hostname: %v", err)
 			}
@@ -310,7 +285,7 @@ func (node *OsdnNode) validateMTU() error {
 				return fmt.Errorf("could not create patch for object: %v", err)
 			}
 
-			_, err = node.clients.KubeClient.CoreV1().Nodes().Patch(context.TODO(), node.hostName, types.StrategicMergePatchType, patchBytes, metav1.PatchOptions{})
+			_, err = node.clients.KubeClient.CoreV1().Nodes().Patch(context.TODO(), node.nodeConfig.Name, types.StrategicMergePatchType, patchBytes, metav1.PatchOptions{})
 
 			return err
 		})
@@ -326,8 +301,7 @@ func (node *OsdnNode) validateMTU() error {
 func (node *OsdnNode) Start() error {
 	klog.V(2).Infof("Starting openshift-sdn")
 
-	var err error
-	node.localSubnetCIDR, err = node.getLocalSubnet()
+	err := node.nodeConfig.getLocalSubnet(node.clients)
 	if err != nil {
 		return err
 	}
@@ -341,7 +315,7 @@ func (node *OsdnNode) Start() error {
 		return fmt.Errorf("node SDN setup failed: %v", err)
 	}
 
-	hsw := newHostSubnetWatcher(node.oc, node.localIP, node.sdnConfig)
+	hsw := newHostSubnetWatcher(node.oc, node.nodeConfig.IPString, node.sdnConfig)
 	hsw.Start(node.clients.OSDNInformers)
 
 	if err = node.policy.Start(node); err != nil {
@@ -355,7 +329,7 @@ func (node *OsdnNode) Start() error {
 			return err
 		}
 	}
-	if !node.useConnTrack {
+	if !node.nodeConfig.UseConnTrack {
 		node.watchServices()
 	}
 
@@ -369,7 +343,7 @@ func (node *OsdnNode) Start() error {
 	}
 
 	klog.V(2).Infof("Starting openshift-sdn pod manager")
-	if err := node.podManager.Start(cniserver.CNIServerRunDir, node.localSubnetCIDR); err != nil {
+	if err := node.podManager.Start(cniserver.CNIServerRunDir, node.nodeConfig.LocalSubnetCIDRString); err != nil {
 		return err
 	}
 
@@ -476,7 +450,7 @@ func (node *OsdnNode) UpdatePod(pod corev1.Pod) error {
 }
 
 func (node *OsdnNode) GetRunningPods(namespace string) ([]corev1.Pod, error) {
-	fieldSelector := fields.Set{"spec.nodeName": node.hostName}.AsSelector()
+	fieldSelector := fields.Set{"spec.nodeName": node.nodeConfig.Name}.AsSelector()
 	opts := metav1.ListOptions{
 		LabelSelector: labels.Everything().String(),
 		FieldSelector: fieldSelector.String(),

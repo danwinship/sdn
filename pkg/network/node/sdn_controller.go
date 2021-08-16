@@ -8,8 +8,6 @@ import (
 
 	"k8s.io/klog/v2"
 
-	"github.com/openshift/sdn/pkg/network/common"
-
 	corev1 "k8s.io/api/core/v1"
 	utilwait "k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/kubernetes/pkg/util/sysctl"
@@ -31,7 +29,7 @@ func (node *OsdnNode) alreadySetUp() error {
 	}
 	found = false
 	for _, addr := range addrs {
-		if addr.IPNet.String() == node.localGatewayCIDR {
+		if addr.IPNet.String() == node.nodeConfig.LocalGateway.String() {
 			found = true
 			break
 		}
@@ -108,17 +106,7 @@ func (node *OsdnNode) SetupSDN() (bool, map[string]podNetworkInfo, error) {
 		return false, nil, fmt.Errorf("net/ipv4/ip_forward=0, it must be set to 1")
 	}
 
-	localSubnetCIDR := node.localSubnetCIDR
-	_, ipnet, err := net.ParseCIDR(localSubnetCIDR)
-	if err != nil {
-		return false, nil, fmt.Errorf("invalid local subnet CIDR: %v", err)
-	}
-	localSubnetMaskLength, _ := ipnet.Mask.Size()
-	localSubnetGateway := common.GenerateDefaultGateway(ipnet).String()
-
-	klog.V(5).Infof("[SDN setup] node pod subnet %s gateway %s", ipnet.String(), localSubnetGateway)
-
-	node.localGatewayCIDR = fmt.Sprintf("%s/%d", localSubnetGateway, localSubnetMaskLength)
+	klog.V(5).Infof("[SDN setup] node pod subnet %s gateway %s", node.nodeConfig.LocalSubnet, node.nodeConfig.LocalGateway)
 
 	if err := healthCheckOVS(); err != nil {
 		return false, nil, err
@@ -134,7 +122,7 @@ func (node *OsdnNode) SetupSDN() (bool, map[string]podNetworkInfo, error) {
 		klog.Infof("[SDN setup] SDN is already set up")
 	} else {
 		klog.Infof("[SDN setup] full SDN setup required (%v)", err)
-		if err := node.setup(localSubnetCIDR, localSubnetGateway); err != nil {
+		if err := node.setup(node.nodeConfig.LocalSubnet, node.nodeConfig.LocalGateway); err != nil {
 			return false, nil, err
 		}
 		changed = true
@@ -151,17 +139,16 @@ func (node *OsdnNode) FinishSetupSDN() error {
 	return nil
 }
 
-func (node *OsdnNode) setup(localSubnetCIDR, localSubnetGateway string) error {
-	if err := node.oc.SetupOVS(localSubnetCIDR, localSubnetGateway); err != nil {
+func (node *OsdnNode) setup(localSubnet *net.IPNet, localGateway *net.IPNet) error {
+	if err := node.oc.SetupOVS(localSubnet.String(), localGateway.IP.String()); err != nil {
 		return err
 	}
 
 	l, err := netlink.LinkByName(Tun0)
 	if err == nil {
-		gwIP, _ := netlink.ParseIPNet(node.localGatewayCIDR)
-		err = netlink.AddrAdd(l, &netlink.Addr{IPNet: gwIP})
+		err = netlink.AddrAdd(l, &netlink.Addr{IPNet: localGateway})
 		if err == nil {
-			defer deleteLocalSubnetRoute(Tun0, localSubnetCIDR)
+			defer deleteLocalSubnetRoute(Tun0, localSubnet.String())
 		}
 	}
 	if err == nil {
