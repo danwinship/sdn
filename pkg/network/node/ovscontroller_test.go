@@ -24,11 +24,12 @@ import (
 
 func setupOVSController(t *testing.T) (ovs.Interface, *ovsController, []string) {
 	sdnConfig := common.NewTestSDNConfig()
+	nodeConfig := NewTestNodeConfig(sdnConfig)
 
 	ovsif := ovs.NewFake(Br0)
-	oc := NewOVSController(sdnConfig, ovsif, 0, true, "172.17.0.4")
+	oc := NewOVSController(sdnConfig, nodeConfig, ovsif)
 	oc.tunMAC = "c6:ac:2c:13:48:4b"
-	err := oc.SetupOVS("10.128.0.0/23", "10.128.0.1")
+	err := oc.SetupOVS()
 	if err != nil {
 		t.Fatalf("Unexpected error setting up OVS: %v", err)
 	}
@@ -826,17 +827,22 @@ func TestAlreadySetUp(t *testing.T) {
 	}{
 		{
 			// Good note
-			flow:    fmt.Sprintf("cookie=0x0, duration=4.796s, table=253, n_packets=0, n_bytes=0, actions=note:00.%02x.00.00.00.00", ruleVersion),
+			flow:    fmt.Sprintf("cookie=0x0, duration=4.796s, table=253, n_packets=0, n_bytes=0, actions=note:02.%02x.00.00.00.00", ruleVersion),
 			success: true,
 		},
 		{
 			// Wrong version
-			flow:    fmt.Sprintf("cookie=0x0, duration=4.796s, table=253, n_packets=0, n_bytes=0, actions=note:00.%02x.00.00.00.00", ruleVersion-1),
+			flow:    fmt.Sprintf("cookie=0x0, duration=4.796s, table=253, n_packets=0, n_bytes=0, actions=note:02.%02x.00.00.00.00", ruleVersion-1),
+			success: false,
+		},
+		{
+			// Wrong plugin
+			flow:    fmt.Sprintf("cookie=0x0, duration=4.796s, table=253, n_packets=0, n_bytes=0, actions=note:00.%02x.00.00.00.00", ruleVersion),
 			success: false,
 		},
 		{
 			// Wrong table
-			flow:    fmt.Sprintf("cookie=0x0, duration=4.796s, table=10, n_packets=0, n_bytes=0, actions=note:00.%02x.00.00.00.00", ruleVersion),
+			flow:    fmt.Sprintf("cookie=0x0, duration=4.796s, table=10, n_packets=0, n_bytes=0, actions=note:02.%02x.00.00.00.00", ruleVersion),
 			success: false,
 		},
 		{
@@ -847,13 +853,14 @@ func TestAlreadySetUp(t *testing.T) {
 	}
 
 	sdnConfig := common.NewTestSDNConfig()
+	nodeConfig := NewTestNodeConfig(sdnConfig)
 
 	for i, tc := range testcases {
 		ovsif := ovs.NewFake(Br0)
 		if err := ovsif.AddBridge("fail_mode=secure", "protocols=OpenFlow13"); err != nil {
 			t.Fatalf("(%d) unexpected error from AddBridge: %v", i, err)
 		}
-		oc := NewOVSController(sdnConfig, ovsif, 0, true, "172.17.0.4")
+		oc := NewOVSController(sdnConfig, nodeConfig, ovsif)
 		/* In order to test AlreadySetUp the vxlan port has to be added, we are not testing AddPort here */
 		_, err := ovsif.AddPort("vxlan0", 1, "type=vxlan", `options:remote_ip="flow"`, `options:key="flow"`, fmt.Sprintf("options:dst_port=%d", sdnConfig.VXLANPort))
 		if err != nil {
@@ -1197,7 +1204,7 @@ var expectedFlows = []string{
 	" cookie=0, table=111, priority=100, actions=move:NXM_NX_REG0[]->NXM_NX_TUN_ID[0..31],set_field:10.0.123.45->tun_dst,output:1,set_field:10.0.45.123->tun_dst,output:1,goto_table:120",
 	" cookie=0, table=120, priority=100, reg0=99, actions=output:4,output:5,output:6",
 	" cookie=0, table=120, priority=0, actions=drop",
-	" cookie=0, table=253, actions=note:00.0C",
+	" cookie=0, table=253, actions=note:02.0C",
 }
 
 // Ensure that we do not change the OVS flows without bumping ruleVersion

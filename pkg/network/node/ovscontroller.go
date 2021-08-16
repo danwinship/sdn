@@ -147,13 +147,11 @@ import (
 //   per-Namespace rules to output multicast packets to each pod port in that namespace
 
 type ovsController struct {
-	ovs       ovs.Interface
-	sdnConfig *common.SDNConfig
+	ovs        ovs.Interface
+	sdnConfig  *common.SDNConfig
+	nodeConfig *NodeConfig
 
-	pluginId     int
-	useConnTrack bool
-	localIP      string
-	tunMAC       string
+	tunMAC string
 }
 
 const (
@@ -167,15 +165,15 @@ const (
 	ruleVersionTable = 253
 )
 
-func NewOVSController(sdnConfig *common.SDNConfig, ovsif ovs.Interface, pluginId int, useConnTrack bool, localIP string) *ovsController {
-	return &ovsController{ovs: ovsif, sdnConfig: sdnConfig, pluginId: pluginId, useConnTrack: useConnTrack, localIP: localIP}
+func NewOVSController(sdnConfig *common.SDNConfig, nodeConfig *NodeConfig, ovsif ovs.Interface) *ovsController {
+	return &ovsController{ovs: ovsif, sdnConfig: sdnConfig, nodeConfig: nodeConfig}
 }
 
 func (oc *ovsController) getVersionNote() string {
 	if ruleVersion > 254 {
 		panic("Version too large!")
 	}
-	return fmt.Sprintf("%02X.%02X", oc.pluginId, ruleVersion)
+	return fmt.Sprintf("%02X.%02X", oc.nodeConfig.PluginID, ruleVersion)
 }
 
 func (oc *ovsController) AlreadySetUp() bool {
@@ -196,7 +194,7 @@ func (oc *ovsController) AlreadySetUp() bool {
 	return false
 }
 
-func (oc *ovsController) SetupOVS(localSubnetCIDR, localSubnetGateway string) error {
+func (oc *ovsController) SetupOVS() error {
 	err := oc.ovs.DeleteBridge()
 	if err != nil {
 		return err
@@ -222,11 +220,14 @@ func (oc *ovsController) SetupOVS(localSubnetCIDR, localSubnetGateway string) er
 
 	clusterNetworkCIDR := oc.sdnConfig.ClusterNetworkCIDRStrings
 	serviceNetworkCIDR := oc.sdnConfig.ServiceNetworkCIDRString
+	localSubnetCIDR := oc.nodeConfig.LocalSubnetCIDRString
+	localSubnetGateway := oc.nodeConfig.LocalGatewayIPString
+	localIP := oc.nodeConfig.IPString
 
 	otx := oc.ovs.NewTransaction()
 
 	// Table 0: initial dispatch based on in_port
-	if oc.useConnTrack {
+	if oc.nodeConfig.UseConnTrack {
 		otx.AddFlow("table=0, priority=1000, ip, ct_state=-trk, actions=ct(table=0)")
 	}
 	// vxlan0
@@ -237,7 +238,7 @@ func (oc *ovsController) SetupOVS(localSubnetCIDR, localSubnetGateway string) er
 	}
 	otx.AddFlow("table=0, priority=150, in_port=1, actions=drop")
 	// tun0
-	if oc.useConnTrack {
+	if oc.nodeConfig.UseConnTrack {
 		otx.AddFlow("table=0, priority=400, in_port=2, ip, nw_src=%s, actions=goto_table:30", localSubnetGateway)
 		for _, clusterCIDR := range clusterNetworkCIDR {
 			otx.AddFlow("table=0, priority=300, in_port=2, ip, nw_src=%s, nw_dst=%s, actions=goto_table:25", localSubnetCIDR, clusterCIDR)
@@ -268,7 +269,7 @@ func (oc *ovsController) SetupOVS(localSubnetCIDR, localSubnetGateway string) er
 	// Table 21: from OpenShift container; NetworkPolicy mode uses this for connection tracking
 	otx.AddFlow("table=21, priority=0, actions=goto_table:30")
 
-	if oc.useConnTrack {
+	if oc.nodeConfig.UseConnTrack {
 		// Table 25: IP from OpenShift container via Service IP; reload tenant-id; filled in by setupPodFlows
 		// eg, "table=25, priority=100, ip, nw_src=${ipaddr}, actions=load:${tenant_id}->NXM_NX_REG0[], goto_table:30"
 		otx.AddFlow("table=25, priority=0, actions=drop")
@@ -282,7 +283,7 @@ func (oc *ovsController) SetupOVS(localSubnetCIDR, localSubnetGateway string) er
 	}
 	otx.AddFlow("table=30, priority=300, ip, nw_dst=%s, actions=output:2", localSubnetGateway)
 	otx.AddFlow("table=30, priority=100, ip, nw_dst=%s, actions=goto_table:60", serviceNetworkCIDR)
-	if oc.useConnTrack {
+	if oc.nodeConfig.UseConnTrack {
 		otx.AddFlow("table=30, priority=250, ip, nw_dst=%s, ct_state=+rpl, actions=ct(nat,table=70)", localSubnetCIDR)
 	}
 	otx.AddFlow("table=30, priority=200, ip, nw_dst=%s, actions=goto_table:70", localSubnetCIDR)
@@ -307,7 +308,7 @@ func (oc *ovsController) SetupOVS(localSubnetCIDR, localSubnetGateway string) er
 	otx.AddFlow("table=50, priority=0, actions=drop")
 
 	// Table 60: IP to service from pod
-	if oc.useConnTrack {
+	if oc.nodeConfig.UseConnTrack {
 		otx.AddFlow("table=60, priority=200, actions=output:2")
 	} else {
 		otx.AddFlow("table=60, priority=200, reg0=0, actions=output:2")
@@ -334,8 +335,8 @@ func (oc *ovsController) SetupOVS(localSubnetCIDR, localSubnetGateway string) er
 	// pod DNS to talk to the node IP, and also has an EgressNetworkPolicy
 	// saying "Deny 0.0.0.0/0", then DNS to the node IP is still expected to
 	// work
-	otx.AddFlow("table=99, priority=200, tcp, tcp_dst=53, nw_dst=%s, actions=output:2", oc.localIP)
-	otx.AddFlow("table=99, priority=200, udp, udp_dst=53, nw_dst=%s, actions=output:2", oc.localIP)
+	otx.AddFlow("table=99, priority=200, tcp, tcp_dst=53, nw_dst=%s, actions=output:2", localIP)
+	otx.AddFlow("table=99, priority=200, udp, udp_dst=53, nw_dst=%s, actions=output:2", localIP)
 	otx.AddFlow("table=99, priority=0, actions=goto_table:100")
 
 	// Table 100: egress network policy dispatch; edited by UpdateEgressNetworkPolicy()
@@ -455,7 +456,7 @@ func (oc *ovsController) setupPodFlows(sandboxID string, ofport int, podIP net.I
 	// ARP/IP traffic from container
 	otx.AddFlow("table=20, priority=100, cookie=%s, in_port=%d, arp, nw_src=%s, arp_sha=%s, actions=load:%d->NXM_NX_REG0[], goto_table:21", cookie, ofport, ipstr, ipmac, vnid)
 	otx.AddFlow("table=20, priority=100, cookie=%s, in_port=%d, ip, nw_src=%s, actions=load:%d->NXM_NX_REG0[], goto_table:21", cookie, ofport, ipstr, vnid)
-	if oc.useConnTrack {
+	if oc.nodeConfig.UseConnTrack {
 		otx.AddFlow("table=25, priority=100, cookie=%s, ip, nw_src=%s, actions=load:%d->NXM_NX_REG0[], goto_table:30", cookie, ipstr, vnid)
 	}
 
@@ -907,7 +908,7 @@ func (oc *ovsController) SetNamespaceEgressViaEgressIPs(vnid uint32, egressIPsMe
 
 	var buildBuckets []string
 	for _, egressIPMetaData := range egressIPsMetaData {
-		if egressIPMetaData.nodeIP == oc.localIP {
+		if egressIPMetaData.nodeIP == oc.nodeConfig.IPString {
 			if err := oc.ensureTunMAC(); err != nil {
 				return err
 			}
@@ -916,7 +917,7 @@ func (oc *ovsController) SetNamespaceEgressViaEgressIPs(vnid uint32, egressIPsMe
 			break
 		} else {
 			commit := ""
-			if oc.useConnTrack {
+			if oc.nodeConfig.UseConnTrack {
 				commit = "ct(commit),"
 			}
 			buildBuckets = append(buildBuckets, fmt.Sprintf("actions=%smove:NXM_NX_REG0[]->NXM_NX_TUN_ID[0..31],set_field:%s->tun_dst,output:vxlan0", commit, egressIPMetaData.nodeIP))

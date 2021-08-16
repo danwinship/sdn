@@ -3,7 +3,6 @@ package node
 import (
 	"errors"
 	"fmt"
-	"net"
 	"time"
 
 	"k8s.io/klog/v2"
@@ -122,7 +121,7 @@ func (node *OsdnNode) SetupSDN() (bool, map[string]podNetworkInfo, error) {
 		klog.Infof("[SDN setup] SDN is already set up")
 	} else {
 		klog.Infof("[SDN setup] full SDN setup required (%v)", err)
-		if err := node.setup(node.nodeConfig.LocalSubnet, node.nodeConfig.LocalGateway); err != nil {
+		if err := node.setup(); err != nil {
 			return false, nil, err
 		}
 		changed = true
@@ -139,16 +138,16 @@ func (node *OsdnNode) FinishSetupSDN() error {
 	return nil
 }
 
-func (node *OsdnNode) setup(localSubnet *net.IPNet, localGateway *net.IPNet) error {
-	if err := node.oc.SetupOVS(localSubnet.String(), localGateway.IP.String()); err != nil {
+func (node *OsdnNode) setup() error {
+	if err := node.oc.SetupOVS(); err != nil {
 		return err
 	}
 
 	l, err := netlink.LinkByName(Tun0)
 	if err == nil {
-		err = netlink.AddrAdd(l, &netlink.Addr{IPNet: localGateway})
+		err = netlink.AddrAdd(l, &netlink.Addr{IPNet: node.nodeConfig.LocalGateway})
 		if err == nil {
-			defer deleteLocalSubnetRoute(Tun0, localSubnet.String())
+			defer deleteLocalSubnetRoute(Tun0, node.nodeConfig.LocalSubnetCIDRString)
 		}
 	}
 	if err == nil {

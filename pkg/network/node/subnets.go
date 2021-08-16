@@ -22,10 +22,10 @@ type hostSubnetWatcher struct {
 	hostSubnetMap map[ktypes.UID]*osdnv1.HostSubnet
 }
 
-func newHostSubnetWatcher(oc *ovsController, localIP string, sdnConfig *common.SDNConfig) *hostSubnetWatcher {
+func newHostSubnetWatcher(oc *ovsController, sdnConfig *common.SDNConfig, nodeConfig *NodeConfig) *hostSubnetWatcher {
 	return &hostSubnetWatcher{
 		oc:        oc,
-		localIP:   localIP,
+		localIP:   nodeConfig.IPString,
 		sdnConfig: sdnConfig,
 
 		hostSubnetMap: make(map[ktypes.UID]*osdnv1.HostSubnet),

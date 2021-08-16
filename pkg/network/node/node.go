@@ -122,11 +122,11 @@ func New(c *OsdnNodeConfig) (*OsdnNode, error) {
 	if err != nil {
 		return nil, err
 	}
-	node.oc = NewOVSController(node.sdnConfig, ovsif, node.nodeConfig.PluginID, node.nodeConfig.UseConnTrack, node.nodeConfig.IPString)
+	node.oc = NewOVSController(node.sdnConfig, node.nodeConfig, ovsif)
 
-	node.podManager = newPodManager(node.clients, node.sdnConfig, node.policy, node.oc)
+	node.podManager = newPodManager(node.clients, node.sdnConfig, node.nodeConfig, node.policy, node.oc)
 
-	node.nodeIPTables = newNodeIPTables(node.sdnConfig, c.IPTables, !node.nodeConfig.UseConnTrack, node.nodeConfig.MasqueradeBitMask)
+	node.nodeIPTables = newNodeIPTables(node.sdnConfig, node.nodeConfig, c.IPTables)
 
 	node.egressPolicies = make(map[uint32][]osdnv1.EgressNetworkPolicy)
 	node.egressDNS, err = common.NewEgressDNS(true, false)
@@ -134,7 +134,7 @@ func New(c *OsdnNodeConfig) (*OsdnNode, error) {
 		return nil, err
 	}
 
-	node.egressIP = newEgressIPWatcher(node.clients, node.oc, node.nodeIPTables, node.nodeConfig.IPString, node.nodeConfig.MasqueradeBitMask)
+	node.egressIP = newEgressIPWatcher(node.clients, node.nodeConfig, node.oc, node.nodeIPTables)
 
 	metrics.RegisterMetrics()
 
@@ -315,7 +315,7 @@ func (node *OsdnNode) Start() error {
 		return fmt.Errorf("node SDN setup failed: %v", err)
 	}
 
-	hsw := newHostSubnetWatcher(node.oc, node.nodeConfig.IPString, node.sdnConfig)
+	hsw := newHostSubnetWatcher(node.oc, node.sdnConfig, node.nodeConfig)
 	hsw.Start(node.clients.OSDNInformers)
 
 	if err = node.policy.Start(node); err != nil {
@@ -343,7 +343,7 @@ func (node *OsdnNode) Start() error {
 	}
 
 	klog.V(2).Infof("Starting openshift-sdn pod manager")
-	if err := node.podManager.Start(cniserver.CNIServerRunDir, node.nodeConfig.LocalSubnetCIDRString); err != nil {
+	if err := node.podManager.Start(cniserver.CNIServerRunDir); err != nil {
 		return err
 	}
 

@@ -62,13 +62,13 @@ func isResourceError(err error) bool {
 	return false
 }
 
-func newNodeIPTables(sdnConfig *common.SDNConfig, ipt iptables.Interface, masqueradeServices bool, masqueradeBit uint32) *NodeIPTables {
+func newNodeIPTables(sdnConfig *common.SDNConfig, nodeConfig *NodeConfig, ipt iptables.Interface) *NodeIPTables {
 	return &NodeIPTables{
 		ipt:                ipt,
 		clusterNetworkCIDR: sdnConfig.ClusterNetworkCIDRStrings,
-		masqueradeServices: masqueradeServices,
+		masqueradeServices: !nodeConfig.UseConnTrack,
 		vxlanPort:          sdnConfig.VXLANPort,
-		masqueradeBitHex:   fmt.Sprintf("%#x", masqueradeBit),
+		masqueradeBitHex:   fmt.Sprintf("%#x", nodeConfig.MasqueradeBitMask),
 		egressIPs:          make(map[string]string),
 	}
 }

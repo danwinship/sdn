@@ -31,7 +31,8 @@ func setupHostSubnetWatcher(t *testing.T) (*hostSubnetWatcher, []string) {
 	_, oc, _ := setupOVSController(t)
 
 	sdnConfig := common.NewTestSDNConfig()
-	hsw := newHostSubnetWatcher(oc, oc.localIP, sdnConfig)
+	nodeConfig := NewTestNodeConfig(sdnConfig)
+	hsw := newHostSubnetWatcher(oc, sdnConfig, nodeConfig)
 
 	flows, err := hsw.oc.ovs.DumpFlows("")
 	if err != nil {

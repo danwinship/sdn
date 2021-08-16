@@ -55,13 +55,13 @@ type egressIPMetaData struct {
 	packetMark string
 }
 
-func newEgressIPWatcher(clients *common.SDNClients, oc *ovsController, iptables *NodeIPTables, localIP string, masqueradeBit uint32) *egressIPWatcher {
+func newEgressIPWatcher(clients *common.SDNClients, nodeConfig *NodeConfig, oc *ovsController, iptables *NodeIPTables) *egressIPWatcher {
 	eip := &egressIPWatcher{
 		oc:            oc,
 		iptables:      iptables,
 		clients:       clients,
-		localIP:       localIP,
-		masqueradeBit: masqueradeBit,
+		localIP:       nodeConfig.IPString,
+		masqueradeBit: nodeConfig.MasqueradeBitMask,
 		monitorNodes:  make(map[string]*egressNode),
 		iptablesMark:  make(map[string]string),
 	}

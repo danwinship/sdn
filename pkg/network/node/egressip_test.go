@@ -165,10 +165,13 @@ func compareGroups(groups []string, expectedGroups []string) (bool, error) {
 
 func setupEgressIPWatcher(t *testing.T) (*egressIPWatcher, []string) {
 	_, oc, _ := setupOVSController(t)
-	if oc.localIP != "172.17.0.4" {
+	if oc.nodeConfig.IPString != "172.17.0.4" {
 		panic("details of fake ovsController changed")
 	}
-	eip := newEgressIPWatcher(common.NewFakeSDNClients(), oc, nil, "172.17.0.4", 0x1)
+	clients := common.NewFakeSDNClients()
+	sdnConfig := common.NewTestSDNConfig()
+	nodeConfig := NewTestNodeConfig(sdnConfig)
+	eip := newEgressIPWatcher(clients, nodeConfig, oc, nil)
 	eip.testModeChan = make(chan string, 10)
 
 	flows, err := eip.oc.ovs.DumpFlows("table=101")

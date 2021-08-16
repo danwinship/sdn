@@ -49,7 +49,8 @@ type runningPod struct {
 }
 
 type podManager struct {
-	sdnConfig *common.SDNConfig
+	sdnConfig  *common.SDNConfig
+	nodeConfig *NodeConfig
 
 	// Common stuff used for both live and testing code
 	podHandler podHandler
@@ -71,8 +72,8 @@ type podManager struct {
 }
 
 // Creates a new live podManager; used by node code
-func newPodManager(clients *common.SDNClients, sdnConfig *common.SDNConfig, policy osdnPolicy, ovs *ovsController) *podManager {
-	pm := newDefaultPodManager(sdnConfig)
+func newPodManager(clients *common.SDNClients, sdnConfig *common.SDNConfig, nodeConfig *NodeConfig, policy osdnPolicy, ovs *ovsController) *podManager {
+	pm := newDefaultPodManager(sdnConfig, nodeConfig)
 	pm.kClient = clients.KubeClient
 	pm.policy = policy
 	pm.podHandler = pm
@@ -81,9 +82,10 @@ func newPodManager(clients *common.SDNClients, sdnConfig *common.SDNConfig, poli
 }
 
 // Creates a new basic podManager; used by testcases
-func newDefaultPodManager(sdnConfig *common.SDNConfig) *podManager {
+func newDefaultPodManager(sdnConfig *common.SDNConfig, nodeConfig *NodeConfig) *podManager {
 	return &podManager{
 		sdnConfig:   sdnConfig,
+		nodeConfig:  nodeConfig,
 		runningPods: make(map[string]*runningPod),
 		requests:    make(chan *cniserver.PodRequest, 20),
 	}
@@ -92,12 +94,7 @@ func newDefaultPodManager(sdnConfig *common.SDNConfig) *podManager {
 // Generates a CNI IPAM config from a given node cluster and local subnet that
 // CNI 'host-local' IPAM plugin will use to create an IP address lease for the
 // container
-func getIPAMConfig(clusterNetworks []common.ClusterNetworkEntry, localSubnet string) ([]byte, error) {
-	nodeNet, err := cnitypes.ParseCIDR(localSubnet)
-	if err != nil {
-		return nil, fmt.Errorf("error parsing node network '%s': %v", localSubnet, err)
-	}
-
+func getIPAMConfig(clusterNetworks []common.ClusterNetworkEntry, localSubnet *net.IPNet, localGateway net.IP) ([]byte, error) {
 	type hostLocalIPAM struct {
 		Type    string           `json:"type"`
 		Subnet  cnitypes.IPNet   `json:"subnet"`
@@ -116,15 +113,15 @@ func getIPAMConfig(clusterNetworks []common.ClusterNetworkEntry, localSubnet str
 
 	routes := []cnitypes.Route{
 		{
-			//Default route
+			// Default route
 			Dst: net.IPNet{
 				IP:   net.IPv4zero,
 				Mask: net.IPMask(net.IPv4zero),
 			},
-			GW: common.GenerateDefaultGateway(nodeNet),
+			GW: localGateway,
 		},
 		{
-			//Multicast
+			// Multicast
 			Dst: *mcnet,
 		},
 	}
@@ -141,8 +138,8 @@ func getIPAMConfig(clusterNetworks []common.ClusterNetworkEntry, localSubnet str
 			Type:    "host-local",
 			DataDir: hostLocalDataDir,
 			Subnet: cnitypes.IPNet{
-				IP:   nodeNet.IP,
-				Mask: nodeNet.Mask,
+				IP:   localSubnet.IP,
+				Mask: localSubnet.Mask,
 			},
 			Routes: routes,
 		},
@@ -150,9 +147,9 @@ func getIPAMConfig(clusterNetworks []common.ClusterNetworkEntry, localSubnet str
 }
 
 // Start the CNI server and start processing requests from it
-func (m *podManager) Start(rundir string, localSubnetCIDR string) error {
+func (m *podManager) Start(rundir string) error {
 	var err error
-	if m.ipamConfig, err = getIPAMConfig(m.sdnConfig.ClusterNetworks, localSubnetCIDR); err != nil {
+	if m.ipamConfig, err = getIPAMConfig(m.sdnConfig.ClusterNetworks, m.nodeConfig.LocalSubnet, m.nodeConfig.LocalGateway.IP); err != nil {
 		return err
 	}
 
