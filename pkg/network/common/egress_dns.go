@@ -44,8 +44,8 @@ type EgressDNS struct {
 	stopCh chan struct{}
 }
 
-func NewEgressDNS(ipv4, ipv6 bool) (*EgressDNS, error) {
-	dnsInfo, err := NewDNS("/etc/resolv.conf", ipv4, ipv6)
+func NewEgressDNS(sdnConfig *SDNConfig) (*EgressDNS, error) {
+	dnsInfo, err := NewDNS("/etc/resolv.conf", sdnConfig)
 	if err != nil {
 		klog.Errorf("Error creating EgressDNS: %v", err)
 		return nil, err

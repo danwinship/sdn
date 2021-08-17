@@ -67,11 +67,7 @@ type DNSResponseNotification struct {
 	Changed bool
 }
 
-func NewDNS(resolverConfigFile string, ipv4, ipv6 bool) (*DNS, error) {
-	if !ipv4 && !ipv6 {
-		return nil, fmt.Errorf("must support at least one of IPv4 or IPv6")
-	}
-
+func NewDNS(resolverConfigFile string, sdnConfig *SDNConfig) (*DNS, error) {
 	config, err := dns.ClientConfigFromFile(resolverConfigFile)
 	if err != nil || config == nil {
 		return nil, fmt.Errorf("cannot initialize the resolver: %v", err)
@@ -79,9 +75,9 @@ func NewDNS(resolverConfigFile string, ipv4, ipv6 bool) (*DNS, error) {
 
 	return &DNS{
 		dnsMap:      map[string]dnsValue{},
-		nameservers: fixupNameservers(config.Servers, config.Port, ipv4, ipv6),
-		ipv4:        ipv4,
-		ipv6:        ipv6,
+		nameservers: fixupNameservers(config.Servers, config.Port, sdnConfig.HasIPv4, sdnConfig.HasIPv6),
+		ipv4:        sdnConfig.HasIPv4,
+		ipv6:        sdnConfig.HasIPv6,
 		timeout:     5 * time.Second,
 	}, nil
 }

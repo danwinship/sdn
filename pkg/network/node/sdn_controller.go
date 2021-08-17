@@ -177,7 +177,7 @@ func (node *OsdnNode) setup() error {
 		// IPV6FIXME: dual service networks
 		route := &netlink.Route{
 			LinkIndex: l.Attrs().Index,
-			Dst:       node.sdnConfig.ServiceNetwork,
+			Dst:       node.sdnConfig.ServiceNetworks[0],
 		}
 		err = netlink.RouteAdd(route)
 	}

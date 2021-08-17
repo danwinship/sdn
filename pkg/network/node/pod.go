@@ -158,7 +158,7 @@ func (m *podManager) Start(rundir string) error {
 
 	go m.processCNIRequests()
 
-	m.cniServer = cniserver.NewCNIServer(rundir, &cniserver.Config{MTU: m.sdnConfig.MTU, ServiceNetworkCIDR: m.sdnConfig.ServiceNetworkCIDRString})
+	m.cniServer = cniserver.NewCNIServer(rundir, &cniserver.Config{MTU: m.sdnConfig.MTU, ServiceNetworkCIDR: m.sdnConfig.ServiceNetworkCIDRStrings[0]})
 	return m.cniServer.Start(m.handleCNIRequest)
 }
 

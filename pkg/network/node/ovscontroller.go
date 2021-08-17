@@ -219,7 +219,7 @@ func (oc *ovsController) SetupOVS() error {
 	}
 
 	clusterNetworkCIDR := oc.sdnConfig.ClusterNetworkCIDRStrings
-	serviceNetworkCIDR := oc.sdnConfig.ServiceNetworkCIDRString
+	serviceNetworkCIDR := oc.sdnConfig.ServiceNetworkCIDRStrings[0]
 	localSubnetCIDR := oc.nodeConfig.LocalSubnetCIDRString
 	localSubnetGateway := oc.nodeConfig.LocalGatewayIPString
 	localIP := oc.nodeConfig.IPString

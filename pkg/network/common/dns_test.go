@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+
+	corev1 "k8s.io/api/core/v1"
 )
 
 func TestFixupNameservers(t *testing.T) {
@@ -129,12 +131,13 @@ func TestAddDNS(t *testing.T) {
 		},
 	}
 
+	sdnConfig := NewTestSDNConfig(corev1.IPv4Protocol)
 	for _, test := range tests {
 		serverFn := dummyServer(test.dnsResolverOutput)
 		dns.HandleFunc(test.domainName, serverFn)
 		defer dns.HandleRemove(test.domainName)
 
-		n, err := NewDNS(configFileName, true, false)
+		n, err := NewDNS(configFileName, sdnConfig)
 		if err != nil {
 			t.Fatalf("Test case: %s failed, err: %v", test.testCase, err)
 		}
@@ -219,12 +222,13 @@ func TestAddDNSIPv6(t *testing.T) {
 		},
 	}
 
+	sdnConfig := NewTestSDNConfig(corev1.IPv6Protocol)
 	for _, test := range tests {
 		serverFn := dummyServer(test.dnsResolverOutput)
 		dns.HandleFunc(test.domainName, serverFn)
 		defer dns.HandleRemove(test.domainName)
 
-		n, err := NewDNS(configFileName, false, true)
+		n, err := NewDNS(configFileName, sdnConfig)
 		if err != nil {
 			t.Fatalf("Test case: %s failed, err: %v", test.testCase, err)
 		}
@@ -344,12 +348,13 @@ func TestAddDNSDualStack(t *testing.T) {
 		},
 	}
 
+	sdnConfig := NewTestSDNConfig(corev1.IPv4Protocol, corev1.IPv6Protocol)
 	for _, test := range tests {
 		serverFn := dummyDualStackServer(test.dnsV4Output, test.dnsV6Output)
 		dns.HandleFunc(test.domainName, serverFn)
 		defer dns.HandleRemove(test.domainName)
 
-		n, err := NewDNS(configFileName, true, true)
+		n, err := NewDNS(configFileName, sdnConfig)
 		if err != nil {
 			t.Fatalf("Test case: %s failed, err: %v", test.testCase, err)
 		}
@@ -448,12 +453,13 @@ func TestUpdateDNS(t *testing.T) {
 		},
 	}
 
+	sdnConfig := NewTestSDNConfig(corev1.IPv4Protocol)
 	for _, test := range tests {
 		serverFn := dummyServer(test.addResolverOutput)
 		dns.HandleFunc(test.domainName, serverFn)
 		defer dns.HandleRemove(test.domainName)
 
-		n, err := NewDNS(configFileName, true, false)
+		n, err := NewDNS(configFileName, sdnConfig)
 		if err != nil {
 			t.Fatalf("Test case: %s failed, err: %v", test.testCase, err)
 		}

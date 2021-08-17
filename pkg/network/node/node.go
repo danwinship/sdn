@@ -130,8 +130,7 @@ func New(c *OsdnNodeConfig) (*OsdnNode, error) {
 	node.nodeIPTables = newNodeIPTables(node.sdnConfig, node.nodeConfig, c.IPTables)
 
 	node.egressPolicies = make(map[uint32][]osdnv1.EgressNetworkPolicy)
-	// IPV6FIXME: pass correct ipv4/ipv6 values here
-	node.egressDNS, err = common.NewEgressDNS(true, false)
+	node.egressDNS, err = common.NewEgressDNS(c.SDNConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -244,8 +243,7 @@ func (node *OsdnNode) validateMTU() error {
 		return fmt.Errorf("unable to determine MTU while performing validation")
 	}
 
-	// IPV6FIXME: overhead depends on primary node IP family
-	needsTaint := mtu < node.sdnConfig.MTU+50
+	needsTaint := mtu < node.sdnConfig.MTU + node.sdnConfig.VXLANOverhead()
 	const MTUTaintKey string = "network.openshift.io/mtu-too-small"
 	mtuTooSmallTaint := &corev1.Taint{Key: MTUTaintKey, Value: "value", Effect: "NoSchedule"}
 	nodeObj, err := node.clients.KubeClient.CoreV1().Nodes().Get(context.TODO(), node.nodeConfig.Name, metav1.GetOptions{})
