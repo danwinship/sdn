@@ -45,8 +45,8 @@ func (mp *multiTenantPlugin) Start(node *OsdnNode) error {
 	mp.node = node
 	mp.vnidInUse = node.oc.FindPolicyVNIDs()
 
-	mp.vnids = newNodeVNIDMap(mp, node.clients.OSDNClient)
-	if err := mp.vnids.Start(node.clients.OSDNInformers); err != nil {
+	mp.vnids = newNodeVNIDMap(mp, node.clients)
+	if err := mp.vnids.Start(); err != nil {
 		return err
 	}
 

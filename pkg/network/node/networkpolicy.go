@@ -107,8 +107,8 @@ func (np *networkPolicyPlugin) Start(node *OsdnNode) error {
 	defer np.lock.Unlock()
 
 	np.node = node
-	np.vnids = newNodeVNIDMap(np, node.clients.OSDNClient)
-	if err := np.vnids.Start(node.clients.OSDNInformers); err != nil {
+	np.vnids = newNodeVNIDMap(np, node.clients)
+	if err := np.vnids.Start(); err != nil {
 		return err
 	}
 

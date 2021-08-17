@@ -11,6 +11,7 @@ import (
 	kapierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/watch"
+	"k8s.io/client-go/tools/cache"
 
 	osdnv1 "github.com/openshift/api/network/v1"
 	osdnclient "github.com/openshift/client-go/network/clientset/versioned"
@@ -20,6 +21,8 @@ import (
 )
 
 type masterVNIDMap struct {
+	clients *common.SDNClients
+
 	// Synchronizes assign, revoke and update VNID
 	lock         sync.Mutex
 	ids          map[string]uint32
@@ -28,13 +31,14 @@ type masterVNIDMap struct {
 	allowRenumbering bool
 }
 
-func newMasterVNIDMap(allowRenumbering bool) *masterVNIDMap {
+func newMasterVNIDMap(clients *common.SDNClients, allowRenumbering bool) *masterVNIDMap {
 	netIDRange, err := pnetid.NewNetIDRange(common.MinVNID, common.MaxVNID)
 	if err != nil {
 		panic(err)
 	}
 
 	return &masterVNIDMap{
+		clients:          clients,
 		netIDManager:     pnetid.NewInMemory(netIDRange),
 		ids:              make(map[string]uint32),
 		allowRenumbering: allowRenumbering,
@@ -262,67 +266,70 @@ func (vmap *masterVNIDMap) updateVNID(osdnClient osdnclient.Interface, origNetns
 	return nil
 }
 
-//--------------------- Master methods ----------------------
-
-func (master *OsdnMaster) startVNIDMaster() error {
-	if err := master.initNetIDAllocator(); err != nil {
+func (vmap *masterVNIDMap) startVNIDMaster() error {
+	if err := vmap.initNetIDAllocator(); err != nil {
 		return err
 	}
 
-	master.watchNamespaces()
-	master.watchNetNamespaces()
+	namespaceInformer := vmap.clients.KubeInformers.Core().V1().Namespaces().Informer()
+	netNamespaceInformer := vmap.clients.OSDNInformers.Network().V1().NetNamespaces().Informer()
+
+	vmap.watchNamespaces(namespaceInformer)
+	vmap.watchNetNamespaces(netNamespaceInformer)
+
+	vmap.clients.WaitForCacheSync("masterVNIDMap", namespaceInformer, netNamespaceInformer)
 
 	return nil
 }
 
-func (master *OsdnMaster) initNetIDAllocator() error {
-	netnsList, err := master.clients.OSDNClient.NetworkV1().NetNamespaces().List(context.TODO(), metav1.ListOptions{})
+func (vmap *masterVNIDMap) initNetIDAllocator() error {
+	netnsList, err := vmap.clients.OSDNClient.NetworkV1().NetNamespaces().List(context.TODO(), metav1.ListOptions{})
 	if err != nil {
 		return err
 	}
 
 	for _, netns := range netnsList.Items {
-		if err := master.vnids.markAllocatedNetID(netns.NetID); err != nil {
+		if err := vmap.markAllocatedNetID(netns.NetID); err != nil {
 			klog.Errorf("Error marking allocated VNID: %v", err)
 		}
-		master.vnids.setVNID(netns.Name, netns.NetID)
+		vmap.setVNID(netns.Name, netns.NetID)
 	}
 
 	return nil
 }
 
-func (master *OsdnMaster) watchNamespaces() {
-	funcs := common.InformerFuncs(&corev1.Namespace{}, master.handleAddOrUpdateNamespace, master.handleDeleteNamespace)
-	master.namespaceInformer.Informer().AddEventHandler(funcs)
+func (vmap *masterVNIDMap) watchNamespaces(namespaceInformer cache.SharedIndexInformer) {
+	funcs := common.InformerFuncs(&corev1.Namespace{}, vmap.handleAddOrUpdateNamespace, vmap.handleDeleteNamespace)
+	namespaceInformer.AddEventHandler(funcs)
 }
 
-func (master *OsdnMaster) handleAddOrUpdateNamespace(obj, _ interface{}, eventType watch.EventType) {
+func (vmap *masterVNIDMap) handleAddOrUpdateNamespace(obj, _ interface{}, eventType watch.EventType) {
 	ns := obj.(*corev1.Namespace)
 	klog.V(5).Infof("Watch %s event for Namespace %q", eventType, ns.Name)
 
-	if err := master.vnids.assignVNID(master.clients.OSDNClient, ns.Name); err != nil {
+	if err := vmap.assignVNID(vmap.clients.OSDNClient, ns.Name); err != nil {
 		klog.Errorf("Error assigning netid: %v", err)
 	}
 }
 
-func (master *OsdnMaster) handleDeleteNamespace(obj interface{}) {
+func (vmap *masterVNIDMap) handleDeleteNamespace(obj interface{}) {
 	ns := obj.(*corev1.Namespace)
 	klog.V(5).Infof("Watch %s event for Namespace %q", watch.Deleted, ns.Name)
-	if err := master.vnids.revokeVNID(master.clients.OSDNClient, ns.Name); err != nil {
+	if err := vmap.revokeVNID(vmap.clients.OSDNClient, ns.Name); err != nil {
 		klog.Errorf("Error revoking netid: %v", err)
 	}
 }
 
-func (master *OsdnMaster) watchNetNamespaces() {
-	funcs := common.InformerFuncs(&osdnv1.NetNamespace{}, master.handleAddOrUpdateNetNamespace, nil)
-	master.netNamespaceInformer.Informer().AddEventHandler(funcs)
+func (vmap *masterVNIDMap) watchNetNamespaces(netNamespaceInformer cache.SharedIndexInformer) {
+	funcs := common.InformerFuncs(&osdnv1.NetNamespace{}, vmap.handleAddOrUpdateNetNamespace, nil)
+	netNamespaceInformer.AddEventHandler(funcs)
 }
 
-func (master *OsdnMaster) handleAddOrUpdateNetNamespace(obj, _ interface{}, eventType watch.EventType) {
+func (vmap *masterVNIDMap) handleAddOrUpdateNetNamespace(obj, _ interface{}, eventType watch.EventType) {
 	netns := obj.(*osdnv1.NetNamespace)
 	klog.V(5).Infof("Watch %s event for NetNamespace %q", eventType, netns.Name)
 
-	if err := master.vnids.updateVNID(master.clients.OSDNClient, netns); err != nil {
+	if err := vmap.updateVNID(vmap.clients.OSDNClient, netns); err != nil {
 		klog.Errorf("Error updating netid: %v", err)
 	}
 }

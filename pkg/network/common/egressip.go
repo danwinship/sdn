@@ -12,12 +12,10 @@ import (
 
 	ktypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
-	utilwait "k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/tools/cache"
 
 	osdnv1 "github.com/openshift/api/network/v1"
-	osdninformers "github.com/openshift/client-go/network/informers/externalversions/network/v1"
 )
 
 type nodeEgress struct {
@@ -73,6 +71,7 @@ type EgressIPTracker struct {
 	sync.Mutex
 
 	watcher EgressIPWatcher
+	clients *SDNClients
 
 	nodes            map[ktypes.UID]*nodeEgress
 	nodesByNodeIP    map[string]*nodeEgress
@@ -85,9 +84,10 @@ type EgressIPTracker struct {
 	updateEgressCIDRs bool
 }
 
-func NewEgressIPTracker(watcher EgressIPWatcher) *EgressIPTracker {
+func NewEgressIPTracker(watcher EgressIPWatcher, clients *SDNClients) *EgressIPTracker {
 	return &EgressIPTracker{
 		watcher: watcher,
+		clients: clients,
 
 		nodes:            make(map[ktypes.UID]*nodeEgress),
 		nodesByNodeIP:    make(map[string]*nodeEgress),
@@ -99,14 +99,17 @@ func NewEgressIPTracker(watcher EgressIPWatcher) *EgressIPTracker {
 	}
 }
 
-func (eit *EgressIPTracker) Start(hostSubnetInformer osdninformers.HostSubnetInformer, netNamespaceInformer osdninformers.NetNamespaceInformer) {
+func (eit *EgressIPTracker) Start() {
+	hostSubnetInformer := eit.clients.OSDNInformers.Network().V1().HostSubnets().Informer()
+	netNamespaceInformer := eit.clients.OSDNInformers.Network().V1().NetNamespaces().Informer()
+
 	eit.watchHostSubnets(hostSubnetInformer)
 	eit.watchNetNamespaces(netNamespaceInformer)
 
 	go func() {
-		cache.WaitForCacheSync(utilwait.NeverStop,
-			hostSubnetInformer.Informer().HasSynced,
-			netNamespaceInformer.Informer().HasSynced)
+		eit.clients.WaitForCacheSync("EgressIPTracker",
+			hostSubnetInformer,
+			netNamespaceInformer)
 
 		eit.Lock()
 		defer eit.Unlock()
@@ -175,9 +178,9 @@ func (eit *EgressIPTracker) deleteNamespaceEgressIP(ns *namespaceEgress, egressI
 	}
 }
 
-func (eit *EgressIPTracker) watchHostSubnets(hostSubnetInformer osdninformers.HostSubnetInformer) {
+func (eit *EgressIPTracker) watchHostSubnets(hostSubnetInformer cache.SharedIndexInformer) {
 	funcs := InformerFuncs(&osdnv1.HostSubnet{}, eit.handleAddOrUpdateHostSubnet, eit.handleDeleteHostSubnet)
-	hostSubnetInformer.Informer().AddEventHandler(funcs)
+	hostSubnetInformer.AddEventHandler(funcs)
 }
 
 func (eit *EgressIPTracker) handleAddOrUpdateHostSubnet(obj, _ interface{}, eventType watch.EventType) {
@@ -289,9 +292,9 @@ func (eit *EgressIPTracker) UpdateHostSubnetEgress(hs *osdnv1.HostSubnet) {
 	eit.syncEgressIPs()
 }
 
-func (eit *EgressIPTracker) watchNetNamespaces(netNamespaceInformer osdninformers.NetNamespaceInformer) {
+func (eit *EgressIPTracker) watchNetNamespaces(netNamespaceInformer cache.SharedIndexInformer) {
 	funcs := InformerFuncs(&osdnv1.NetNamespace{}, eit.handleAddOrUpdateNetNamespace, eit.handleDeleteNetNamespace)
-	netNamespaceInformer.Informer().AddEventHandler(funcs)
+	netNamespaceInformer.AddEventHandler(funcs)
 }
 
 func (eit *EgressIPTracker) handleAddOrUpdateNetNamespace(obj, _ interface{}, eventType watch.EventType) {

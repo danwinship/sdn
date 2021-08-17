@@ -12,7 +12,6 @@ import (
 	"k8s.io/apimachinery/pkg/util/sets"
 	utilwait "k8s.io/apimachinery/pkg/util/wait"
 
-	osdninformers "github.com/openshift/client-go/network/informers/externalversions"
 	"github.com/openshift/sdn/pkg/network/common"
 	"github.com/vishvananda/netlink"
 )
@@ -37,6 +36,7 @@ type egressIPWatcher struct {
 	tracker *common.EgressIPTracker
 
 	oc            *ovsController
+	clients       *common.SDNClients
 	localIP       string
 	masqueradeBit uint32
 
@@ -55,22 +55,23 @@ type egressIPMetaData struct {
 	packetMark string
 }
 
-func newEgressIPWatcher(oc *ovsController, localIP string, masqueradeBit uint32) *egressIPWatcher {
+func newEgressIPWatcher(clients *common.SDNClients, oc *ovsController, iptables *NodeIPTables, localIP string, masqueradeBit uint32) *egressIPWatcher {
 	eip := &egressIPWatcher{
 		oc:            oc,
+		iptables:      iptables,
+		clients:       clients,
 		localIP:       localIP,
 		masqueradeBit: masqueradeBit,
 		monitorNodes:  make(map[string]*egressNode),
 		iptablesMark:  make(map[string]string),
 	}
 
-	eip.tracker = common.NewEgressIPTracker(eip)
+	eip.tracker = common.NewEgressIPTracker(eip, clients)
 	return eip
 }
 
-func (eip *egressIPWatcher) Start(osdnInformers osdninformers.SharedInformerFactory, iptables *NodeIPTables) error {
-	eip.iptables = iptables
-	eip.tracker.Start(osdnInformers.Network().V1().HostSubnets(), osdnInformers.Network().V1().NetNamespaces())
+func (eip *egressIPWatcher) Start() error {
+	eip.tracker.Start()
 	return nil
 }
 

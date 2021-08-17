@@ -32,10 +32,12 @@ type nodeVNIDMap struct {
 	namespaces map[uint32]sets.String
 }
 
-func newNodeVNIDMap(policy osdnPolicy, osdnClient osdnclient.Interface) *nodeVNIDMap {
+func newNodeVNIDMap(policy osdnPolicy, clients *common.SDNClients) *nodeVNIDMap {
 	return &nodeVNIDMap{
-		policy:     policy,
-		osdnClient: osdnClient,
+		policy:        policy,
+		osdnClient:    clients.OSDNClient,
+		osdnInformers: clients.OSDNInformers,
+
 		ids:        make(map[string]uint32),
 		mcEnabled:  make(map[string]bool),
 		namespaces: make(map[uint32]sets.String),
@@ -195,9 +197,7 @@ func (vmap *nodeVNIDMap) populateVNIDs() error {
 	return nil
 }
 
-func (vmap *nodeVNIDMap) Start(osdnInformers osdninformers.SharedInformerFactory) error {
-	vmap.osdnInformers = osdnInformers
-
+func (vmap *nodeVNIDMap) Start() error {
 	// Populate vnid map synchronously so that existing services can fetch vnid
 	err := vmap.populateVNIDs()
 	if err != nil {

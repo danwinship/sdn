@@ -71,9 +71,9 @@ type podManager struct {
 }
 
 // Creates a new live podManager; used by node code
-func newPodManager(sdnConfig *common.SDNConfig, kClient kubernetes.Interface, policy osdnPolicy, ovs *ovsController) *podManager {
+func newPodManager(clients *common.SDNClients, sdnConfig *common.SDNConfig, policy osdnPolicy, ovs *ovsController) *podManager {
 	pm := newDefaultPodManager(sdnConfig)
-	pm.kClient = kClient
+	pm.kClient = clients.KubeClient
 	pm.policy = policy
 	pm.podHandler = pm
 	pm.ovs = ovs

@@ -31,7 +31,7 @@ func newTestNPP() (*networkPolicyPlugin, *atomic.Value, chan struct{}) {
 		namespacesByName: make(map[string]*npNamespace),
 		nsMatchCache:     make(map[string]*npCacheEntry),
 	}
-	np.vnids = newNodeVNIDMap(np, nil)
+	np.vnids = newNodeVNIDMap(np, np.node.clients)
 
 	synced := new(atomic.Value)
 	stopCh := make(chan struct{})

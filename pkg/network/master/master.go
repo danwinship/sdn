@@ -5,15 +5,11 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	ktypes "k8s.io/apimachinery/pkg/types"
-	kcoreinformers "k8s.io/client-go/informers/core/v1"
 	"k8s.io/klog/v2"
 
 	osdnv1 "github.com/openshift/api/network/v1"
-	osdninformersv1 "github.com/openshift/client-go/network/informers/externalversions/network/v1"
 	"github.com/openshift/library-go/pkg/network/networkutils"
 	"github.com/openshift/sdn/pkg/network/common"
-	masterutil "github.com/openshift/sdn/pkg/network/master/util"
 )
 
 const (
@@ -24,18 +20,9 @@ type OsdnMaster struct {
 	clients   *common.SDNClients
 	sdnConfig *common.SDNConfig
 
-	vnids *masterVNIDMap
-
-	nodeInformer         kcoreinformers.NodeInformer
-	namespaceInformer    kcoreinformers.NamespaceInformer
-	hostSubnetInformer   osdninformersv1.HostSubnetInformer
-	netNamespaceInformer osdninformersv1.NetNamespaceInformer
-
-	// Used for allocating subnets in order
-	subnetAllocator *masterutil.SubnetAllocator
-
-	// Holds Node IP used in creating host subnet for a node
-	hostSubnetNodeIPs map[ktypes.UID]string
+	subnetManager *subnetManager
+	vnids         *masterVNIDMap
+	eim           *egressIPManager
 }
 
 func Start(clients *common.SDNClients, sdnConfig *common.SDNConfig) error {
@@ -45,12 +32,15 @@ func Start(clients *common.SDNClients, sdnConfig *common.SDNConfig) error {
 		clients:   clients,
 		sdnConfig: sdnConfig,
 
-		nodeInformer:         clients.KubeInformers.Core().V1().Nodes(),
-		namespaceInformer:    clients.KubeInformers.Core().V1().Namespaces(),
-		hostSubnetInformer:   clients.OSDNInformers.Network().V1().HostSubnets(),
-		netNamespaceInformer: clients.OSDNInformers.Network().V1().NetNamespaces(),
+		subnetManager: newSubnetManager(clients, sdnConfig),
+		eim:           newEgressIPManager(clients),
+	}
 
-		hostSubnetNodeIPs: map[ktypes.UID]string{},
+	switch sdnConfig.PluginName {
+	case networkutils.MultiTenantPluginName:
+		master.vnids = newMasterVNIDMap(clients, true)
+	case networkutils.NetworkPolicyPluginName:
+		master.vnids = newMasterVNIDMap(clients, false)
 	}
 
 	if err := master.checkClusterNetworkAgainstLocalNetworks(); err != nil {
@@ -62,10 +52,10 @@ func Start(clients *common.SDNClients, sdnConfig *common.SDNConfig) error {
 
 	// FIXME: this is required to register informers for the types we care about to ensure the informers are started.
 	// FIXME: restructure this controller to add event handlers in Start() before returning, instead of inside startSubSystems.
-	master.nodeInformer.Informer().GetController()
-	master.namespaceInformer.Informer().GetController()
-	master.hostSubnetInformer.Informer().GetController()
-	master.netNamespaceInformer.Informer().GetController()
+	clients.KubeInformers.Core().V1().Nodes().Informer().GetController()
+	clients.KubeInformers.Core().V1().Namespaces().Informer().GetController()
+	clients.OSDNInformers.Network().V1().HostSubnets().Informer().GetController()
+	clients.OSDNInformers.Network().V1().NetNamespaces().Informer().GetController()
 
 	go master.startSubSystems(master.sdnConfig.PluginName)
 
@@ -73,31 +63,17 @@ func Start(clients *common.SDNClients, sdnConfig *common.SDNConfig) error {
 }
 
 func (master *OsdnMaster) startSubSystems(pluginName string) {
-	// Wait for informer sync
-	master.clients.WaitForCacheSync("SDN master",
-		master.nodeInformer.Informer(),
-		master.namespaceInformer.Informer(),
-		master.hostSubnetInformer.Informer(),
-		master.netNamespaceInformer.Informer())
-
-	if err := master.startSubnetMaster(); err != nil {
-		klog.Fatalf("failed to start subnet master: %v", err)
+	if err := master.subnetManager.start(); err != nil {
+		klog.Fatalf("failed to start subnet manager: %v", err)
 	}
 
-	switch pluginName {
-	case networkutils.MultiTenantPluginName:
-		master.vnids = newMasterVNIDMap(true)
-	case networkutils.NetworkPolicyPluginName:
-		master.vnids = newMasterVNIDMap(false)
-	}
 	if master.vnids != nil {
-		if err := master.startVNIDMaster(); err != nil {
+		if err := master.vnids.startVNIDMaster(); err != nil {
 			klog.Fatalf("failed to start VNID master: %v", err)
 		}
 	}
 
-	eim := newEgressIPManager()
-	eim.Start(master.clients.OSDNClient, master.hostSubnetInformer, master.netNamespaceInformer, master.nodeInformer)
+	master.eim.Start()
 }
 
 func (master *OsdnMaster) checkClusterNetworkAgainstLocalNetworks() error {

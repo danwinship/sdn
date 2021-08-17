@@ -12,7 +12,6 @@ import (
 	"k8s.io/klog/v2"
 
 	osdnv1 "github.com/openshift/api/network/v1"
-	osdnclient "github.com/openshift/client-go/network/clientset/versioned"
 	"github.com/openshift/library-go/pkg/network/networkutils"
 )
 
@@ -34,8 +33,8 @@ type ClusterNetworkEntry struct {
 	HostSubnetLength int
 }
 
-func GetSDNConfig(osdnClient osdnclient.Interface) (*SDNConfig, error) {
-	cn, err := osdnClient.NetworkV1().ClusterNetworks().Get(context.TODO(), osdnv1.ClusterNetworkDefault, metav1.GetOptions{})
+func GetSDNConfig(clients *SDNClients) (*SDNConfig, error) {
+	cn, err := clients.OSDNClient.NetworkV1().ClusterNetworks().Get(context.TODO(), osdnv1.ClusterNetworkDefault, metav1.GetOptions{})
 	if err != nil {
 		return nil, err
 	}

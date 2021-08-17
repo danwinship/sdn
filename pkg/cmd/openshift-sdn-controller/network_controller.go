@@ -48,7 +48,7 @@ func RunOpenShiftNetworkController() error {
 			klog.Fatal(err)
 		}
 
-		sdnConfig, err := sdncommon.GetSDNConfig(sdnClients.OSDNClient)
+		sdnConfig, err := sdncommon.GetSDNConfig(sdnClients)
 		if err != nil {
 			klog.Fatalf("failed to get SDN config: %v", err)
 		}

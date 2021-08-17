@@ -11,21 +11,21 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
 	utilwait "k8s.io/apimachinery/pkg/util/wait"
-	kcoreinformers "k8s.io/client-go/informers/core/v1"
+	corev1listers "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/util/retry"
 
-	osdnclient "github.com/openshift/client-go/network/clientset/versioned"
-	osdninformers "github.com/openshift/client-go/network/informers/externalversions/network/v1"
+	osdnlisters "github.com/openshift/client-go/network/listers/network/v1"
 	"github.com/openshift/sdn/pkg/network/common"
 )
 
 type egressIPManager struct {
 	sync.Mutex
 
-	tracker            *common.EgressIPTracker
-	osdnClient         osdnclient.Interface
-	hostSubnetInformer osdninformers.HostSubnetInformer
-	nodeInformer       kcoreinformers.NodeInformer
+	clients *common.SDNClients
+	tracker *common.EgressIPTracker
+
+	nodeLister       corev1listers.NodeLister
+	hostSubnetLister osdnlisters.HostSubnetLister
 
 	updatePending bool
 	updatedAgain  bool
@@ -41,17 +41,22 @@ type egressNode struct {
 	retries int
 }
 
-func newEgressIPManager() *egressIPManager {
-	eim := &egressIPManager{}
-	eim.tracker = common.NewEgressIPTracker(eim)
+func newEgressIPManager(clients *common.SDNClients) *egressIPManager {
+	eim := &egressIPManager{
+		clients: clients,
+
+		nodeLister:       clients.KubeInformers.Core().V1().Nodes().Lister(),
+		hostSubnetLister: clients.OSDNInformers.Network().V1().HostSubnets().Lister(),
+	}
+	eim.tracker = common.NewEgressIPTracker(eim, clients)
 	return eim
 }
 
-func (eim *egressIPManager) Start(osdnClient osdnclient.Interface, hostSubnetInformer osdninformers.HostSubnetInformer, netNamespaceInformer osdninformers.NetNamespaceInformer, nodeInformer kcoreinformers.NodeInformer) {
-	eim.osdnClient = osdnClient
-	eim.hostSubnetInformer = hostSubnetInformer
-	eim.nodeInformer = nodeInformer
-	eim.tracker.Start(hostSubnetInformer, netNamespaceInformer)
+func (eim *egressIPManager) Start() {
+	eim.clients.WaitForCacheSync("egressIPManager",
+		eim.clients.KubeInformers.Core().V1().Nodes().Informer(),
+		eim.clients.OSDNInformers.Network().V1().HostSubnets().Informer())
+	eim.tracker.Start()
 }
 
 func (eim *egressIPManager) UpdateEgressCIDRs() {
@@ -95,7 +100,7 @@ func (eim *egressIPManager) maybeDoUpdateEgressCIDRs() (bool, error) {
 	monitorNodes := make(map[string]*egressNode, len(allocation))
 	for nodeName, egressIPs := range allocation {
 		resultErr := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
-			hs, err := eim.hostSubnetInformer.Lister().Get(nodeName)
+			hs, err := eim.hostSubnetLister.Get(nodeName)
 			if err != nil {
 				return err
 			}
@@ -110,7 +115,7 @@ func (eim *egressIPManager) maybeDoUpdateEgressCIDRs() (bool, error) {
 			newIPs := sets.NewString(egressIPs...)
 			if !oldIPs.Equal(newIPs) {
 				hs.EgressIPs = common.StringsToHSEgressIPs(egressIPs)
-				_, err = eim.osdnClient.NetworkV1().HostSubnets().Update(context.TODO(), hs, metav1.UpdateOptions{})
+				_, err = eim.clients.OSDNClient.NetworkV1().HostSubnets().Update(context.TODO(), hs, metav1.UpdateOptions{})
 			}
 			return err
 		})
@@ -188,7 +193,7 @@ func (eim *egressIPManager) check(retrying bool) (bool, error) {
 			continue
 		}
 
-		nn, err := eim.nodeInformer.Lister().Get(node.name)
+		nn, err := eim.nodeLister.Get(node.name)
 		if err != nil {
 			return false, err
 		}

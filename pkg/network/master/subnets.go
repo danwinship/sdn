@@ -10,46 +10,78 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	kerrs "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	ktypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/watch"
+	corev1listers "k8s.io/client-go/listers/core/v1"
+	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/retry"
 
 	osdnv1 "github.com/openshift/api/network/v1"
+	osdnlisters "github.com/openshift/client-go/network/listers/network/v1"
 	"github.com/openshift/sdn/pkg/network/common"
 	masterutil "github.com/openshift/sdn/pkg/network/master/util"
 )
 
-func (master *OsdnMaster) startSubnetMaster() error {
-	master.subnetAllocator = masterutil.NewSubnetAllocator()
-	for _, cn := range master.sdnConfig.ClusterNetworks {
-		err := master.subnetAllocator.AddNetworkRange(cn.CIDR.String(), uint32(cn.HostSubnetLength))
+type subnetManager struct {
+	clients   *common.SDNClients
+	sdnConfig *common.SDNConfig
+
+	nodeLister       corev1listers.NodeLister
+	hostSubnetLister osdnlisters.HostSubnetLister
+
+	subnetAllocator   *masterutil.SubnetAllocator
+	hostSubnetNodeIPs map[ktypes.UID]string
+}
+
+func newSubnetManager(clients *common.SDNClients, sdnConfig *common.SDNConfig) *subnetManager {
+	return &subnetManager{
+		sdnConfig: sdnConfig,
+		clients:   clients,
+
+		nodeLister:       clients.KubeInformers.Core().V1().Nodes().Lister(),
+		hostSubnetLister: clients.OSDNInformers.Network().V1().HostSubnets().Lister(),
+
+		subnetAllocator:   masterutil.NewSubnetAllocator(),
+		hostSubnetNodeIPs: map[ktypes.UID]string{},
+	}
+}
+
+func (sm *subnetManager) start() error {
+	for _, cn := range sm.sdnConfig.ClusterNetworks {
+		err := sm.subnetAllocator.AddNetworkRange(cn.CIDR.String(), uint32(cn.HostSubnetLength))
 		if err != nil {
 			return err
 		}
 	}
 
 	// Populate subnet allocator
-	subnets, err := master.clients.OSDNClient.NetworkV1().HostSubnets().List(context.TODO(), metav1.ListOptions{})
+	subnets, err := sm.clients.OSDNClient.NetworkV1().HostSubnets().List(context.TODO(), metav1.ListOptions{})
 	if err != nil {
 		return err
 	}
 	for _, sn := range subnets.Items {
-		if err := master.subnetAllocator.MarkAllocatedNetwork(sn.Subnet); err != nil {
+		if err := sm.subnetAllocator.MarkAllocatedNetwork(sn.Subnet); err != nil {
 			klog.Errorf("Error marking allocated subnet: %v", err)
 		}
 	}
 
-	master.watchNodes()
-	master.watchSubnets()
+	nodeInformer := sm.clients.KubeInformers.Core().V1().Nodes().Informer()
+	hostSubnetInformer := sm.clients.OSDNInformers.Network().V1().HostSubnets().Informer()
+
+	sm.watchNodes(nodeInformer)
+	sm.watchSubnets(hostSubnetInformer)
+
+	sm.clients.WaitForCacheSync("subnetManager", nodeInformer, hostSubnetInformer)
 
 	return nil
 }
 
-func (master *OsdnMaster) watchNodes() {
-	funcs := common.InformerFuncs(&corev1.Node{}, master.handleAddOrUpdateNode, master.handleDeleteNode)
-	master.nodeInformer.Informer().AddEventHandler(funcs)
+func (sm *subnetManager) watchNodes(nodeInformer cache.SharedIndexInformer) {
+	funcs := common.InformerFuncs(&corev1.Node{}, sm.handleAddOrUpdateNode, sm.handleDeleteNode)
+	nodeInformer.AddEventHandler(funcs)
 }
 
-func (master *OsdnMaster) handleAddOrUpdateNode(obj, _ interface{}, eventType watch.EventType) {
+func (sm *subnetManager) handleAddOrUpdateNode(obj, _ interface{}, eventType watch.EventType) {
 	node := obj.(*corev1.Node)
 
 	nodeIP := getNodeInternalIP(node)
@@ -58,33 +90,33 @@ func (master *OsdnMaster) handleAddOrUpdateNode(obj, _ interface{}, eventType wa
 		return
 	}
 
-	if oldNodeIP, ok := master.hostSubnetNodeIPs[node.UID]; ok && (nodeIP == oldNodeIP) {
+	if oldNodeIP, ok := sm.hostSubnetNodeIPs[node.UID]; ok && (nodeIP == oldNodeIP) {
 		return
 	}
 	// Node status is frequently updated by kubelet, so log only if the above condition is not met
 	klog.V(5).Infof("Watch %s event for Node %q", eventType, node.Name)
 
-	master.clearInitialNodeNetworkUnavailableCondition(node)
+	sm.clearInitialNodeNetworkUnavailableCondition(node)
 
-	err := master.addNode(node.Name, string(node.UID), nodeIP, nil)
+	err := sm.addNode(node.Name, string(node.UID), nodeIP, nil)
 	if err != nil {
 		klog.Errorf("Error creating subnet for node %s, ip %s: %v", node.Name, nodeIP, err)
 		return
 	}
-	master.hostSubnetNodeIPs[node.UID] = nodeIP
+	sm.hostSubnetNodeIPs[node.UID] = nodeIP
 }
 
-func (master *OsdnMaster) handleDeleteNode(obj interface{}) {
+func (sm *subnetManager) handleDeleteNode(obj interface{}) {
 	node := obj.(*corev1.Node)
 	klog.V(5).Infof("Watch %s event for Node %q", watch.Deleted, node.Name)
 
-	if _, exists := master.hostSubnetNodeIPs[node.UID]; !exists {
+	if _, exists := sm.hostSubnetNodeIPs[node.UID]; !exists {
 		return
 	}
 
-	delete(master.hostSubnetNodeIPs, node.UID)
+	delete(sm.hostSubnetNodeIPs, node.UID)
 
-	if err := master.deleteNode(node.Name); err != nil {
+	if err := sm.deleteNode(node.Name); err != nil {
 		klog.Errorf("Error deleting node %s: %v", node.Name, err)
 		return
 	}
@@ -92,25 +124,25 @@ func (master *OsdnMaster) handleDeleteNode(obj interface{}) {
 
 // addNode takes the nodeName, a preferred nodeIP and the node's annotations
 // Creates or updates a HostSubnet if needed
-func (master *OsdnMaster) addNode(nodeName string, nodeUID string, nodeIP string, hsAnnotations map[string]string) error {
+func (sm *subnetManager) addNode(nodeName string, nodeUID string, nodeIP string, hsAnnotations map[string]string) error {
 	// Validate node IP before proceeding
-	if err := master.sdnConfig.ValidateNodeIP(nodeIP); err != nil {
+	if err := sm.sdnConfig.ValidateNodeIP(nodeIP); err != nil {
 		return err
 	}
 
 	// Check if subnet needs to be created or updated
-	sub, err := master.clients.OSDNClient.NetworkV1().HostSubnets().Get(context.TODO(), nodeName, metav1.GetOptions{})
+	sub, err := sm.clients.OSDNClient.NetworkV1().HostSubnets().Get(context.TODO(), nodeName, metav1.GetOptions{})
 	if err == nil {
 		if err = common.ValidateHostSubnet(sub); err != nil {
 			klog.Errorf("Deleting invalid HostSubnet %q: %v", nodeName, err)
-			_ = master.clients.OSDNClient.NetworkV1().HostSubnets().Delete(context.TODO(), nodeName, metav1.DeleteOptions{})
+			_ = sm.clients.OSDNClient.NetworkV1().HostSubnets().Delete(context.TODO(), nodeName, metav1.DeleteOptions{})
 			// fall through to create new subnet below
 		} else if sub.HostIP == nodeIP {
 			return nil
 		} else {
 			// Node IP changed, update old subnet
 			sub.HostIP = nodeIP
-			sub, err = master.clients.OSDNClient.NetworkV1().HostSubnets().Update(context.TODO(), sub, metav1.UpdateOptions{})
+			sub, err = sm.clients.OSDNClient.NetworkV1().HostSubnets().Update(context.TODO(), sub, metav1.UpdateOptions{})
 			if err != nil {
 				return fmt.Errorf("error updating subnet %s for node %s: %v", sub.Subnet, nodeName, err)
 			}
@@ -126,7 +158,7 @@ func (master *OsdnMaster) addNode(nodeName string, nodeUID string, nodeIP string
 		}
 		hsAnnotations[osdnv1.NodeUIDAnnotation] = nodeUID
 	}
-	network, err := master.subnetAllocator.AllocateNetwork()
+	network, err := sm.subnetAllocator.AllocateNetwork()
 	if err != nil {
 		return fmt.Errorf("error allocating network for node %s: %v", nodeName, err)
 	}
@@ -137,9 +169,9 @@ func (master *OsdnMaster) addNode(nodeName string, nodeUID string, nodeIP string
 		HostIP:     nodeIP,
 		Subnet:     network,
 	}
-	sub, err = master.clients.OSDNClient.NetworkV1().HostSubnets().Create(context.TODO(), sub, metav1.CreateOptions{})
+	sub, err = sm.clients.OSDNClient.NetworkV1().HostSubnets().Create(context.TODO(), sub, metav1.CreateOptions{})
 	if err != nil {
-		if er := master.subnetAllocator.ReleaseNetwork(network); er != nil {
+		if er := sm.subnetAllocator.ReleaseNetwork(network); er != nil {
 			klog.Errorf("Error releasing allocated subnet: %v", err)
 		}
 		return fmt.Errorf("error allocating subnet for node %q: %v", nodeName, err)
@@ -148,15 +180,15 @@ func (master *OsdnMaster) addNode(nodeName string, nodeUID string, nodeIP string
 	return nil
 }
 
-func (master *OsdnMaster) deleteNode(nodeName string) error {
+func (sm *subnetManager) deleteNode(nodeName string) error {
 	subInfo := nodeName
 	// If create and delete events for the same node are called in quick succession,
 	// hostsubnet informer cache may not have corresponding item. We fetch the object just for logging.
 	// So if we get the object we will log in detail otherwise will log in brief.
-	if sub, err := master.hostSubnetInformer.Lister().Get(nodeName); err == nil {
+	if sub, err := sm.hostSubnetLister.Get(nodeName); err == nil {
 		subInfo = common.HostSubnetToString(sub)
 	}
-	if err := master.clients.OSDNClient.NetworkV1().HostSubnets().Delete(context.TODO(), nodeName, metav1.DeleteOptions{}); err != nil {
+	if err := sm.clients.OSDNClient.NetworkV1().HostSubnets().Delete(context.TODO(), nodeName, metav1.DeleteOptions{}); err != nil {
 		return fmt.Errorf("error deleting subnet for node %q: %v", nodeName, err)
 	}
 
@@ -170,7 +202,7 @@ func (master *OsdnMaster) deleteNode(nodeName string) error {
 // TODO: make upstream kubelet more flexible with overlays and GCE so this
 // condition doesn't get added for network plugins that don't want it, and then
 // we can remove this function.
-func (master *OsdnMaster) clearInitialNodeNetworkUnavailableCondition(origNode *corev1.Node) {
+func (sm *subnetManager) clearInitialNodeNetworkUnavailableCondition(origNode *corev1.Node) {
 	// Informer cache should not be mutated, so get a copy of the object
 	node := origNode.DeepCopy()
 	knode := node
@@ -179,7 +211,7 @@ func (master *OsdnMaster) clearInitialNodeNetworkUnavailableCondition(origNode *
 		var err error
 
 		if knode != node {
-			knode, err = master.nodeInformer.Lister().Get(node.Name)
+			knode, err = sm.nodeLister.Get(node.Name)
 			if err != nil {
 				return err
 			}
@@ -194,7 +226,7 @@ func (master *OsdnMaster) clearInitialNodeNetworkUnavailableCondition(origNode *
 					condition.Message = "openshift-sdn cleared kubelet-set NoRouteCreated"
 					condition.LastTransitionTime = metav1.Now()
 
-					if knode, err = master.clients.KubeClient.CoreV1().Nodes().UpdateStatus(context.TODO(), knode, metav1.UpdateOptions{}); err == nil {
+					if knode, err = sm.clients.KubeClient.CoreV1().Nodes().UpdateStatus(context.TODO(), knode, metav1.UpdateOptions{}); err == nil {
 						cleared = true
 					}
 				}
@@ -221,12 +253,12 @@ func getNodeInternalIP(node *corev1.Node) string {
 	return nodeIP
 }
 
-func (master *OsdnMaster) watchSubnets() {
-	funcs := common.InformerFuncs(&osdnv1.HostSubnet{}, master.handleAddOrUpdateSubnet, master.handleDeleteSubnet)
-	master.hostSubnetInformer.Informer().AddEventHandler(funcs)
+func (sm *subnetManager) watchSubnets(hostSubnetInformer cache.SharedIndexInformer) {
+	funcs := common.InformerFuncs(&osdnv1.HostSubnet{}, sm.handleAddOrUpdateSubnet, sm.handleDeleteSubnet)
+	hostSubnetInformer.AddEventHandler(funcs)
 }
 
-func (master *OsdnMaster) handleAddOrUpdateSubnet(obj, _ interface{}, eventType watch.EventType) {
+func (sm *subnetManager) handleAddOrUpdateSubnet(obj, _ interface{}, eventType watch.EventType) {
 	hs := obj.(*osdnv1.HostSubnet)
 	klog.V(5).Infof("Watch %s event for HostSubnet %q", eventType, hs.Name)
 
@@ -235,23 +267,23 @@ func (master *OsdnMaster) handleAddOrUpdateSubnet(obj, _ interface{}, eventType 
 		return
 	}
 
-	if err := master.reconcileHostSubnet(hs); err != nil {
+	if err := sm.reconcileHostSubnet(hs); err != nil {
 		klog.Errorf("Error reconciling HostSubnet: %v", err)
 	}
-	if err := master.sdnConfig.ValidateNodeIP(hs.HostIP); err != nil {
+	if err := sm.sdnConfig.ValidateNodeIP(hs.HostIP); err != nil {
 		// Don't error out; just warn so the error can be corrected with 'oc'
 		klog.Errorf("Failed to validate HostSubnet %s: %v", common.HostSubnetToString(hs), err)
 	}
 
 	if _, ok := hs.Annotations[osdnv1.AssignHostSubnetAnnotation]; ok {
-		if err := master.handleAssignHostSubnetAnnotation(hs); err != nil {
+		if err := sm.handleAssignHostSubnetAnnotation(hs); err != nil {
 			klog.Errorf("Error handling AssignHostSubnetAnnotation: %v", err)
 			return
 		}
 	}
 }
 
-func (master *OsdnMaster) handleDeleteSubnet(obj interface{}) {
+func (sm *subnetManager) handleDeleteSubnet(obj interface{}) {
 	hs := obj.(*osdnv1.HostSubnet)
 	klog.V(5).Infof("Watch %s event for HostSubnet %q", watch.Deleted, hs.Name)
 
@@ -259,7 +291,7 @@ func (master *OsdnMaster) handleDeleteSubnet(obj interface{}) {
 		return
 	}
 
-	if err := master.subnetAllocator.ReleaseNetwork(hs.Subnet); err != nil {
+	if err := sm.subnetAllocator.ReleaseNetwork(hs.Subnet); err != nil {
 		klog.Errorf("Error releasing allocated subnet: %v", err)
 	}
 }
@@ -267,12 +299,12 @@ func (master *OsdnMaster) handleDeleteSubnet(obj interface{}) {
 // reconcileHostSubnet verifies and corrects the state of the hostsubnet.
 // Because openshift watches on events to keep hostsubnets and nodes in the correct state, missing an event
 // can cause orphaned or unusable hostsubnets to stick around.
-func (master *OsdnMaster) reconcileHostSubnet(subnet *osdnv1.HostSubnet) error {
+func (sm *subnetManager) reconcileHostSubnet(subnet *osdnv1.HostSubnet) error {
 	var node *corev1.Node
 	var err error
-	node, err = master.nodeInformer.Lister().Get(subnet.Name)
+	node, err = sm.nodeLister.Get(subnet.Name)
 	if err != nil {
-		node, err = master.clients.KubeClient.CoreV1().Nodes().Get(context.TODO(), subnet.Name, metav1.GetOptions{})
+		node, err = sm.clients.KubeClient.CoreV1().Nodes().Get(context.TODO(), subnet.Name, metav1.GetOptions{})
 		if err != nil {
 			if kerrs.IsNotFound(err) {
 				node = nil
@@ -292,19 +324,19 @@ func (master *OsdnMaster) reconcileHostSubnet(subnet *osdnv1.HostSubnet) error {
 			sn.Annotations = make(map[string]string)
 		}
 		sn.Annotations[osdnv1.NodeUIDAnnotation] = string(node.UID)
-		if _, err = master.clients.OSDNClient.NetworkV1().HostSubnets().Update(context.TODO(), sn, metav1.UpdateOptions{}); err != nil {
+		if _, err = sm.clients.OSDNClient.NetworkV1().HostSubnets().Update(context.TODO(), sn, metav1.UpdateOptions{}); err != nil {
 			return fmt.Errorf("error updating subnet %v for node %s: %v", sn, sn.Name, err)
 		}
 	} else if node == nil && len(subnet.Annotations[osdnv1.NodeUIDAnnotation]) > 0 {
 		// Missed Node event, delete stale subnet.
 		klog.Infof("Setup found no node associated with hostsubnet %s, deleting the hostsubnet", subnet.Name)
-		if err = master.clients.OSDNClient.NetworkV1().HostSubnets().Delete(context.TODO(), subnet.Name, metav1.DeleteOptions{}); err != nil {
+		if err = sm.clients.OSDNClient.NetworkV1().HostSubnets().Delete(context.TODO(), subnet.Name, metav1.DeleteOptions{}); err != nil {
 			return fmt.Errorf("error deleting subnet %v: %v", subnet, err)
 		}
 	} else if string(node.UID) != subnet.Annotations[osdnv1.NodeUIDAnnotation] {
 		// Missed Node event, node with the same name exists delete stale subnet.
 		klog.Infof("Missed node event, hostsubnet %s has the UID of an incorrect object, deleting the hostsubnet", subnet.Name)
-		if err = master.clients.OSDNClient.NetworkV1().HostSubnets().Delete(context.TODO(), subnet.Name, metav1.DeleteOptions{}); err != nil {
+		if err = sm.clients.OSDNClient.NetworkV1().HostSubnets().Delete(context.TODO(), subnet.Name, metav1.DeleteOptions{}); err != nil {
 			return fmt.Errorf("error deleting subnet %v: %v", subnet, err)
 		}
 	}
@@ -313,13 +345,13 @@ func (master *OsdnMaster) reconcileHostSubnet(subnet *osdnv1.HostSubnet) error {
 
 // Handle F5 use case: Admin manually creates HostSubnet with 'AssignHostSubnetAnnotation'
 // to allocate a subnet with no real node in the cluster.
-func (master *OsdnMaster) handleAssignHostSubnetAnnotation(hs *osdnv1.HostSubnet) error {
+func (sm *subnetManager) handleAssignHostSubnetAnnotation(hs *osdnv1.HostSubnet) error {
 	// Delete the annotated hostsubnet and create a new one with an assigned subnet
 	// We do not update (instead of delete+create) because the watchSubnets on the nodes
 	// will skip the event if it finds that the hostsubnet has the same host
 	// And we cannot fix the watchSubnets code for node because it will break migration if
 	// nodes are upgraded after the master
-	if err := master.clients.OSDNClient.NetworkV1().HostSubnets().Delete(context.TODO(), hs.Name, metav1.DeleteOptions{}); err != nil {
+	if err := sm.clients.OSDNClient.NetworkV1().HostSubnets().Delete(context.TODO(), hs.Name, metav1.DeleteOptions{}); err != nil {
 		return fmt.Errorf("error in deleting annotated subnet: %s, %v", hs.Name, err)
 	}
 	klog.Infof("Deleted HostSubnet not backed by node: %s", common.HostSubnetToString(hs))
@@ -335,7 +367,7 @@ func (master *OsdnMaster) handleAssignHostSubnetAnnotation(hs *osdnv1.HostSubnet
 		}
 	}
 
-	if err := master.addNode(hs.Name, "", hs.HostIP, hsAnnotations); err != nil {
+	if err := sm.addNode(hs.Name, "", hs.HostIP, hsAnnotations); err != nil {
 		return fmt.Errorf("error creating subnet: %s, %v", hs.Name, err)
 	}
 	klog.Infof("Created HostSubnet not backed by node: %s", common.HostSubnetToString(hs))

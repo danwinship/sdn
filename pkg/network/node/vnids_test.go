@@ -9,7 +9,7 @@ import (
 )
 
 func TestNodeVNIDMap(t *testing.T) {
-	vmap := newNodeVNIDMap(NewNetworkPolicyPlugin(), nil)
+	vmap := newNodeVNIDMap(NewNetworkPolicyPlugin(), common.NewFakeSDNClients())
 
 	// empty vmap
 

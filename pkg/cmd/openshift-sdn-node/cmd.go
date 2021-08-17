@@ -139,7 +139,7 @@ func (sdn *openShiftSDN) init() error {
 		return fmt.Errorf("failed to build informers: %v", err)
 	}
 
-	sdn.sdnConfig, err = sdncommon.GetSDNConfig(sdn.clients.OSDNClient)
+	sdn.sdnConfig, err = sdncommon.GetSDNConfig(sdn.clients)
 	if err != nil {
 		return fmt.Errorf("failed to get SDN config: %v", err)
 	}

@@ -145,11 +145,13 @@ func New(c *OsdnNodeConfig) (*OsdnNode, error) {
 	}
 	node.oc = NewOVSController(node.sdnConfig, ovsif, pluginId, node.useConnTrack, node.localIP)
 
-	node.podManager = newPodManager(node.sdnConfig, node.clients.KubeClient, node.policy, node.oc)
+	node.podManager = newPodManager(node.clients, node.sdnConfig, node.policy, node.oc)
 
 	if c.ProxyConfig.IPTables.MasqueradeBit != nil {
 		node.masqueradeBitMask = 1 << uint32(*c.ProxyConfig.IPTables.MasqueradeBit)
 	}
+
+	node.nodeIPTables = newNodeIPTables(node.sdnConfig, c.IPTables, !node.useConnTrack, node.masqueradeBitMask)
 
 	node.egressPolicies = make(map[uint32][]osdnv1.EgressNetworkPolicy)
 	node.egressDNS, err = common.NewEgressDNS(true, false)
@@ -157,7 +159,7 @@ func New(c *OsdnNodeConfig) (*OsdnNode, error) {
 		return nil, err
 	}
 
-	node.egressIP = newEgressIPWatcher(node.oc, node.localIP, node.masqueradeBitMask)
+	node.egressIP = newEgressIPWatcher(node.clients, node.oc, node.nodeIPTables, node.localIP, node.masqueradeBitMask)
 
 	metrics.RegisterMetrics()
 
@@ -330,7 +332,6 @@ func (node *OsdnNode) Start() error {
 		return err
 	}
 
-	node.nodeIPTables = newNodeIPTables(node.sdnConfig, node.ipt, !node.useConnTrack, node.masqueradeBitMask)
 	if err = node.nodeIPTables.Setup(); err != nil {
 		return fmt.Errorf("failed to set up iptables: %v", err)
 	}
@@ -350,7 +351,7 @@ func (node *OsdnNode) Start() error {
 		if err := node.SetupEgressNetworkPolicy(); err != nil {
 			return err
 		}
-		if err := node.egressIP.Start(node.clients.OSDNInformers, node.nodeIPTables); err != nil {
+		if err := node.egressIP.Start(); err != nil {
 			return err
 		}
 	}
