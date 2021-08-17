@@ -160,9 +160,9 @@ func New(c *OsdnNodeConfig) (*OsdnNode, error) {
 	if err != nil {
 		return nil, err
 	}
-	node.oc = NewOVSController(ovsif, pluginId, node.useConnTrack, node.localIP)
+	node.oc = NewOVSController(node.sdnConfig, ovsif, pluginId, node.useConnTrack, node.localIP)
 
-	node.podManager = newPodManager(c.KClient, node.policy, node.sdnConfig.MTU, node.oc)
+	node.podManager = newPodManager(node.sdnConfig, c.KClient, node.policy, node.oc)
 
 	if c.MasqueradeBit != nil {
 		node.masqueradeBit = uint32(*c.MasqueradeBit)
@@ -347,7 +347,7 @@ func (node *OsdnNode) Start() error {
 		return err
 	}
 
-	node.nodeIPTables = newNodeIPTables(node.ipt, node.sdnConfig.ClusterNetworkCIDRStrings, !node.useConnTrack, node.sdnConfig.VXLANPort, node.masqueradeBit)
+	node.nodeIPTables = newNodeIPTables(node.sdnConfig, node.ipt, !node.useConnTrack, node.masqueradeBit)
 	if err = node.nodeIPTables.Setup(); err != nil {
 		return fmt.Errorf("failed to set up iptables: %v", err)
 	}
@@ -385,8 +385,7 @@ func (node *OsdnNode) Start() error {
 	}
 
 	klog.V(2).Infof("Starting openshift-sdn pod manager")
-	if err := node.podManager.Start(cniserver.CNIServerRunDir, node.localSubnetCIDR,
-		node.sdnConfig.ClusterNetworks, node.sdnConfig.ServiceNetworkCIDRString); err != nil {
+	if err := node.podManager.Start(cniserver.CNIServerRunDir, node.localSubnetCIDR); err != nil {
 		return err
 	}
 

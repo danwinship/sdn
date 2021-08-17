@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	osdnv1 "github.com/openshift/api/network/v1"
+	"github.com/openshift/sdn/pkg/network/common"
 	"github.com/openshift/sdn/pkg/util/ovs"
 
 	corev1 "k8s.io/api/core/v1"
@@ -22,10 +23,12 @@ import (
 )
 
 func setupOVSController(t *testing.T) (ovs.Interface, *ovsController, []string) {
+	sdnConfig := common.NewTestSDNConfig()
+
 	ovsif := ovs.NewFake(Br0)
-	oc := NewOVSController(ovsif, 0, true, "172.17.0.4")
+	oc := NewOVSController(sdnConfig, ovsif, 0, true, "172.17.0.4")
 	oc.tunMAC = "c6:ac:2c:13:48:4b"
-	err := oc.SetupOVS([]string{"10.128.0.0/14"}, "172.30.0.0/16", "10.128.0.0/23", "10.128.0.1", 1450, 4789)
+	err := oc.SetupOVS("10.128.0.0/23", "10.128.0.1")
 	if err != nil {
 		t.Fatalf("Unexpected error setting up OVS: %v", err)
 	}
@@ -843,14 +846,16 @@ func TestAlreadySetUp(t *testing.T) {
 		},
 	}
 
+	sdnConfig := common.NewTestSDNConfig()
+
 	for i, tc := range testcases {
 		ovsif := ovs.NewFake(Br0)
 		if err := ovsif.AddBridge("fail_mode=secure", "protocols=OpenFlow13"); err != nil {
 			t.Fatalf("(%d) unexpected error from AddBridge: %v", i, err)
 		}
-		oc := NewOVSController(ovsif, 0, true, "172.17.0.4")
+		oc := NewOVSController(sdnConfig, ovsif, 0, true, "172.17.0.4")
 		/* In order to test AlreadySetUp the vxlan port has to be added, we are not testing AddPort here */
-		_, err := ovsif.AddPort("vxlan0", 1, "type=vxlan", `options:remote_ip="flow"`, `options:key="flow"`, fmt.Sprintf("options:dst_port=%d", 4789))
+		_, err := ovsif.AddPort("vxlan0", 1, "type=vxlan", `options:remote_ip="flow"`, `options:key="flow"`, fmt.Sprintf("options:dst_port=%d", sdnConfig.VXLANPort))
 		if err != nil {
 			t.Fatalf("(%d) unexpected error from AddPort: %v", i, err)
 		}
@@ -860,7 +865,7 @@ func TestAlreadySetUp(t *testing.T) {
 		if err := otx.Commit(); err != nil {
 			t.Fatalf("(%d) unexpected error from AddFlow: %v", i, err)
 		}
-		if success := oc.AlreadySetUp(4789); success != tc.success {
+		if success := oc.AlreadySetUp(); success != tc.success {
 			t.Fatalf("(%d) unexpected setup value %v (expected %v)", i, success, tc.success)
 		}
 	}

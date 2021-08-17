@@ -147,7 +147,9 @@ import (
 //   per-Namespace rules to output multicast packets to each pod port in that namespace
 
 type ovsController struct {
-	ovs          ovs.Interface
+	ovs       ovs.Interface
+	sdnConfig *common.SDNConfig
+
 	pluginId     int
 	useConnTrack bool
 	localIP      string
@@ -165,8 +167,8 @@ const (
 	ruleVersionTable = 253
 )
 
-func NewOVSController(ovsif ovs.Interface, pluginId int, useConnTrack bool, localIP string) *ovsController {
-	return &ovsController{ovs: ovsif, pluginId: pluginId, useConnTrack: useConnTrack, localIP: localIP}
+func NewOVSController(sdnConfig *common.SDNConfig, ovsif ovs.Interface, pluginId int, useConnTrack bool, localIP string) *ovsController {
+	return &ovsController{ovs: ovsif, sdnConfig: sdnConfig, pluginId: pluginId, useConnTrack: useConnTrack, localIP: localIP}
 }
 
 func (oc *ovsController) getVersionNote() string {
@@ -176,7 +178,7 @@ func (oc *ovsController) getVersionNote() string {
 	return fmt.Sprintf("%02X.%02X", oc.pluginId, ruleVersion)
 }
 
-func (oc *ovsController) AlreadySetUp(vxlanPort uint32) bool {
+func (oc *ovsController) AlreadySetUp() bool {
 	flows, err := oc.ovs.DumpFlows("table=%d", ruleVersionTable)
 	if err != nil || len(flows) != 1 {
 		return false
@@ -185,7 +187,7 @@ func (oc *ovsController) AlreadySetUp(vxlanPort uint32) bool {
 	port, err := oc.ovs.Get("Interface", Vxlan0, "options:dst_port")
 	// the call to ovs.Get() returns the port number surrounded by double quotes
 	// so add them to the structs value for purposes of comparison
-	if err != nil || fmt.Sprintf("\"%d\"", vxlanPort) != port {
+	if err != nil || fmt.Sprintf("\"%d\"", oc.sdnConfig.VXLANPort) != port {
 		return false
 	}
 	if parsed, err := ovs.ParseFlow(ovs.ParseForDump, flows[0]); err == nil {
@@ -194,7 +196,7 @@ func (oc *ovsController) AlreadySetUp(vxlanPort uint32) bool {
 	return false
 }
 
-func (oc *ovsController) SetupOVS(clusterNetworkCIDR []string, serviceNetworkCIDR, localSubnetCIDR, localSubnetGateway string, mtu uint32, vxlanPort uint32) error {
+func (oc *ovsController) SetupOVS(localSubnetCIDR, localSubnetGateway string) error {
 	err := oc.ovs.DeleteBridge()
 	if err != nil {
 		return err
@@ -208,15 +210,18 @@ func (oc *ovsController) SetupOVS(clusterNetworkCIDR []string, serviceNetworkCID
 		return err
 	}
 	_ = oc.ovs.DeletePort(Vxlan0)
-	_, err = oc.ovs.AddPort(Vxlan0, 1, "type=vxlan", `options:remote_ip="flow"`, `options:key="flow"`, fmt.Sprintf("options:dst_port=%d", vxlanPort))
+	_, err = oc.ovs.AddPort(Vxlan0, 1, "type=vxlan", `options:remote_ip="flow"`, `options:key="flow"`, fmt.Sprintf("options:dst_port=%d", oc.sdnConfig.VXLANPort))
 	if err != nil {
 		return err
 	}
 	_ = oc.ovs.DeletePort(Tun0)
-	_, err = oc.ovs.AddPort(Tun0, 2, "type=internal", fmt.Sprintf("mtu_request=%d", mtu))
+	_, err = oc.ovs.AddPort(Tun0, 2, "type=internal", fmt.Sprintf("mtu_request=%d", oc.sdnConfig.MTU))
 	if err != nil {
 		return err
 	}
+
+	clusterNetworkCIDR := oc.sdnConfig.ClusterNetworkCIDRStrings
+	serviceNetworkCIDR := oc.sdnConfig.ServiceNetworkCIDRString
 
 	otx := oc.ovs.NewTransaction()
 
@@ -257,7 +262,7 @@ func (oc *ovsController) SetupOVS(clusterNetworkCIDR []string, serviceNetworkCID
 	// eg, "table=20, priority=100, in_port=${ovs_port}, arp, nw_src=${ipaddr}, arp_sha=${macaddr}, actions=load:${tenant_id}->NXM_NX_REG0[], goto_table:21"
 	//     "table=20, priority=100, in_port=${ovs_port}, ip, nw_src=${ipaddr}, actions=load:${tenant_id}->NXM_NX_REG0[], goto_table:21"
 	// (${tenant_id} is always 0 for single-tenant)
-	otx.AddFlow("table=20, priority=300, udp, udp_dst=%d, actions=drop", vxlanPort)
+	otx.AddFlow("table=20, priority=300, udp, udp_dst=%d, actions=drop", oc.sdnConfig.VXLANPort)
 	otx.AddFlow("table=20, priority=0, actions=drop")
 
 	// Table 21: from OpenShift container; NetworkPolicy mode uses this for connection tracking

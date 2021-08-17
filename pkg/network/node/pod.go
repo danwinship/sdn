@@ -49,6 +49,8 @@ type runningPod struct {
 }
 
 type podManager struct {
+	sdnConfig *common.SDNConfig
+
 	// Common stuff used for both live and testing code
 	podHandler podHandler
 	cniServer  *cniserver.CNIServer
@@ -61,7 +63,6 @@ type podManager struct {
 	// Live pod setup/teardown stuff not used in testing code
 	kClient kubernetes.Interface
 	policy  osdnPolicy
-	mtu     uint32
 	ovs     *ovsController
 
 	// Things only accessed through the processCNIRequests() goroutine
@@ -69,20 +70,20 @@ type podManager struct {
 	ipamConfig []byte
 }
 
-// Creates a new live podManager; used by node code0
-func newPodManager(kClient kubernetes.Interface, policy osdnPolicy, mtu uint32, ovs *ovsController) *podManager {
-	pm := newDefaultPodManager()
+// Creates a new live podManager; used by node code
+func newPodManager(sdnConfig *common.SDNConfig, kClient kubernetes.Interface, policy osdnPolicy, ovs *ovsController) *podManager {
+	pm := newDefaultPodManager(sdnConfig)
 	pm.kClient = kClient
 	pm.policy = policy
-	pm.mtu = mtu
 	pm.podHandler = pm
 	pm.ovs = ovs
 	return pm
 }
 
 // Creates a new basic podManager; used by testcases
-func newDefaultPodManager() *podManager {
+func newDefaultPodManager(sdnConfig *common.SDNConfig) *podManager {
 	return &podManager{
+		sdnConfig:   sdnConfig,
 		runningPods: make(map[string]*runningPod),
 		requests:    make(chan *cniserver.PodRequest, 20),
 	}
@@ -149,15 +150,15 @@ func getIPAMConfig(clusterNetworks []common.ClusterNetworkEntry, localSubnet str
 }
 
 // Start the CNI server and start processing requests from it
-func (m *podManager) Start(rundir string, localSubnetCIDR string, clusterNetworks []common.ClusterNetworkEntry, serviceNetworkCIDR string) error {
+func (m *podManager) Start(rundir string, localSubnetCIDR string) error {
 	var err error
-	if m.ipamConfig, err = getIPAMConfig(clusterNetworks, localSubnetCIDR); err != nil {
+	if m.ipamConfig, err = getIPAMConfig(m.sdnConfig.ClusterNetworks, localSubnetCIDR); err != nil {
 		return err
 	}
 
 	go m.processCNIRequests()
 
-	m.cniServer = cniserver.NewCNIServer(rundir, &cniserver.Config{MTU: m.mtu, ServiceNetworkCIDR: serviceNetworkCIDR})
+	m.cniServer = cniserver.NewCNIServer(rundir, &cniserver.Config{MTU: m.sdnConfig.MTU, ServiceNetworkCIDR: m.sdnConfig.ServiceNetworkCIDRString})
 	return m.cniServer.Start(m.handleCNIRequest)
 }
 

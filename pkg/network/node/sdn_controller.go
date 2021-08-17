@@ -57,8 +57,8 @@ func (node *OsdnNode) alreadySetUp() error {
 		}
 	}
 
-	if !node.oc.AlreadySetUp(node.sdnConfig.VXLANPort) {
-		return errors.New("openshift-sdn is not setup")
+	if !node.oc.AlreadySetUp() {
+		return errors.New("plugin is not setup")
 	}
 
 	return nil
@@ -152,7 +152,7 @@ func (node *OsdnNode) FinishSetupSDN() error {
 }
 
 func (node *OsdnNode) setup(localSubnetCIDR, localSubnetGateway string) error {
-	if err := node.oc.SetupOVS(node.sdnConfig.ClusterNetworkCIDRStrings, node.sdnConfig.ServiceNetworkCIDRString, localSubnetCIDR, localSubnetGateway, node.sdnConfig.MTU, node.sdnConfig.VXLANPort); err != nil {
+	if err := node.oc.SetupOVS(localSubnetCIDR, localSubnetGateway); err != nil {
 		return err
 	}
 

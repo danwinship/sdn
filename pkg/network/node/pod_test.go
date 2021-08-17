@@ -302,10 +302,10 @@ func TestPodManager(t *testing.T) {
 
 	for k, tc := range testcases {
 		podTester := newPodTester(t, k, socketPath)
-		podManager := newDefaultPodManager()
+		sdnConfig := common.NewTestSDNConfig()
+		podManager := newDefaultPodManager(sdnConfig)
 		podManager.podHandler = podTester
-		_, cidr, _ := net.ParseCIDR("1.2.0.0/16")
-		err := podManager.Start(tmpDir, "1.2.3.0/24", []common.ClusterNetworkEntry{{CIDR: cidr, HostSubnetLength: 8}}, "172.30.0.0/16")
+		err := podManager.Start(tmpDir, "1.2.3.0/24")
 		if err != nil {
 			t.Fatalf("could not start PodManager: %v", err)
 		}
@@ -400,11 +400,11 @@ func TestDirectPodUpdate(t *testing.T) {
 	defer os.RemoveAll(tmpDir)
 	socketPath := filepath.Join(tmpDir, cniserver.CNIServerSocketName)
 
+	sdnConfig := common.NewTestSDNConfig()
 	podTester := newPodTester(t, "update", socketPath)
-	podManager := newDefaultPodManager()
+	podManager := newDefaultPodManager(sdnConfig)
 	podManager.podHandler = podTester
-	_, cidr, _ := net.ParseCIDR("1.2.0.0/16")
-	err = podManager.Start(tmpDir, "1.2.3.0/24", []common.ClusterNetworkEntry{{CIDR: cidr, HostSubnetLength: 8}}, "172.30.0.0/16")
+	err = podManager.Start(tmpDir, "1.2.3.0/24")
 	if err != nil {
 		t.Fatalf("could not start PodManager: %v", err)
 	}

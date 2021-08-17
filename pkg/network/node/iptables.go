@@ -13,6 +13,8 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/kubernetes/pkg/util/iptables"
 	utilexec "k8s.io/utils/exec"
+
+	"github.com/openshift/sdn/pkg/network/common"
 )
 
 type NodeIPTables struct {
@@ -60,12 +62,12 @@ func isResourceError(err error) bool {
 	return false
 }
 
-func newNodeIPTables(ipt iptables.Interface, clusterNetworkCIDR []string, masqueradeServices bool, vxlanPort uint32, masqueradeBit uint32) *NodeIPTables {
+func newNodeIPTables(sdnConfig *common.SDNConfig, ipt iptables.Interface, masqueradeServices bool, masqueradeBit uint32) *NodeIPTables {
 	return &NodeIPTables{
 		ipt:                ipt,
-		clusterNetworkCIDR: clusterNetworkCIDR,
+		clusterNetworkCIDR: sdnConfig.ClusterNetworkCIDRStrings,
 		masqueradeServices: masqueradeServices,
-		vxlanPort:          vxlanPort,
+		vxlanPort:          sdnConfig.VXLANPort,
 		masqueradeBitHex:   fmt.Sprintf("%#x", 1<<masqueradeBit),
 		egressIPs:          make(map[string]string),
 	}
