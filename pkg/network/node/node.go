@@ -117,7 +117,7 @@ func New(c *OsdnNodeConfig) (*OsdnNode, error) {
 		return nil, fmt.Errorf("Unknown plugin name %q", node.sdnConfig.PluginName)
 	}
 
-	klog.Infof("Initializing SDN node %q (%s) of type %q", node.nodeConfig.Name, node.nodeConfig.IPString, node.sdnConfig.PluginName)
+	klog.Infof("Initializing SDN node %q (%s) of type %q", node.nodeConfig.Name, node.nodeConfig.IPStrings[0], node.sdnConfig.PluginName)
 
 	ovsif, err := ovs.New(kexec.New(), Br0)
 	if err != nil {
@@ -144,9 +144,9 @@ func New(c *OsdnNodeConfig) (*OsdnNode, error) {
 
 func (c *OsdnNodeConfig) validateNodeIP() error {
 	// IPV6FIXME: dual node IPs
-	if _, _, err := GetLinkDetails(c.NodeConfig.IPString); err != nil {
+	if _, _, err := GetLinkDetails(c.NodeConfig.IPStrings[0]); err != nil {
 		if err == ErrorNetworkInterfaceNotFound {
-			err = fmt.Errorf("node IP %q is not a local/private address (hostname %q)", c.NodeConfig.IPString, c.NodeConfig.Name)
+			err = fmt.Errorf("node IP %q is not a local/private address (hostname %q)", c.NodeConfig.IPStrings[0], c.NodeConfig.Name)
 		}
 		klog.Errorf("Unable to find network interface for node IP; some features will not work! (%v)", err)
 	}
@@ -225,7 +225,7 @@ func (node *OsdnNode) validateMTU() error {
 		// IPV6FIXME: ipv4-specific
 		addresses, err := netlink.AddrList(link, netlink.FAMILY_V4)
 		for _, address := range addresses {
-			if node.nodeConfig.IP.Equal(address.IP) {
+			if node.nodeConfig.IPs[0].Equal(address.IP) {
 				found = true
 				break
 			}

@@ -152,7 +152,7 @@ func getIPAMConfig(clusterNetworks []common.ClusterNetworkEntry, localSubnet *ne
 // Start the CNI server and start processing requests from it
 func (m *podManager) Start(rundir string) error {
 	var err error
-	if m.ipamConfig, err = getIPAMConfig(m.sdnConfig.ClusterNetworks, m.nodeConfig.LocalSubnet, m.nodeConfig.LocalGateway.IP); err != nil {
+	if m.ipamConfig, err = getIPAMConfig(m.sdnConfig.ClusterNetworks, m.nodeConfig.LocalSubnets[0], m.nodeConfig.LocalGateways[0].IP); err != nil {
 		return err
 	}
 

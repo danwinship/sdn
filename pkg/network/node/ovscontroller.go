@@ -220,9 +220,9 @@ func (oc *ovsController) SetupOVS() error {
 
 	clusterNetworkCIDR := oc.sdnConfig.ClusterNetworkCIDRStrings
 	serviceNetworkCIDR := oc.sdnConfig.ServiceNetworkCIDRStrings[0]
-	localSubnetCIDR := oc.nodeConfig.LocalSubnetCIDRString
-	localSubnetGateway := oc.nodeConfig.LocalGatewayIPString
-	localIP := oc.nodeConfig.IPString
+	localSubnetCIDR := oc.nodeConfig.LocalSubnetCIDRStrings[0]
+	localSubnetGateway := oc.nodeConfig.LocalGatewayIPStrings[0]
+	localIP := oc.nodeConfig.IPStrings[0]
 
 	otx := oc.ovs.NewTransaction()
 
@@ -930,7 +930,7 @@ func (oc *ovsController) SetNamespaceEgressViaEgressIPs(vnid uint32, egressIPsMe
 
 	var buildBuckets []string
 	for _, egressIPMetaData := range egressIPsMetaData {
-		if egressIPMetaData.nodeIP == oc.nodeConfig.IPString {
+		if egressIPMetaData.nodeIP == oc.nodeConfig.IPStrings[0] {
 			if err := oc.ensureTunMAC(); err != nil {
 				return err
 			}

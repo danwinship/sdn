@@ -26,7 +26,7 @@ type hostSubnetWatcher struct {
 func newHostSubnetWatcher(oc *ovsController, sdnConfig *common.SDNConfig, nodeConfig *NodeConfig) *hostSubnetWatcher {
 	return &hostSubnetWatcher{
 		oc:        oc,
-		localIP:   nodeConfig.IPString,
+		localIP:   nodeConfig.IPStrings[0],
 		sdnConfig: sdnConfig,
 
 		hostSubnetMap: make(map[ktypes.UID]*osdnv1.HostSubnet),

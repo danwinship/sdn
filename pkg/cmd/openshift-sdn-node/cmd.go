@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -29,9 +30,9 @@ import (
 // openShiftSDN stores the variables needed to initialize the real networking
 // processess from the command line.
 type openShiftSDN struct {
-	nodeName string
-	// IPV6FIXME: dual node IPs
-	nodeIP   string
+	nodeName  string
+	rawNodeIP string
+	nodeIPs   []string
 
 	sdnConfig *sdncommon.SDNConfig
 
@@ -73,7 +74,7 @@ func NewOpenShiftSDNCommand(basename string, errout io.Writer) *cobra.Command {
 	flags := cmd.Flags()
 	flags.StringVar(&sdn.nodeName, "node-name", "", "Kubernetes node name")
 	cmd.MarkFlagRequired("node-name")
-	flags.StringVar(&sdn.nodeIP, "node-ip", "", "Kubernetes node IP")
+	flags.StringVar(&sdn.rawNodeIP, "node-ip", "", "Kubernetes node IP(s)")
 	cmd.MarkFlagRequired("node-ip")
 	flags.StringVar(&sdn.proxyConfigFilePath, "proxy-config", "", "Location of the kube-proxy configuration file")
 	cmd.MarkFlagRequired("proxy-config")
@@ -122,6 +123,8 @@ func (sdn *openShiftSDN) run(c *cobra.Command, errout io.Writer, stopCh chan str
 // validateAndParse validates the command line options, parses the node
 // configuration, and builds the upstream proxy configuration.
 func (sdn *openShiftSDN) validateAndParse() error {
+	sdn.nodeIPs = strings.Split(sdn.rawNodeIP, ",")
+
 	klog.V(2).Infof("Reading proxy configuration from %s", sdn.proxyConfigFilePath)
 	var err error
 	sdn.proxyConfig, err = readProxyConfig(sdn.proxyConfigFilePath)

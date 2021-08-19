@@ -30,7 +30,7 @@ func (node *OsdnNode) alreadySetUp() error {
 	found = false
 	for _, addr := range addrs {
 		// IPV6FIXME: dual-stack check
-		if addr.IPNet.String() == node.nodeConfig.LocalGateway.String() {
+		if addr.IPNet.String() == node.nodeConfig.LocalGateways[0].String() {
 			found = true
 			break
 		}
@@ -111,7 +111,7 @@ func (node *OsdnNode) SetupSDN() (bool, map[string]podNetworkInfo, error) {
 	}
 
 	// IPV6FIXME: dual
-	klog.V(5).Infof("[SDN setup] node pod subnet %s gateway %s", node.nodeConfig.LocalSubnet, node.nodeConfig.LocalGateway)
+	klog.V(5).Infof("[SDN setup] node pod subnet %s gateway %s", node.nodeConfig.LocalSubnets[0], node.nodeConfig.LocalGateways[0])
 
 	if err := healthCheckOVS(); err != nil {
 		return false, nil, err
@@ -152,10 +152,10 @@ func (node *OsdnNode) setup() error {
 	l, err := netlink.LinkByName(Tun0)
 	if err == nil {
 		// IPV6FIXME: add dual addresses
-		err = netlink.AddrAdd(l, &netlink.Addr{IPNet: node.nodeConfig.LocalGateway})
+		err = netlink.AddrAdd(l, &netlink.Addr{IPNet: node.nodeConfig.LocalGateways[0]})
 		if err == nil {
 			// IPV6FIXME: dual deletions
-			defer deleteLocalSubnetRoute(Tun0, node.nodeConfig.LocalSubnetCIDRString)
+			defer deleteLocalSubnetRoute(Tun0, node.nodeConfig.LocalSubnetCIDRStrings[0])
 		}
 	}
 	if err == nil {

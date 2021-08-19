@@ -8,10 +8,12 @@ import (
 
 	"k8s.io/klog/v2"
 
+	corev1 "k8s.io/api/core/v1"
 	kapierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	utilwait "k8s.io/apimachinery/pkg/util/wait"
 	kubeproxyconfig "k8s.io/kubernetes/pkg/proxy/apis/config"
+	utilnet "k8s.io/utils/net"
 
 	osdnv1 "github.com/openshift/api/network/v1"
 	"github.com/openshift/library-go/pkg/network/networkutils"
@@ -21,20 +23,17 @@ import (
 type NodeConfig struct {
 	// Name is the node name, passed on the command line
 	Name string
-	// IP is the node IP, passed on the command line
-	// IPV6FIXME: dual node IPs
-	IP       net.IP
-	IPString string
+	// IPs are the node IP(s), passed on the command line
+	IPs       []net.IP
+	IPStrings []string
 
-	// LocalSubnet is the local HostSubnet CIDR
-	// IPV6FIXME: dual local subnets
-	LocalSubnet           *net.IPNet
-	LocalSubnetCIDRString string
-	// LocalGateway is the IP of tun0, in CIDR form
-	// IPV6FIXME: dual local gateways
-	LocalGateway             *net.IPNet
-	LocalGatewayIPString     string
-	LocalGatewayIfAddrString string
+	// LocalSubnets are the local HostSubnet CIDR(s)
+	LocalSubnets           []*net.IPNet
+	LocalSubnetCIDRStrings []string
+	// LocalGateways are the IP(s) of tun0, in CIDR form
+	LocalGateways             []*net.IPNet
+	LocalGatewayIPStrings     []string
+	LocalGatewayIfAddrStrings []string
 
 	// PluginID is the numeric ID used for the active network plugin
 	PluginID int
@@ -45,21 +44,25 @@ type NodeConfig struct {
 
 	// MasqueradeBitMask is a bitmask with the KUBE-MARK-MASQ bit set.
 	MasqueradeBitMask uint32
+
+	sdnConfig *common.SDNConfig
 }
 
-func NewNodeConfig(nodeName, nodeIP string,
+func NewNodeConfig(nodeName string, nodeIPs []string,
 	sdnConfig *common.SDNConfig,
 	proxyConfig *kubeproxyconfig.KubeProxyConfiguration) (*NodeConfig, error) {
 
-	ip := net.ParseIP(nodeIP)
-	if ip == nil {
-		return nil, fmt.Errorf("invalid node IP %q", nodeIP)
+	nodeConfig := &NodeConfig{
+		Name:      nodeName,
+		IPStrings: nodeIPs,
+		IPs:       make([]net.IP, len(nodeIPs)),
 	}
 
-	nodeConfig := &NodeConfig{
-		Name:     nodeName,
-		IP:       ip,
-		IPString: nodeIP,
+	for i, nodeIP := range nodeIPs {
+		nodeConfig.IPs[i] = net.ParseIP(nodeIP)
+		if nodeConfig.IPs[i] == nil {
+			return nil, fmt.Errorf("invalid node IP %q", nodeIP)
+		}
 	}
 
 	switch sdnConfig.PluginName {
@@ -97,17 +100,58 @@ func NewTestNodeConfig(sdnConfig *common.SDNConfig) *NodeConfig {
 		},
 	}
 
-	nodeConfig, err := NewNodeConfig("node1", "172.17.0.4", sdnConfig, proxyConfig)
+	var nodeIPs []string
+	if sdnConfig.PrimaryIPFamily == corev1.IPv4Protocol {
+		nodeIPs = append(nodeIPs, "172.17.0.4")
+		if sdnConfig.HasIPv6 {
+			nodeIPs = append(nodeIPs, "2001:172:17::4")
+		}
+	} else {
+		nodeIPs = append(nodeIPs, "2001:172:17::4")
+		if sdnConfig.HasIPv4 {
+			nodeIPs = append(nodeIPs, "172.17.0.4")
+		}
+	}
+
+	nodeConfig, err := NewNodeConfig("node1", nodeIPs, sdnConfig, proxyConfig)
 	if err != nil {
 		panic(fmt.Sprintf("unexpected error parsing nodeConfig: %v", err))
 	}
 
-	// Allocate the first subnet out of sdnConfig's cluster network
-	cn := sdnConfig.ClusterNetworks[0]
-	_, bits := cn.CIDR.Mask.Size()
-	localSubnet := fmt.Sprintf("%s/%d", cn.CIDR.IP.String(), bits-cn.HostSubnetLength)
+	// Allocate the first subnets out of sdnConfig's cluster network
+	var v4Subnet, v6Subnet *net.IPNet
+	for _, cn := range sdnConfig.ClusterNetworks {
+		if utilnet.IsIPv4CIDR(cn.CIDR) && v4Subnet == nil {
+			v4Subnet = &net.IPNet{
+				IP:   cn.CIDR.IP,
+				Mask: net.CIDRMask(32-cn.HostSubnetLength, 32),
+			}
+		} else if utilnet.IsIPv6CIDR(cn.CIDR) && v6Subnet == nil {
+			// SubnetAllocator skips the all-zero subnet for IPv6...
+			baseIP := append([]byte{}, cn.CIDR.IP...)
+			firstSubnetBit := cn.HostSubnetLength - 1
+			baseIP[firstSubnetBit/8] |= 1 << (7 - firstSubnetBit%8)
+			v6Subnet = &net.IPNet{
+				IP:   baseIP,
+				Mask: net.CIDRMask(128-cn.HostSubnetLength, 128),
+			}
+		}
+	}
 
-	err = nodeConfig.setLocalSubnet(localSubnet)
+	var localSubnets []*net.IPNet
+	if sdnConfig.PrimaryIPFamily == corev1.IPv4Protocol {
+		localSubnets = append(localSubnets, v4Subnet)
+		if v6Subnet != nil {
+			localSubnets = append(localSubnets, v6Subnet)
+		}
+	} else {
+		localSubnets = append(localSubnets, v6Subnet)
+		if v4Subnet != nil {
+			localSubnets = append(localSubnets, v4Subnet)
+		}
+	}
+
+	err = nodeConfig.setLocalSubnets(localSubnets)
 	if err != nil {
 		panic(fmt.Sprintf("unexpected error setting local subnet: %v", err))
 	}
@@ -135,11 +179,11 @@ func (nodeConfig *NodeConfig) getLocalSubnet(clients *common.SDNClients) error {
 			if err = common.ValidateHostSubnet(subnet); err != nil {
 				return false, err
 			// IPV6FIXME: validate both IPs
-			} else if subnet.HostIP == nodeConfig.IPString {
+			} else if subnet.HostIP == nodeConfig.IPStrings[0] {
 				return true, nil
 			} else {
 				klog.Warningf("HostIP %q for local subnet does not match with nodeIP %q, "+
-					"Waiting for master to update subnet for node %q ...", subnet.HostIP, nodeConfig.IP, nodeConfig.Name)
+					"Waiting for master to update subnet for node %q ...", subnet.HostIP, nodeConfig.IPs[0], nodeConfig.Name)
 				return false, nil
 			}
 		} else if kapierrors.IsNotFound(err) {
@@ -153,24 +197,29 @@ func (nodeConfig *NodeConfig) getLocalSubnet(clients *common.SDNClients) error {
 		return fmt.Errorf("failed to get subnet for this host: %s, error: %v", nodeConfig.Name, err)
 	}
 
-	return nodeConfig.setLocalSubnet(subnet.Subnet)
+	cidr, err := nodeConfig.sdnConfig.ParseCIDR(subnet.Subnet, true)
+	if err != nil {
+		return fmt.Errorf("illegal subnet for host %q: %v", nodeConfig.Name, err)
+	}
+	return nodeConfig.setLocalSubnets([]*net.IPNet{cidr})
 }
 
-func (nodeConfig *NodeConfig) setLocalSubnet(subnet string) error {
-	var err error
+func (nodeConfig *NodeConfig) setLocalSubnets(subnets []*net.IPNet) error {
+	nodeConfig.LocalSubnets = subnets
+	nodeConfig.LocalSubnetCIDRStrings = make([]string, len(subnets))
+	nodeConfig.LocalGateways = make([]*net.IPNet, len(subnets))
+	nodeConfig.LocalGatewayIPStrings = make([]string, len(subnets))
+	nodeConfig.LocalGatewayIfAddrStrings = make([]string, len(subnets))
 
-	nodeConfig.LocalSubnet, err = networkutils.ParseCIDRMask(subnet)
-	if err != nil {
-		return fmt.Errorf("local HostSubnet has invalid Subnet: %v", err)
+	for i, subnet := range subnets {
+		nodeConfig.LocalSubnetCIDRStrings[i] = subnet.String()
+		nodeConfig.LocalGateways[i] = &net.IPNet{
+			IP:   common.GenerateDefaultGateway(subnet),
+			Mask: subnet.Mask,
+		}
+		nodeConfig.LocalGatewayIPStrings[i] = nodeConfig.LocalGateways[i].IP.String()
+		nodeConfig.LocalGatewayIfAddrStrings[i] = nodeConfig.LocalGateways[i].String()
 	}
-	nodeConfig.LocalSubnetCIDRString = subnet
-
-	nodeConfig.LocalGateway = &net.IPNet{
-		IP:   common.GenerateDefaultGateway(nodeConfig.LocalSubnet),
-		Mask: nodeConfig.LocalSubnet.Mask,
-	}
-	nodeConfig.LocalGatewayIPString = nodeConfig.LocalGateway.IP.String()
-	nodeConfig.LocalGatewayIfAddrString = nodeConfig.LocalGateway.String()
 
 	return nil
 }

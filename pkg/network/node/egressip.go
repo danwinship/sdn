@@ -64,7 +64,7 @@ func newEgressIPWatcher(clients *common.SDNClients, nodeConfig *NodeConfig, oc *
 		oc:            oc,
 		iptables:      iptables,
 		clients:       clients,
-		localIP:       nodeConfig.IPString,
+		localIP:       nodeConfig.IPStrings[0],
 		masqueradeBit: nodeConfig.MasqueradeBitMask,
 		monitorNodes:  make(map[string]*egressNode),
 		iptablesMark:  make(map[string]string),
