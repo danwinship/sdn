@@ -3,6 +3,7 @@ package master
 import (
 	"context"
 	"fmt"
+	"net"
 	"strconv"
 
 	"k8s.io/klog/v2"
@@ -15,16 +16,13 @@ import (
 	corev1listers "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/retry"
+	utilnode "k8s.io/kubernetes/pkg/util/node"
 
 	osdnv1 "github.com/openshift/api/network/v1"
 	osdnlisters "github.com/openshift/client-go/network/listers/network/v1"
 	"github.com/openshift/sdn/pkg/network/common"
 	masterutil "github.com/openshift/sdn/pkg/network/master/util"
 )
-
-// IPV6FIXME: HostSubnet is single-stack, and required to be IPv4-only by its CRD. We
-// could change the CRD, support IPv6 via annotations, or abandon HostSubnet in favor of
-// ovn-kubernetes-style annotations-on-nodes.
 
 type subnetManager struct {
 	clients   *common.SDNClients
@@ -34,8 +32,7 @@ type subnetManager struct {
 	hostSubnetLister osdnlisters.HostSubnetLister
 
 	subnetAllocator   *masterutil.SubnetAllocator
-	// IPV6FIXME: dual-stack
-	hostSubnetNodeIPs map[ktypes.UID]string
+	hostSubnetNodeIPs map[ktypes.UID][]net.IP
 }
 
 func newSubnetManager(clients *common.SDNClients, sdnConfig *common.SDNConfig) *subnetManager {
@@ -47,13 +44,13 @@ func newSubnetManager(clients *common.SDNClients, sdnConfig *common.SDNConfig) *
 		hostSubnetLister: clients.OSDNInformers.Network().V1().HostSubnets().Lister(),
 
 		subnetAllocator:   masterutil.NewSubnetAllocator(),
-		hostSubnetNodeIPs: map[ktypes.UID]string{},
+		hostSubnetNodeIPs: map[ktypes.UID][]net.IP{},
 	}
 }
 
 func (sm *subnetManager) start() error {
 	for _, cn := range sm.sdnConfig.ClusterNetworks {
-		err := sm.subnetAllocator.AddNetworkRange(cn.CIDR.String(), uint32(cn.HostSubnetLength))
+		err := sm.subnetAllocator.AddNetworkRange(cn.CIDR, cn.HostSubnetLength)
 		if err != nil {
 			return err
 		}
@@ -65,8 +62,16 @@ func (sm *subnetManager) start() error {
 		return err
 	}
 	for _, sn := range subnets.Items {
-		if err := sm.subnetAllocator.MarkAllocatedNetwork(sn.Subnet); err != nil {
-			klog.Errorf("Error marking allocated subnet: %v", err)
+		phs, err := sm.sdnConfig.ParseHostSubnet(&sn)
+		if err != nil {
+			klog.Errorf("Could not parse HostSubnet: %v", err)
+			continue
+		}
+
+		for _, cidr := range phs.Subnets {
+			if err := sm.subnetAllocator.MarkAllocatedNetwork(cidr); err != nil {
+				klog.Errorf("Error marking allocated subnet: %v", err)
+			}
 		}
 	}
 
@@ -81,6 +86,18 @@ func (sm *subnetManager) start() error {
 	return nil
 }
 
+func nodeIPsEqual(oldIPs, newIPs []net.IP) bool {
+	if len(oldIPs) != len(newIPs) {
+		return false
+	}
+	for i := range oldIPs {
+		if !oldIPs[i].Equal(newIPs[i]) {
+			return false
+		}
+	}
+	return true
+}
+
 func (sm *subnetManager) watchNodes(nodeInformer cache.SharedIndexInformer) {
 	funcs := common.InformerFuncs(&corev1.Node{}, sm.handleAddOrUpdateNode, sm.handleDeleteNode)
 	nodeInformer.AddEventHandler(funcs)
@@ -89,13 +106,13 @@ func (sm *subnetManager) watchNodes(nodeInformer cache.SharedIndexInformer) {
 func (sm *subnetManager) handleAddOrUpdateNode(obj, _ interface{}, eventType watch.EventType) {
 	node := obj.(*corev1.Node)
 
-	nodeIP := getNodeInternalIP(node)
-	if len(nodeIP) == 0 {
+	nodeIPs, _ := utilnode.GetNodeHostIPs(node)
+	if nodeIPs == nil {
 		klog.Errorf("Node IP is not set for node %s, skipping %s event, node: %v", node.Name, eventType, node)
 		return
 	}
 
-	if oldNodeIP, ok := sm.hostSubnetNodeIPs[node.UID]; ok && (nodeIP == oldNodeIP) {
+	if oldNodeIPs, ok := sm.hostSubnetNodeIPs[node.UID]; ok && nodeIPsEqual(nodeIPs, oldNodeIPs) {
 		return
 	}
 	// Node status is frequently updated by kubelet, so log only if the above condition is not met
@@ -103,12 +120,12 @@ func (sm *subnetManager) handleAddOrUpdateNode(obj, _ interface{}, eventType wat
 
 	sm.clearInitialNodeNetworkUnavailableCondition(node)
 
-	err := sm.addNode(node.Name, string(node.UID), nodeIP, nil)
+	err := sm.addNode(node.Name, string(node.UID), nodeIPs, nil)
 	if err != nil {
-		klog.Errorf("Error creating subnet for node %s, ip %s: %v", node.Name, nodeIP, err)
+		klog.Errorf("Error creating subnet for node %s: %v", node.Name, err)
 		return
 	}
-	sm.hostSubnetNodeIPs[node.UID] = nodeIP
+	sm.hostSubnetNodeIPs[node.UID] = nodeIPs
 }
 
 func (sm *subnetManager) handleDeleteNode(obj interface{}) {
@@ -127,59 +144,66 @@ func (sm *subnetManager) handleDeleteNode(obj interface{}) {
 	}
 }
 
-// addNode takes the nodeName, a preferred nodeIP and the node's annotations
+// addNode takes the nodeName, nodeIPs and the node's annotations
 // Creates or updates a HostSubnet if needed
-// IPV6FIXME: dual-stack
-func (sm *subnetManager) addNode(nodeName string, nodeUID string, nodeIP string, hsAnnotations map[string]string) error {
-	// Validate node IP before proceeding
-	if err := sm.sdnConfig.ValidateNodeIP(nodeIP); err != nil {
-		return err
+func (sm *subnetManager) addNode(nodeName string, nodeUID string, nodeIPs []net.IP, hsAnnotations map[string]string) error {
+	// Validate node IPs before proceeding
+	for _, nodeIP := range nodeIPs {
+		if err := sm.sdnConfig.ValidateNodeIP(nodeIP.String()); err != nil {
+			return err
+		}
 	}
 
 	// Check if subnet needs to be created or updated
 	sub, err := sm.clients.OSDNClient.NetworkV1().HostSubnets().Get(context.TODO(), nodeName, metav1.GetOptions{})
 	if err == nil {
-		if err = common.ValidateHostSubnet(sub); err != nil {
+		phs, err := sm.sdnConfig.ParseHostSubnet(sub)
+		if err != nil {
 			klog.Errorf("Deleting invalid HostSubnet %q: %v", nodeName, err)
 			_ = sm.clients.OSDNClient.NetworkV1().HostSubnets().Delete(context.TODO(), nodeName, metav1.DeleteOptions{})
 			// fall through to create new subnet below
-		} else if sub.HostIP == nodeIP {
+		} else if nodeIPsEqual(phs.HostIPs, nodeIPs) {
 			return nil
 		} else {
-			// Node IP changed, update old subnet
-			sub.HostIP = nodeIP
+			// Node IPs changed, update old subnet
+			phs.HostIPs = nodeIPs
+			sm.sdnConfig.UnparseHostSubnet(phs, sub)
 			sub, err = sm.clients.OSDNClient.NetworkV1().HostSubnets().Update(context.TODO(), sub, metav1.UpdateOptions{})
 			if err != nil {
-				return fmt.Errorf("error updating subnet %s for node %s: %v", sub.Subnet, nodeName, err)
+				return fmt.Errorf("error updating subnet for node %s: %v", nodeName, err)
 			}
 			klog.Infof("Updated HostSubnet %s", common.HostSubnetToString(sub))
 			return nil
 		}
 	}
 
-	// Create new subnet
+	subnets, err := sm.subnetAllocator.AllocateNetworks()
+	if err != nil {
+		return fmt.Errorf("error allocating networks for node %s: %v", nodeName, err)
+	}
+
+	if hsAnnotations == nil {
+		hsAnnotations = make(map[string]string)
+	}
 	if len(nodeUID) != 0 {
-		if hsAnnotations == nil {
-			hsAnnotations = make(map[string]string)
-		}
 		hsAnnotations[osdnv1.NodeUIDAnnotation] = nodeUID
 	}
-	network, err := sm.subnetAllocator.AllocateNetwork()
-	if err != nil {
-		return fmt.Errorf("error allocating network for node %s: %v", nodeName, err)
-	}
-	// IPV6FIXME: dual-stack
+
+	// Create new subnet
 	sub = &osdnv1.HostSubnet{
 		TypeMeta:   metav1.TypeMeta{Kind: "HostSubnet"},
 		ObjectMeta: metav1.ObjectMeta{Name: nodeName, Annotations: hsAnnotations},
-		Host:       nodeName,
-		HostIP:     nodeIP,
-		Subnet:     network,
 	}
+	phs := &common.ParsedHostSubnet{
+		Host:    nodeName,
+		HostIPs: nodeIPs,
+		Subnets: subnets,
+	}
+	sm.sdnConfig.UnparseHostSubnet(phs, sub)
 	sub, err = sm.clients.OSDNClient.NetworkV1().HostSubnets().Create(context.TODO(), sub, metav1.CreateOptions{})
 	if err != nil {
-		if er := sm.subnetAllocator.ReleaseNetwork(network); er != nil {
-			klog.Errorf("Error releasing allocated subnet: %v", err)
+		for _, subnet := range subnets {
+			sm.subnetAllocator.ReleaseNetwork(subnet)
 		}
 		return fmt.Errorf("error allocating subnet for node %q: %v", nodeName, err)
 	}
@@ -249,18 +273,6 @@ func (sm *subnetManager) clearInitialNodeNetworkUnavailableCondition(origNode *c
 	}
 }
 
-// IPV6FIXME: dual-stack
-func getNodeInternalIP(node *corev1.Node) string {
-	var nodeIP string
-	for _, addr := range node.Status.Addresses {
-		if addr.Type == corev1.NodeInternalIP {
-			nodeIP = addr.Address
-			break
-		}
-	}
-	return nodeIP
-}
-
 func (sm *subnetManager) watchSubnets(hostSubnetInformer cache.SharedIndexInformer) {
 	funcs := common.InformerFuncs(&osdnv1.HostSubnet{}, sm.handleAddOrUpdateSubnet, sm.handleDeleteSubnet)
 	hostSubnetInformer.AddEventHandler(funcs)
@@ -270,7 +282,8 @@ func (sm *subnetManager) handleAddOrUpdateSubnet(obj, _ interface{}, eventType w
 	hs := obj.(*osdnv1.HostSubnet)
 	klog.V(5).Infof("Watch %s event for HostSubnet %q", eventType, hs.Name)
 
-	if err := common.ValidateHostSubnet(hs); err != nil {
+	phs, err := sm.sdnConfig.ParseHostSubnet(hs)
+	if err != nil {
 		klog.Errorf("Ignoring invalid HostSubnet %s: %v", common.HostSubnetToString(hs), err)
 		return
 	}
@@ -278,13 +291,15 @@ func (sm *subnetManager) handleAddOrUpdateSubnet(obj, _ interface{}, eventType w
 	if err := sm.reconcileHostSubnet(hs); err != nil {
 		klog.Errorf("Error reconciling HostSubnet: %v", err)
 	}
-	if err := sm.sdnConfig.ValidateNodeIP(hs.HostIP); err != nil {
-		// Don't error out; just warn so the error can be corrected with 'oc'
-		klog.Errorf("Failed to validate HostSubnet %s: %v", common.HostSubnetToString(hs), err)
+	for _, hostIP := range phs.HostIPs {
+		if err := sm.sdnConfig.ValidateNodeIP(hostIP.String()); err != nil {
+			// Don't error out; just warn so the error can be corrected with 'oc'
+			klog.Errorf("Failed to validate host IP %q in HostSubnet %s: %v", hostIP.String(), common.HostSubnetToString(hs), err)
+		}
 	}
 
 	if _, ok := hs.Annotations[osdnv1.AssignHostSubnetAnnotation]; ok {
-		if err := sm.handleAssignHostSubnetAnnotation(hs); err != nil {
+		if err := sm.handleAssignHostSubnetAnnotation(hs, phs); err != nil {
 			klog.Errorf("Error handling AssignHostSubnetAnnotation: %v", err)
 			return
 		}
@@ -299,8 +314,16 @@ func (sm *subnetManager) handleDeleteSubnet(obj interface{}) {
 		return
 	}
 
-	if err := sm.subnetAllocator.ReleaseNetwork(hs.Subnet); err != nil {
-		klog.Errorf("Error releasing allocated subnet: %v", err)
+	phs, err := sm.sdnConfig.ParseHostSubnet(hs)
+	if err != nil {
+		klog.Errorf("Could not parse HostSubnet: %v", err)
+		return
+	}
+
+	for _, cidr := range phs.Subnets {
+		if err := sm.subnetAllocator.ReleaseNetwork(cidr); err != nil {
+			klog.Errorf("Error releasing allocated subnet: %v", err)
+		}
 	}
 }
 
@@ -353,7 +376,7 @@ func (sm *subnetManager) reconcileHostSubnet(subnet *osdnv1.HostSubnet) error {
 
 // Handle F5 use case: Admin manually creates HostSubnet with 'AssignHostSubnetAnnotation'
 // to allocate a subnet with no real node in the cluster.
-func (sm *subnetManager) handleAssignHostSubnetAnnotation(hs *osdnv1.HostSubnet) error {
+func (sm *subnetManager) handleAssignHostSubnetAnnotation(hs *osdnv1.HostSubnet, phs *common.ParsedHostSubnet) error {
 	// Delete the annotated hostsubnet and create a new one with an assigned subnet
 	// We do not update (instead of delete+create) because the watchSubnets on the nodes
 	// will skip the event if it finds that the hostsubnet has the same host
@@ -375,7 +398,7 @@ func (sm *subnetManager) handleAssignHostSubnetAnnotation(hs *osdnv1.HostSubnet)
 		}
 	}
 
-	if err := sm.addNode(hs.Name, "", hs.HostIP, hsAnnotations); err != nil {
+	if err := sm.addNode(hs.Name, "", phs.HostIPs, hsAnnotations); err != nil {
 		return fmt.Errorf("error creating subnet: %s, %v", hs.Name, err)
 	}
 	klog.Infof("Created HostSubnet not backed by node: %s", common.HostSubnetToString(hs))

@@ -4,81 +4,125 @@ import (
 	"fmt"
 	"net"
 	"sync"
-)
 
-// IPV6FIXME: import dual-stackified version from ovn-kubernetes
+	utilnet "k8s.io/utils/net"
+)
 
 var ErrSubnetAllocatorFull = fmt.Errorf("no subnets available.")
 
 type SubnetAllocator struct {
 	sync.Mutex
 
-	ranges []*subnetAllocatorRange
+	v4ranges []*subnetAllocatorRange
+	v6ranges []*subnetAllocatorRange
 }
 
 func NewSubnetAllocator() *SubnetAllocator {
 	return &SubnetAllocator{}
 }
 
-func (sna *SubnetAllocator) AddNetworkRange(network string, hostBits uint32) error {
+func (sna *SubnetAllocator) AddNetworkRange(network *net.IPNet, hostSubnetLen int) error {
 	sna.Lock()
 	defer sna.Unlock()
 
-	_, ipnet, err := net.ParseCIDR(network)
+	snr, err := newSubnetAllocatorRange(network, hostSubnetLen)
 	if err != nil {
 		return err
 	}
-	snr, err := newSubnetAllocatorRange(ipnet, hostBits)
-	if err != nil {
-		return err
+
+	if utilnet.IsIPv6(snr.network.IP) {
+		sna.v6ranges = append(sna.v6ranges, snr)
+	} else {
+		sna.v4ranges = append(sna.v4ranges, snr)
 	}
-	sna.ranges = append(sna.ranges, snr)
 	return nil
 }
 
-func (sna *SubnetAllocator) MarkAllocatedNetwork(subnet string) error {
+func (sna *SubnetAllocator) MarkAllocatedNetwork(subnet *net.IPNet) error {
 	sna.Lock()
 	defer sna.Unlock()
 
-	_, ipnet, err := net.ParseCIDR(subnet)
-	if err != nil {
-		return err
-	}
-	for _, snr := range sna.ranges {
-		if snr.markAllocatedNetwork(ipnet) {
+	for _, snr := range sna.v4ranges {
+		if snr.markAllocatedNetwork(subnet) {
 			return nil
 		}
 	}
-	return fmt.Errorf("network %s does not belong to any known range", subnet)
+	for _, snr := range sna.v6ranges {
+		if snr.markAllocatedNetwork(subnet) {
+			return nil
+		}
+	}
+	return fmt.Errorf("network %s does not belong to any known range", subnet.String())
 }
 
-func (sna *SubnetAllocator) AllocateNetwork() (string, error) {
+// AllocateNetworks tries to allocate networks in all the ranges available
+func (sna *SubnetAllocator) AllocateNetworks() ([]*net.IPNet, error) {
+	var networks []*net.IPNet
+	var err error
+	ipv4network, err := sna.AllocateIPv4Network()
+	if err != nil {
+		return nil, err
+	}
+	if ipv4network != nil {
+		networks = append(networks, ipv4network)
+	}
+	ipv6network, err := sna.AllocateIPv6Network()
+	if err != nil {
+		return nil, err
+	}
+	if ipv6network != nil {
+		networks = append(networks, ipv6network)
+	}
+	return networks, nil
+}
+
+// AllocateIPv4Network tries to allocate an IPv4 network if there are ranges available
+func (sna *SubnetAllocator) AllocateIPv4Network() (*net.IPNet, error) {
 	sna.Lock()
 	defer sna.Unlock()
-
-	for _, snr := range sna.ranges {
+	if len(sna.v4ranges) == 0 {
+		return nil, nil
+	}
+	for _, snr := range sna.v4ranges {
 		sn := snr.allocateNetwork()
 		if sn != nil {
-			return sn.String(), nil
+			return sn, nil
 		}
 	}
-	return "", ErrSubnetAllocatorFull
+	return nil, ErrSubnetAllocatorFull
 }
 
-func (sna *SubnetAllocator) ReleaseNetwork(subnet string) error {
+// AllocateIPv6Network tries to allocate an IPv6 network if there are ranges available
+func (sna *SubnetAllocator) AllocateIPv6Network() (*net.IPNet, error) {
+	sna.Lock()
+	defer sna.Unlock()
+	if len(sna.v6ranges) == 0 {
+		return nil, nil
+	}
+	for _, snr := range sna.v6ranges {
+		sn := snr.allocateNetwork()
+		if sn != nil {
+			return sn, nil
+		}
+	}
+	return nil, ErrSubnetAllocatorFull
+}
+
+func (sna *SubnetAllocator) ReleaseNetwork(subnet *net.IPNet) error {
 	sna.Lock()
 	defer sna.Unlock()
 
-	_, ipnet, err := net.ParseCIDR(subnet)
-	if err != nil {
-		return err
-	}
-	for _, snr := range sna.ranges {
-		if snr.releaseNetwork(ipnet) {
+	for _, snr := range sna.v4ranges {
+		if snr.releaseNetwork(subnet) {
 			return nil
 		}
 	}
-	return fmt.Errorf("network %s does not belong to any known range", subnet)
+	for _, snr := range sna.v6ranges {
+		if snr.releaseNetwork(subnet) {
+			return nil
+		}
+	}
+	return fmt.Errorf("network %s does not belong to any known range", subnet.String())
 }
 
 // subnetAllocatorRange handles allocating subnets out of a single CIDR
@@ -96,14 +140,15 @@ type subnetAllocatorRange struct {
 	rightMask  uint32
 }
 
-func newSubnetAllocatorRange(network *net.IPNet, hostBits uint32) (*subnetAllocatorRange, error) {
-	netMaskSize, addrLen := network.Mask.Size()
-	if hostBits == 0 {
+func newSubnetAllocatorRange(network *net.IPNet, hostSubnetLen int) (*subnetAllocatorRange, error) {
+	clusterCIDRLen, addrLen := network.Mask.Size()
+	if hostSubnetLen >= addrLen {
 		return nil, fmt.Errorf("host capacity cannot be zero.")
-	} else if hostBits > uint32(addrLen-netMaskSize) {
+	} else if hostSubnetLen < clusterCIDRLen {
 		return nil, fmt.Errorf("subnet capacity cannot be larger than number of networks available.")
 	}
-	subnetBits := uint32(addrLen-netMaskSize) - hostBits
+	hostBits := uint32(addrLen - hostSubnetLen)
+	subnetBits := uint32(hostSubnetLen - clusterCIDRLen)
 
 	snr := &subnetAllocatorRange{
 		network:    network,

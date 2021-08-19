@@ -277,6 +277,142 @@ func (sdnConfig *SDNConfig) VXLANOverhead() int {
 	}
 }
 
+// osdnv1.HostSubnet is forced to be IPv4-only by its CRD. So for dual-stack, we
+// use annotations to store the IPv6 HostIP and Subnet. For single-stack IPv6, we
+// likewise use the annotations, and leave "0.0.0.0" and "0.0.0.0/0" for the IPv4
+// HostIP/Subnet.
+//
+// IPV6FIXME: We should drop HostSubnet in favor of using annotations on Node
+// like ovn-kubernetes does.
+
+const (
+	HostSubnetIPv6HostIPAnnotation = "hostsubnet.network.openshift.io/ipv6-hostip"
+	HostSubnetIPv6SubnetAnnotation = "hostsubnet.network.openshift.io/ipv6-subnet"
+)
+
+type ParsedHostSubnet struct {
+	Host    string
+	HostIPs []net.IP
+	Subnets []*net.IPNet
+}
+
+// ParseHostSubnet validates and parses hs, ensuring that it is compatible with the
+// sdnConfig's IP families.
+func (sdnConfig *SDNConfig) ParseHostSubnet(hs *osdnv1.HostSubnet) (*ParsedHostSubnet, error) {
+	phs := &ParsedHostSubnet{
+		Host: hs.Host,
+	}
+
+	var err error
+	var v4ip, v6ip net.IP
+	var v4subnet, v6subnet *net.IPNet
+
+	if hs.HostIP == "0.0.0.0" {
+		if sdnConfig.HasIPv4 {
+			return nil, fmt.Errorf("subnet has no IPv4 HostIP value")
+		}
+	} else {
+		v4ip, err = sdnConfig.ParseIP(hs.HostIP, false)
+		if err != nil {
+			return nil, fmt.Errorf("bad HostIP value %q: %v", hs.HostIP, err)
+		}
+	}
+
+	if annotation, exists := hs.Annotations[HostSubnetIPv6HostIPAnnotation]; exists {
+		v6ip, err = sdnConfig.ParseIP(annotation, false)
+		if err != nil {
+			return nil, fmt.Errorf("bad IPv6 HostIP value %q: %v", annotation, err)
+		}
+	} else if sdnConfig.HasIPv6 {
+		return nil, fmt.Errorf("subnet has no IPv6 HostIP value")
+	}
+
+	if sdnConfig.PrimaryIPFamily == corev1.IPv4Protocol {
+		phs.HostIPs = append(phs.HostIPs, v4ip)
+		if v6ip != nil {
+			phs.HostIPs = append(phs.HostIPs, v6ip)
+		}
+	} else {
+		phs.HostIPs = append(phs.HostIPs, v6ip)
+		if v4ip != nil {
+			phs.HostIPs = append(phs.HostIPs, v4ip)
+		}
+	}
+
+	if hs.Subnet == "" {
+		// check if annotation exists, then let the Subnet field be empty
+		if _, ok := hs.Annotations[osdnv1.AssignHostSubnetAnnotation]; !ok {
+			return nil, fmt.Errorf("missing Subnet value")
+		}
+		return phs, nil
+	}
+
+	if hs.Subnet == "0.0.0.0/0" {
+		if sdnConfig.HasIPv4 {
+			return nil, fmt.Errorf("subnet has no IPv4 Subnet value")
+		}
+	} else {
+		v4subnet, err = sdnConfig.ParseCIDR(hs.Subnet, false)
+		if err != nil {
+			return nil, fmt.Errorf("bad Subnet value %q: %v", hs.Subnet, err)
+		}
+	}
+
+	if annotation, exists := hs.Annotations[HostSubnetIPv6SubnetAnnotation]; exists {
+		v6subnet, err = sdnConfig.ParseCIDR(annotation, false)
+		if err != nil {
+			return nil, fmt.Errorf("bad IPv6 Subnet value %q: %v", annotation, err)
+		}
+	} else if sdnConfig.HasIPv6 {
+		return nil, fmt.Errorf("subnet has no IPv6 Subnet value")
+	}
+
+	if sdnConfig.PrimaryIPFamily == corev1.IPv4Protocol {
+		phs.Subnets = append(phs.Subnets, v4subnet)
+		if v6subnet != nil {
+			phs.Subnets = append(phs.Subnets, v6subnet)
+		}
+	} else {
+		phs.Subnets = append(phs.Subnets, v6subnet)
+		if v4subnet != nil {
+			phs.Subnets = append(phs.Subnets, v4subnet)
+		}
+	}
+
+	return phs, nil
+}
+
+// UnparseHostSubnet copies the data from a ParsedHostSubnet back into an
+// osdnv1.HostSubnet so it can be updated. Assumes that phs is valid for sdnConfig.
+func (sdnConfig *SDNConfig) UnparseHostSubnet(phs *ParsedHostSubnet, hs *osdnv1.HostSubnet) {
+	if hs.Annotations == nil {
+		hs.Annotations = map[string]string{}
+	} else {
+		delete(hs.Annotations, HostSubnetIPv6HostIPAnnotation)
+		delete(hs.Annotations, HostSubnetIPv6SubnetAnnotation)
+	}
+
+	for _, ip := range phs.HostIPs {
+		if utilnet.IsIPv4(ip) {
+			hs.HostIP = ip.String()
+		} else {
+			hs.Annotations[HostSubnetIPv6HostIPAnnotation] = ip.String()
+		}
+	}
+	for _, subnet := range phs.Subnets {
+		if utilnet.IsIPv4CIDR(subnet) {
+			hs.Subnet = subnet.String()
+		} else {
+			hs.Annotations[HostSubnetIPv6SubnetAnnotation] = subnet.String()
+		}
+	}
+
+	if !sdnConfig.HasIPv4 {
+		hs.HostIP = "0.0.0.0"
+		hs.Subnet = "0.0.0.0/0"
+	}
+}
+
 // NewTestSDNConfig creates a new basic SDNConfig for unit tests. By default it returns an
 // IPv4-only config, but you can pass one or two corev1.IPFamily values to override that.
 func NewTestSDNConfig(families ...corev1.IPFamily) *SDNConfig {

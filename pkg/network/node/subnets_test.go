@@ -6,6 +6,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ktypes "k8s.io/apimachinery/pkg/types"
+	utilnet "k8s.io/utils/net"
 
 	osdnv1 "github.com/openshift/api/network/v1"
 	"github.com/openshift/sdn/pkg/network/common"
@@ -43,13 +44,22 @@ func setupHostSubnetWatcher(t *testing.T) (*hostSubnetWatcher, []string) {
 }
 
 func makeHostSubnet(name, hostIP, subnet string) *osdnv1.HostSubnet {
+	annotations := map[string]string{}
+	if utilnet.IsIPv6String(hostIP) {
+		annotations[common.HostSubnetIPv6HostIPAnnotation] = hostIP
+		annotations[common.HostSubnetIPv6SubnetAnnotation] = subnet
+		hostIP = "0.0.0.0"
+		subnet = "0.0.0.0/0"
+	}
+
 	return &osdnv1.HostSubnet{
 		TypeMeta: metav1.TypeMeta{
 			Kind: "HostSubnet",
 		},
 		ObjectMeta: metav1.ObjectMeta{
-			Name: name,
-			UID:  ktypes.UID(name + "-uid"),
+			Name:        name,
+			UID:         ktypes.UID(name + "-uid"),
+			Annotations: annotations,
 		},
 		Host:   name,
 		HostIP: hostIP,

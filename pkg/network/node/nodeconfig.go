@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"reflect"
 	"time"
 
 	"k8s.io/klog/v2"
@@ -15,7 +16,6 @@ import (
 	kubeproxyconfig "k8s.io/kubernetes/pkg/proxy/apis/config"
 	utilnet "k8s.io/utils/net"
 
-	osdnv1 "github.com/openshift/api/network/v1"
 	"github.com/openshift/library-go/pkg/network/networkutils"
 	"github.com/openshift/sdn/pkg/network/common"
 )
@@ -160,7 +160,7 @@ func NewTestNodeConfig(sdnConfig *common.SDNConfig) *NodeConfig {
 }
 
 func (nodeConfig *NodeConfig) getLocalSubnet(clients *common.SDNClients) error {
-	var subnet *osdnv1.HostSubnet
+	var phs *common.ParsedHostSubnet
 
 	// The HostSubnet should already have been created by the SDN master in response
 	// to the kubelet creating its Node. Sometimes this takes unexpectedly long
@@ -173,17 +173,21 @@ func (nodeConfig *NodeConfig) getLocalSubnet(clients *common.SDNClients) error {
 		Steps:    11,
 	}
 	err := utilwait.ExponentialBackoff(backoff, func() (bool, error) {
-		var err error
-		subnet, err = clients.OSDNClient.NetworkV1().HostSubnets().Get(context.TODO(), nodeConfig.Name, metav1.GetOptions{})
+		subnet, err := clients.OSDNClient.NetworkV1().HostSubnets().Get(context.TODO(), nodeConfig.Name, metav1.GetOptions{})
 		if err == nil {
-			if err = common.ValidateHostSubnet(subnet); err != nil {
+			phs, err = nodeConfig.sdnConfig.ParseHostSubnet(subnet)
+			if err != nil {
 				return false, err
-			// IPV6FIXME: validate both IPs
-			} else if subnet.HostIP == nodeConfig.IPStrings[0] {
+			}
+			hostIPs := make([]string, len(phs.HostIPs))
+			for i, ip := range phs.HostIPs {
+				hostIPs[i] = ip.String()
+			}
+			if reflect.DeepEqual(hostIPs, nodeConfig.IPStrings) {
 				return true, nil
 			} else {
-				klog.Warningf("HostIP %q for local subnet does not match with nodeIP %q, "+
-					"Waiting for master to update subnet for node %q ...", subnet.HostIP, nodeConfig.IPs[0], nodeConfig.Name)
+				klog.Warningf("HostIPs %v for local subnet do not match with nodeIPs %v, "+
+					"Waiting for master to update subnet for node %q ...", hostIPs, nodeConfig.IPs, nodeConfig.Name)
 				return false, nil
 			}
 		} else if kapierrors.IsNotFound(err) {
@@ -197,11 +201,7 @@ func (nodeConfig *NodeConfig) getLocalSubnet(clients *common.SDNClients) error {
 		return fmt.Errorf("failed to get subnet for this host: %s, error: %v", nodeConfig.Name, err)
 	}
 
-	cidr, err := nodeConfig.sdnConfig.ParseCIDR(subnet.Subnet, true)
-	if err != nil {
-		return fmt.Errorf("illegal subnet for host %q: %v", nodeConfig.Name, err)
-	}
-	return nodeConfig.setLocalSubnets([]*net.IPNet{cidr})
+	return nodeConfig.setLocalSubnets(phs.Subnets)
 }
 
 func (nodeConfig *NodeConfig) setLocalSubnets(subnets []*net.IPNet) error {

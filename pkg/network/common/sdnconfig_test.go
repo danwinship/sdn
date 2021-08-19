@@ -2,12 +2,15 @@ package common
 
 import (
 	"net"
+	"reflect"
 	"strings"
 	"testing"
 
 	osdnv1 "github.com/openshift/api/network/v1"
 	operv1 "github.com/openshift/api/operator/v1"
+
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	kerrors "k8s.io/apimachinery/pkg/util/errors"
 )
 
@@ -346,4 +349,153 @@ func TestParseSDNConfig(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestParseHostSubnet(t *testing.T) {
+	v4Config := NewTestSDNConfig(corev1.IPv4Protocol)
+	v6Config := NewTestSDNConfig(corev1.IPv6Protocol)
+	dsConfig := NewTestSDNConfig(corev1.IPv4Protocol, corev1.IPv6Protocol)
+
+	tests := []struct {
+		name string
+		cfg  *SDNConfig
+		hs   osdnv1.HostSubnet
+		phs  ParsedHostSubnet
+
+		err string
+	}{
+		{
+			name: "valid",
+			cfg: v4Config,
+			hs: osdnv1.HostSubnet{
+				HostIP: "10.0.0.1",
+				Subnet: "10.128.0.0/23",
+			},
+			phs: ParsedHostSubnet{
+				HostIPs: []net.IP{
+					net.ParseIP("10.0.0.1"),
+				},
+				Subnets: []*net.IPNet{
+					mustParseCIDR("10.128.0.0/23"),
+				},
+			},
+		},
+		{
+			name: "bad HostIP",
+			cfg: v4Config,
+			hs: osdnv1.HostSubnet{
+				HostIP: "10.0.0.1/24",
+				Subnet: "10.128.0.0/23",
+			},
+			err: "bad HostIP",
+		},
+		{
+			name: "IPv6 IP in single-stack IPv4",
+			cfg: v4Config,
+			hs: osdnv1.HostSubnet{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						HostSubnetIPv6HostIPAnnotation: "fd00::1234",
+					},
+				},
+				HostIP: "10.0.0.1",
+				Subnet: "10.128.0.0/23",
+			},
+			err: "wrong family",
+		},
+		{
+			name: "valid IPv6",
+			cfg: v6Config,
+			hs: osdnv1.HostSubnet{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						HostSubnetIPv6HostIPAnnotation: "fd00::1234",
+						HostSubnetIPv6SubnetAnnotation: "fd01::/64",
+					},
+				},
+				HostIP: "0.0.0.0",
+				Subnet: "0.0.0.0/0",
+			},
+			phs: ParsedHostSubnet{
+				HostIPs: []net.IP{
+					net.ParseIP("fd00::1234"),
+				},
+				Subnets: []*net.IPNet{
+					mustParseCIDR("fd01::/64"),
+				},
+			},
+		},
+		{
+			name: "valid dual-stack",
+			cfg: dsConfig,
+			hs: osdnv1.HostSubnet{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{
+						HostSubnetIPv6HostIPAnnotation: "fd00::1234",
+						HostSubnetIPv6SubnetAnnotation: "fd01::/64",
+					},
+				},
+				HostIP: "10.0.0.1",
+				Subnet: "10.128.0.0/23",
+			},
+			phs: ParsedHostSubnet{
+				HostIPs: []net.IP{
+					net.ParseIP("10.0.0.1"),
+					net.ParseIP("fd00::1234"),
+				},
+				Subnets: []*net.IPNet{
+					mustParseCIDR("10.128.0.0/23"),
+					mustParseCIDR("fd01::/64"),
+				},
+			},
+		},
+		{
+			name: "bad Subnet",
+			cfg: v4Config,
+			hs: osdnv1.HostSubnet{
+				HostIP: "10.0.0.1",
+				Subnet: "10.128.0.0",
+			},
+			err: "bad Subnet",
+		},
+	}
+	for _, test := range tests {
+		phs, err := test.cfg.ParseHostSubnet(&test.hs)
+		if err == nil {
+			if test.err != "" {
+				t.Fatalf("test %q unexpectedly did not get an error", test.name)
+			}
+			if !reflect.DeepEqual(&test.phs, phs) {
+				t.Fatalf("test %q expected %s, got %s", test.name, &test.phs, phs)
+			}
+		} else {
+			if test.err != "" && !strings.Contains(err.Error(), test.err) {
+				t.Fatalf("test %q: error did not match %q: %v", test.name, test.err, err)
+			} else if test.err == "" {
+				t.Fatalf("test %q: error did not match %q: %v", test.name, test.err, err)
+			}
+		}
+	}
+}
+
+func (phs *ParsedHostSubnet) String() string {
+	b := strings.Builder{}
+	b.WriteString("{Host:")
+	b.WriteString(phs.Host)
+	b.WriteString(", HostIPs:[")
+	for i, ip := range phs.HostIPs {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString(ip.String())
+	}
+	b.WriteString("], Subnets:[")
+	for i, cidr := range phs.Subnets {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString(cidr.String())
+	}
+	b.WriteString("]}")
+	return b.String()
 }

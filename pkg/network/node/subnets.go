@@ -2,6 +2,7 @@ package node
 
 import (
 	"fmt"
+	"net"
 
 	"k8s.io/klog/v2"
 
@@ -16,20 +17,19 @@ import (
 
 type hostSubnetWatcher struct {
 	oc        *ovsController
-	// IPV6FIXME: dual local IPs
-	localIP   string
+	localIPs  []net.IP
 	sdnConfig *common.SDNConfig
 
-	hostSubnetMap map[ktypes.UID]*osdnv1.HostSubnet
+	hostSubnetMap map[ktypes.UID]*common.ParsedHostSubnet
 }
 
 func newHostSubnetWatcher(oc *ovsController, sdnConfig *common.SDNConfig, nodeConfig *NodeConfig) *hostSubnetWatcher {
 	return &hostSubnetWatcher{
-		oc:        oc,
-		localIP:   nodeConfig.IPStrings[0],
-		sdnConfig: sdnConfig,
+		oc:         oc,
+		localIPs:   nodeConfig.IPs,
+		sdnConfig:  sdnConfig,
 
-		hostSubnetMap: make(map[ktypes.UID]*osdnv1.HostSubnet),
+		hostSubnetMap: make(map[ktypes.UID]*common.ParsedHostSubnet),
 	}
 }
 
@@ -61,26 +61,41 @@ func (hsw *hostSubnetWatcher) handleDeleteHostSubnet(obj interface{}) {
 	}
 }
 
+func ipsEqual(a, b []net.IP) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if !a[i].Equal(b[i]) {
+			return false
+		}
+	}
+	return true
+}
+
 func (hsw *hostSubnetWatcher) updateHostSubnet(hs *osdnv1.HostSubnet) error {
-	if hs.HostIP == hsw.localIP {
+	phs, err := hsw.sdnConfig.ParseHostSubnet(hs)
+	if err != nil {
+		return fmt.Errorf("ignoring invalid subnet for node %s: %v", hs.Host, err)
+	}
+
+	if phs.HostIPs[0].Equal(hsw.localIPs[0]) {
 		return nil
 	}
 	oldSubnet, exists := hsw.hostSubnetMap[hs.UID]
 	if exists {
-		// IPV6FIXME: dual host IPs
-		if oldSubnet.HostIP == hs.HostIP {
+		if ipsEqual(oldSubnet.HostIPs, phs.HostIPs) {
 			return nil
 		} else {
 			// Delete old subnet rules (ignore errors)
-			hsw.oc.DeleteHostSubnetRules(oldSubnet)
+			hsw.oc.DeleteHostSubnetRules(hs)
 		}
 	}
-	// IPV6FIXME: dual host IPs
-	if err := hsw.sdnConfig.ValidateNodeIP(hs.HostIP); err != nil {
-		return fmt.Errorf("ignoring invalid subnet for node %s: %v", hs.HostIP, err)
+	if err := hsw.sdnConfig.ValidateNodeIP(phs.HostIPs[0].String()); err != nil {
+		return fmt.Errorf("ignoring invalid subnet for node %s: %v", phs.HostIPs[0].String(), err)
 	}
 
-	hsw.hostSubnetMap[hs.UID] = hs
+	hsw.hostSubnetMap[hs.UID] = phs
 
 	errList := []error{}
 	if err := hsw.oc.AddHostSubnetRules(hs); err != nil {
@@ -95,7 +110,12 @@ func (hsw *hostSubnetWatcher) updateHostSubnet(hs *osdnv1.HostSubnet) error {
 }
 
 func (hsw *hostSubnetWatcher) deleteHostSubnet(hs *osdnv1.HostSubnet) error {
-	if hs.HostIP == hsw.localIP {
+	phs, err := hsw.sdnConfig.ParseHostSubnet(hs)
+	if err != nil {
+		return fmt.Errorf("ignoring invalid subnet for node %s: %v", hs.Host, err)
+	}
+
+	if phs.HostIPs[0].Equal(hsw.localIPs[0]) {
 		return nil
 	}
 	if _, exists := hsw.hostSubnetMap[hs.UID]; !exists {
@@ -117,10 +137,8 @@ func (hsw *hostSubnetWatcher) deleteHostSubnet(hs *osdnv1.HostSubnet) error {
 
 func (hsw *hostSubnetWatcher) updateVXLANMulticastRules() error {
 	remoteIPs := make([]string, 0, len(hsw.hostSubnetMap))
-	for _, subnet := range hsw.hostSubnetMap {
-		if subnet.HostIP != hsw.localIP {
-			remoteIPs = append(remoteIPs, subnet.HostIP)
-		}
+	for _, phs := range hsw.hostSubnetMap {
+		remoteIPs = append(remoteIPs, phs.HostIPs[0].String())
 	}
 	return hsw.oc.UpdateVXLANMulticastFlows(remoteIPs)
 }

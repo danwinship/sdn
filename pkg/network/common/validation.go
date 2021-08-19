@@ -35,7 +35,8 @@ func validateIPv4(ip string) (net.IP, error) {
 }
 
 // ValidateHostSubnet checks if the system-maintained fields of hostsubnet are valid.
-// IPV6FIXME: osdnv1.HostSubnet is validated to be IPv4-only by its CRD
+// Note that these are required to be IPv4-only by the CRD, and that ValidateHostSubnet
+// does not validate the IPv6-specific annotations.
 func ValidateHostSubnet(hs *osdnv1.HostSubnet) error {
 	allErrs := validation.ValidateObjectMeta(&hs.ObjectMeta, false, path.ValidatePathSegmentName, field.NewPath("metadata"))
 
@@ -66,8 +67,8 @@ func ValidateHostSubnet(hs *osdnv1.HostSubnet) error {
 	}
 }
 
-// ValidateHostSubnetEgress checks if the user-maintained fields of hostsubnet are valid.
-// IPV6FIXME: osdnv1.HostSubnet is validated to be IPv4-only by its CRD
+// ValidateHostSubnetEgress checks if the egress-related fields of hostsubnet are valid.
+// Note that these are required to be IPv4-only by the CRD.
 func ValidateHostSubnetEgress(hs *osdnv1.HostSubnet) error {
 	allErrs := validation.ValidateObjectMeta(&hs.ObjectMeta, false, path.ValidatePathSegmentName, field.NewPath("metadata"))
 
