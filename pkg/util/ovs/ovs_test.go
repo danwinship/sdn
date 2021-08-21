@@ -109,6 +109,7 @@ func TestTransactionSuccess(t *testing.T) {
 	ensureTestResults(t, fexec)
 
 	// Test Failed transaction
+	ovsBackoff.Steps = 3
 	for i := 0; i < ovsBackoff.Steps; i++ {
 		fakeCmd = addTestResult(t, fexec, "ovs-ofctl -O OpenFlow13 bundle br0 -", "", fmt.Errorf("Something bad happened"))
 	}
