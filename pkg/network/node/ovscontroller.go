@@ -55,23 +55,34 @@ import (
 
 // Overall organization:
 
-// Table 0: preliminaries, and initial dispatch based on in_port
-//   acceptable incoming VXLAN traffic (in_port=1) goes to table 10 for validation
+// Tables 0-1: VXLAN ingress filtering
+//   Table 0:
+//     vxlan0 traffic to table 1
+//     drop other traffic to VXLAN port
+//     all else to table 2
+//   Table 1
+//     VXLAN from known node IP to table 2
+//     all else dropped
+//     (only looks at VXLAN metadata, so same rules for ARP and IP)
+//     per-node rules are filled in by AddHostSubnetRules()
+
+// Table 2: conntrack setup, ARP-vs-IP dispatch
+//   ARP traffic is sent to table 200
+//   IP traffic is conntracked and sent to table 10
+//   unmatched traffic is dropped
+
+// Table 10: IP preliminaries, and initial dispatch based on in_port
+//   acceptable incoming VXLAN traffic (in_port=1) goes to table 30 (general routing)
 //   outbound service traffic returning from iptables goes to table 25
 //   acceptable incoming tun0 traffic (in_port=2) goes to table 30 (general routing)
 //   traffic from any other port is assumed to be from a container and goes to table 20
 
-// Table 10: VXLAN ingress filtering
-//   per-remote-node rules are filled in by AddHostSubnetRules()
-//   any VXLAN traffic from a non-node IP is dropped
-
-// Table 20: from OpenShift container
+// Table 20: IP from OpenShift container
 //   mostly filled in by setupPodFlows
 //   validates IP/MAC, assigns VNID to reg0
 //   accepted traffic goes to table 21
-//   also has special "drop outbound VXLAN traffic" security rule
 
-// Table 21: from OpenShift container, part 2
+// Table 21: IP from OpenShift container, part 2
 //   NetworkPolicy mode uses this for connection tracking
 //   all traffic then goes to table 30
 
@@ -81,24 +92,13 @@ import (
 //     has been sent through iptables and now returned into the pod network with a rewritten
 //     destination IP. Reloads the VNID to reg0 then passes to table 30
 
-// Table 30: general routing
-//   ARP/IP to local subnet gateway IP is output on tun0
-//   ARP to local containers goes to table 40
-//   ARP to remote containers goes to table 50
+// Table 30: IP general routing
+//   IP to local subnet gateway IP is output on tun0
 //   IP to service IPs goes to table 60
 //   IP to local containers goes to table 70
 //   multicast from local pods goes to table 110
 //   multicast from the VXLAN goes to table 120
 //   remaining IP (to external) goes to table 99
-//   remaining ARP is dropped
-
-// Table 40: ARP to local container
-//   filled in by setupPodFlows
-//   traffic is output to container port
-
-// Table 50: ARP to remote container
-//   filled in by AddHostSubnetRules()
-//   traffic is output to vxlan0 with correct tun_dst
 
 // Table 60: Multitenant IP to service from pod
 //   filled in by AddServiceRules()
@@ -119,32 +119,66 @@ import (
 //   filled in by AddHostSubnetRules()
 //   traffic is output to vxlan0 with correct tun_dst
 
-// Table 99: cluster egress preliminaries
+// Table 99: IP cluster egress preliminaries
 //   legacy DNS exception on cluster egress traffic
 //   other traffic goes to table 100
 
-// Table 100: egress network policy dispatch
+// Table 100: IP egress network policy dispatch
 //   edited by UpdateEgressNetworkPolicy()
 //   rules implementing EgressNetworkPolicies
 //   unmatched/allowed traffic is goes to table 101
 
-// Table 101: egress routing
+// Table 101: IP egress routing
 //   edited by SetNamespaceEgress*()
 //   traffic destined for an egress IP is forwarded to the correct node
 //   other traffic is output to tun0
 
-// Table 110: outbound multicast filtering
+// Table 110: IP outbound multicast filtering
 //   updated by UpdateLocalMulticastFlows()
 //   per-Namespace rules for namespaces that accept multicast, forwarding to table 111
 //   unmatched traffic is dropped
 
-// Table 111: multicast delivery from local pods to the VXLAN
+// Table 111: IP multicast delivery from local pods to the VXLAN
 //   only one rule, updated by UpdateVXLANMulticastRule
 //   send to every other node then goes to table 120
 
-// Table 120: multicast delivery to local pods
+// Table 120: IP multicast delivery to local pods
 //   updated by UpdateLocalMulticastFlows()
 //   per-Namespace rules to output multicast packets to each pod port in that namespace
+
+// Table 200: ARP initial dispatch
+//   acceptable incoming VXLAN traffic (in_port=1) goes to table 230 (general routing)
+//   acceptable incoming tun0 traffic (in_port=2) goes to table 230 (general routing)
+//   traffic from any other port is assumed to be from a container and goes to table 220
+
+//   ARP from vxlan0 is allowed if from clusterNetwork and to localSubnet
+//     allowed = send to 20, else drop
+//   ARP from tun0 is allowed if from the tun0 IP and to clusterNetwork
+//     allowed = send to 20, else drop
+//   ARP from pod ports is allowed if arp_spa and arp_sha are correct
+//     allowed = load VNID and send to 20, else drop
+//     per-pod rules filled in by setupPodFlows()
+//   unmatched traffic is dropped
+
+// Table 220: ARP from OpenShift container
+//   mostly filled in by setupPodFlows
+//   validates IP/MAC, forwards to table 230
+
+// Table 230: ARP general routing
+//   ARP to tun0 IP is sent out tun0
+//   ARP to localSubnet is sent to table 240
+//   ARP to clusterNetwork is sent to table 250
+//   unmatched traffic is dropped
+
+// Table 240: ARP to local pod
+//   ARP to pod IP output to pod port
+//     per-pod rules filled in by setupPodFlows()
+//   unmatched traffic is dropped
+
+// Table 250: ARP to remote pod
+//   ARP to pod IP output to VXLAN port with correct tun_dst
+//     per-node rules filled in by AddHostSubnetRules()
+//   unmatched traffic is dropped
 
 type ovsController struct {
 	ovs        ovs.Interface
@@ -160,7 +194,7 @@ const (
 	Vxlan0 = "vxlan0"
 
 	// rule versioning; increment each time flow rules change
-	ruleVersion = 12
+	ruleVersion = 13
 
 	ruleVersionTable = 253
 )
@@ -228,44 +262,47 @@ func (oc *ovsController) SetupOVS() error {
 
 	// IPV6FIXME: ipv4-vs-ipv6 / dual-stack
 
-	// Table 0: initial dispatch based on in_port
+	// Table 0: Initial high-level filtering
+	// vxlan to table 1 for tun_src filtering
+	otx.AddFlow("table=0, priority=200, in_port=1, actions=goto_table:1")
+	// tun0/pod traffic is accepted except for spoofed VXLAN
+	otx.AddFlow("table=0, priority=100, udp, udp_dst=%d, actions=drop", oc.sdnConfig.VXLANPort)
+	otx.AddFlow("table=0, priority=0, actions=goto_table:2")
+
+	// Table 1: VXLAN ingress filtering; filled in by AddHostSubnetRules()
+	// eg, "table=1, priority=100, tun_src=${remote_node_ip}, actions=goto_table:2"
+	otx.AddFlow("table=1, priority=0, actions=drop")
+
+	// Table 2: conntrack setup, ARP-vs-IP dispatch
+	otx.AddFlow("table=2, arp, actions=goto_table:200")
 	if oc.nodeConfig.UseConnTrack {
-		otx.AddFlow("table=0, priority=1000, ip, ct_state=-trk, actions=ct(table=0)")
+		otx.AddFlow("table=2, priority=200, ip, ct_state=-trk, actions=ct(table=10)")
 	}
+	otx.AddFlow("table=2, priority=100, ip, actions=goto_table:10")
+	otx.AddFlow("table=2, priority=0, actions=drop")
+
+	// Table 10: IP preliminaries, and initial dispatch based on in_port
 	// vxlan0
 	for _, clusterCIDR := range clusterNetworkCIDR {
-		otx.AddFlow("table=0, priority=200, in_port=1, arp, nw_src=%s, nw_dst=%s, actions=move:NXM_NX_TUN_ID[0..31]->NXM_NX_REG0[],goto_table:10", clusterCIDR, localSubnetCIDR)
-		otx.AddFlow("table=0, priority=200, in_port=1, ip, nw_src=%s, actions=move:NXM_NX_TUN_ID[0..31]->NXM_NX_REG0[],goto_table:10", clusterCIDR)
-		otx.AddFlow("table=0, priority=200, in_port=1, ip, nw_dst=%s, actions=move:NXM_NX_TUN_ID[0..31]->NXM_NX_REG0[],goto_table:10", clusterCIDR)
+		otx.AddFlow("table=10, priority=200, in_port=1, ip, nw_src=%s, actions=move:NXM_NX_TUN_ID[0..31]->NXM_NX_REG0[],goto_table:10", clusterCIDR)
+		otx.AddFlow("table=10, priority=200, in_port=1, ip, nw_dst=%s, actions=move:NXM_NX_TUN_ID[0..31]->NXM_NX_REG0[],goto_table:10", clusterCIDR)
 	}
-	otx.AddFlow("table=0, priority=150, in_port=1, actions=drop")
+	otx.AddFlow("table=10, priority=150, in_port=1, actions=drop")
 	// tun0
 	if oc.nodeConfig.UseConnTrack {
-		otx.AddFlow("table=0, priority=400, in_port=2, ip, nw_src=%s, actions=goto_table:30", localSubnetGateway)
+		otx.AddFlow("table=10, priority=400, in_port=2, ip, nw_src=%s, actions=goto_table:30", localSubnetGateway)
 		for _, clusterCIDR := range clusterNetworkCIDR {
-			otx.AddFlow("table=0, priority=300, in_port=2, ip, nw_src=%s, nw_dst=%s, actions=goto_table:25", localSubnetCIDR, clusterCIDR)
+			otx.AddFlow("table=10, priority=300, in_port=2, ip, nw_src=%s, nw_dst=%s, actions=goto_table:25", localSubnetCIDR, clusterCIDR)
 		}
 	}
-	otx.AddFlow("table=0, priority=250, in_port=2, ip, nw_dst=224.0.0.0/4, actions=drop")
-	for _, clusterCIDR := range clusterNetworkCIDR {
-		otx.AddFlow("table=0, priority=200, in_port=2, arp, nw_src=%s, nw_dst=%s, actions=goto_table:30", localSubnetGateway, clusterCIDR)
-	}
-	otx.AddFlow("table=0, priority=200, in_port=2, ip, actions=goto_table:30")
-	otx.AddFlow("table=0, priority=150, in_port=2, actions=drop")
+	otx.AddFlow("table=10, priority=250, in_port=2, ip, nw_dst=224.0.0.0/4, actions=drop")
+	otx.AddFlow("table=10, priority=200, in_port=2, actions=goto_table:30")
 	// else, from a container
-	otx.AddFlow("table=0, priority=100, arp, actions=goto_table:20")
-	otx.AddFlow("table=0, priority=100, ip, actions=goto_table:20")
-	otx.AddFlow("table=0, priority=0, actions=drop")
-
-	// Table 10: VXLAN ingress filtering; filled in by AddHostSubnetRules()
-	// eg, "table=10, priority=100, tun_src=${remote_node_ip}, actions=goto_table:30"
-	otx.AddFlow("table=10, priority=0, actions=drop")
+	otx.AddFlow("table=10, priority=0, actions=goto_table:20")
 
 	// Table 20: from OpenShift container; validate IP/MAC, assign tenant-id; filled in by setupPodFlows
-	// eg, "table=20, priority=100, in_port=${ovs_port}, arp, nw_src=${ipaddr}, arp_sha=${macaddr}, actions=load:${tenant_id}->NXM_NX_REG0[], goto_table:21"
-	//     "table=20, priority=100, in_port=${ovs_port}, ip, nw_src=${ipaddr}, actions=load:${tenant_id}->NXM_NX_REG0[], goto_table:21"
+	// eg, "table=20, priority=100, in_port=${ovs_port}, ip, nw_src=${ipaddr}, actions=load:${tenant_id}->NXM_NX_REG0[], goto_table:21"
 	// (${tenant_id} is always 0 for single-tenant)
-	otx.AddFlow("table=20, priority=300, udp, udp_dst=%d, actions=drop", oc.sdnConfig.VXLANPort)
 	otx.AddFlow("table=20, priority=0, actions=drop")
 
 	// Table 21: from OpenShift container; NetworkPolicy mode uses this for connection tracking
@@ -278,11 +315,6 @@ func (oc *ovsController) SetupOVS() error {
 	}
 
 	// Table 30: general routing
-	otx.AddFlow("table=30, priority=300, arp, nw_dst=%s, actions=output:2", localSubnetGateway)
-	otx.AddFlow("table=30, priority=200, arp, nw_dst=%s, actions=goto_table:40", localSubnetCIDR)
-	for _, clusterCIDR := range clusterNetworkCIDR {
-		otx.AddFlow("table=30, priority=100, arp, nw_dst=%s, actions=goto_table:50", clusterCIDR)
-	}
 	otx.AddFlow("table=30, priority=300, ip, nw_dst=%s, actions=output:2", localSubnetGateway)
 	otx.AddFlow("table=30, priority=100, ip, nw_dst=%s, actions=goto_table:60", serviceNetworkCIDR)
 	if oc.nodeConfig.UseConnTrack {
@@ -298,16 +330,7 @@ func (oc *ovsController) SetupOVS() error {
 	// Multicast coming from local pods
 	otx.AddFlow("table=30, priority=25, ip, nw_dst=224.0.0.0/4, actions=goto_table:110")
 
-	otx.AddFlow("table=30, priority=0, ip, actions=goto_table:99")
-	otx.AddFlow("table=30, priority=0, arp, actions=drop")
-
-	// Table 40: ARP to local container, filled in by setupPodFlows
-	// eg, "table=40, priority=100, arp, nw_dst=${container_ip}, actions=output:${ovs_port}"
-	otx.AddFlow("table=40, priority=0, actions=drop")
-
-	// Table 50: ARP to remote container; filled in by AddHostSubnetRules()
-	// eg, "table=50, priority=100, arp, nw_dst=${remote_subnet_cidr}, actions=move:NXM_NX_REG0[]->NXM_NX_TUN_ID[0..31], set_field:${remote_node_ip}->tun_dst,output:1"
-	otx.AddFlow("table=50, priority=0, actions=drop")
+	otx.AddFlow("table=30, priority=0, actions=goto_table:99")
 
 	// Table 60: IP to service from pod
 	if oc.nodeConfig.UseConnTrack {
@@ -360,6 +383,37 @@ func (oc *ovsController) SetupOVS() error {
 	// Table 120: multicast delivery to local pods (either from VXLAN or local pods); updated by UpdateLocalMulticastFlows()
 	// eg, "table=120, priority=100, reg0=${tenant_id}, actions=output:${ovs_port_1},output:${ovs_port_2}"
 	otx.AddFlow("table=120, priority=0, actions=drop")
+
+	// Now the ARP rules
+
+	// Table 200: ARP initial dispatch
+	for _, clusterCIDR := range clusterNetworkCIDR {
+		otx.AddFlow("table=200, priority=100, in_port=1, arp, nw_src=%s, nw_dst=%s, actions=move:NXM_NX_TUN_ID[0..31]->NXM_NX_REG0[],goto_table:230", clusterCIDR, localSubnetCIDR)
+	}
+	for _, clusterCIDR := range clusterNetworkCIDR {
+		otx.AddFlow("table=200, priority=100, in_port=2, arp, nw_src=%s, nw_dst=%s, actions=goto_table:230", localSubnetGateway, clusterCIDR)
+	}
+	otx.AddFlow("table=200, priority=0, actions=goto_table:220")
+
+	// Table 220: ARP from container; validate IP/MAC, assign tenant-id; filled in by setupPodFlows
+	// eg, "table=220, priority=100, in_port=${ovs_port}, arp, nw_src=${ipaddr}, arp_sha=${macaddr}, actions=load:${tenant_id}->NXM_NX_REG0[], goto_table:230"
+	otx.AddFlow("table=220, priority=0, actions=drop")
+
+	// Table 230: ARP general routing
+	otx.AddFlow("table=230, priority=300, arp, nw_dst=%s, actions=output:2", localSubnetGateway)
+	otx.AddFlow("table=230, priority=200, arp, nw_dst=%s, actions=goto_table:240", localSubnetCIDR)
+	for _, clusterCIDR := range clusterNetworkCIDR {
+		otx.AddFlow("table=230, priority=100, arp, nw_dst=%s, actions=goto_table:250", clusterCIDR)
+	}
+	otx.AddFlow("table=230, priority=0, actions=drop")
+
+	// Table 240: ARP to local container, filled in by setupPodFlows
+	// eg, "table=240, priority=100, arp, nw_dst=${container_ip}, actions=output:${ovs_port}"
+	otx.AddFlow("table=240, priority=0, actions=drop")
+
+	// Table 250: ARP to remote container; filled in by AddHostSubnetRules()
+	// eg, "table=250, priority=100, arp, nw_dst=${remote_subnet_cidr}, actions=move:NXM_NX_REG0[]->NXM_NX_TUN_ID[0..31], set_field:${remote_node_ip}->tun_dst,output:1"
+	otx.AddFlow("table=250, priority=0, actions=drop")
 
 	return otx.Commit()
 }
@@ -462,14 +516,14 @@ func (oc *ovsController) setupPodFlows(sandboxID string, ofport int, podIP net.I
 	// IPV6FIXME: ipv6 rules
 
 	// ARP/IP traffic from container
-	otx.AddFlow("table=20, priority=100, cookie=%s, in_port=%d, arp, nw_src=%s, arp_sha=%s, actions=load:%d->NXM_NX_REG0[], goto_table:21", cookie, ofport, ipstr, ipmac, vnid)
+	otx.AddFlow("table=220, priority=100, cookie=%s, in_port=%d, arp, nw_src=%s, arp_sha=%s, actions=load:%d->NXM_NX_REG0[], goto_table:230", cookie, ofport, ipstr, ipmac, vnid)
 	otx.AddFlow("table=20, priority=100, cookie=%s, in_port=%d, ip, nw_src=%s, actions=load:%d->NXM_NX_REG0[], goto_table:21", cookie, ofport, ipstr, vnid)
 	if oc.nodeConfig.UseConnTrack {
 		otx.AddFlow("table=25, priority=100, cookie=%s, ip, nw_src=%s, actions=load:%d->NXM_NX_REG0[], goto_table:30", cookie, ipstr, vnid)
 	}
 
 	// ARP request/response to container (not isolated)
-	otx.AddFlow("table=40, priority=100, cookie=%s, arp, nw_dst=%s, actions=output:%d", cookie, ipstr, ofport)
+	otx.AddFlow("table=240, priority=100, cookie=%s, arp, nw_dst=%s, actions=output:%d", cookie, ipstr, ofport)
 
 	// IP traffic to container
 	otx.AddFlow("table=70, priority=100, cookie=%s, ip, nw_dst=%s, actions=load:%d->NXM_NX_REG1[], load:%d->NXM_NX_REG2[], goto_table:80", cookie, ipstr, vnid, ofport)
@@ -712,14 +766,12 @@ func (oc *ovsController) AddHostSubnetRules(subnet *osdnv1.HostSubnet) error {
 	otx := oc.ovs.NewTransaction()
 
 	// IPV6FIXME: need tun_ipv6_src for IPv6 HostIP
-	otx.AddFlow("table=10, priority=100, cookie=%s, tun_src=%s, actions=goto_table:30", cookie, subnet.HostIP)
+	otx.AddFlow("table=1, priority=100, cookie=%s, tun_src=%s, actions=goto_table:2", cookie, subnet.HostIP)
 	if vnid, ok := subnet.Annotations[osdnv1.FixedVNIDHostAnnotation]; ok {
-		// IPV6FIXME: ipv4-vs-ipv6, tun_dst vs tun_ipv6_dst
-		otx.AddFlow("table=50, priority=100, cookie=%s, arp, nw_dst=%s, actions=load:%s->NXM_NX_TUN_ID[0..31],set_field:%s->tun_dst,output:1", cookie, subnet.Subnet, vnid, subnet.HostIP)
+		otx.AddFlow("table=250, priority=100, cookie=%s, arp, nw_dst=%s, actions=load:%s->NXM_NX_TUN_ID[0..31],set_field:%s->tun_dst,output:1", cookie, subnet.Subnet, vnid, subnet.HostIP)
 		otx.AddFlow("table=90, priority=100, cookie=%s, ip, nw_dst=%s, actions=load:%s->NXM_NX_TUN_ID[0..31],set_field:%s->tun_dst,output:1", cookie, subnet.Subnet, vnid, subnet.HostIP)
 	} else {
-		// IPV6FIXME: ipv4-vs-ipv6, tun_dst vs tun_ipv6_dst
-		otx.AddFlow("table=50, priority=100, cookie=%s, arp, nw_dst=%s, actions=move:NXM_NX_REG0[]->NXM_NX_TUN_ID[0..31],set_field:%s->tun_dst,output:1", cookie, subnet.Subnet, subnet.HostIP)
+		otx.AddFlow("table=250, priority=100, cookie=%s, arp, nw_dst=%s, actions=move:NXM_NX_REG0[]->NXM_NX_TUN_ID[0..31],set_field:%s->tun_dst,output:1", cookie, subnet.Subnet, subnet.HostIP)
 		otx.AddFlow("table=90, priority=100, cookie=%s, ip, nw_dst=%s, actions=move:NXM_NX_REG0[]->NXM_NX_TUN_ID[0..31],set_field:%s->tun_dst,output:1", cookie, subnet.Subnet, subnet.HostIP)
 	}
 

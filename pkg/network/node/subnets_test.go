@@ -80,11 +80,11 @@ func TestHostSubnetWatcher(t *testing.T) {
 	err = assertHostSubnetFlowChanges(hsw, &flows,
 		flowChange{
 			kind:  flowAdded,
-			match: []string{"table=10", "tun_src=192.168.0.2"},
+			match: []string{"table=1", "tun_src=192.168.0.2"},
 		},
 		flowChange{
 			kind:  flowAdded,
-			match: []string{"table=50", "arp", "arp_tpa=10.128.0.0/23", "192.168.0.2->tun_dst"},
+			match: []string{"table=250", "arp", "arp_tpa=10.128.0.0/23", "192.168.0.2->tun_dst"},
 		},
 		flowChange{
 			kind:  flowAdded,
@@ -111,11 +111,11 @@ func TestHostSubnetWatcher(t *testing.T) {
 	err = assertHostSubnetFlowChanges(hsw, &flows,
 		flowChange{
 			kind:  flowAdded,
-			match: []string{"table=10", "tun_src=192.168.1.2"},
+			match: []string{"table=1", "tun_src=192.168.1.2"},
 		},
 		flowChange{
 			kind:  flowAdded,
-			match: []string{"table=50", "arp", "arp_tpa=10.129.0.0/23", "192.168.1.2->tun_dst"},
+			match: []string{"table=250", "arp", "arp_tpa=10.129.0.0/23", "192.168.1.2->tun_dst"},
 		},
 		flowChange{
 			kind:  flowAdded,
@@ -141,11 +141,11 @@ func TestHostSubnetWatcher(t *testing.T) {
 	err = assertHostSubnetFlowChanges(hsw, &flows,
 		flowChange{
 			kind:  flowRemoved,
-			match: []string{"table=10", "tun_src=192.168.0.2"},
+			match: []string{"table=1", "tun_src=192.168.0.2"},
 		},
 		flowChange{
 			kind:  flowRemoved,
-			match: []string{"table=50", "arp", "arp_tpa=10.128.0.0/23", "192.168.0.2->tun_dst"},
+			match: []string{"table=250", "arp", "arp_tpa=10.128.0.0/23", "192.168.0.2->tun_dst"},
 		},
 		flowChange{
 			kind:  flowRemoved,
@@ -172,11 +172,11 @@ func TestHostSubnetWatcher(t *testing.T) {
 	err = assertHostSubnetFlowChanges(hsw, &flows,
 		flowChange{
 			kind:  flowRemoved,
-			match: []string{"table=10", "tun_src=192.168.1.2"},
+			match: []string{"table=1", "tun_src=192.168.1.2"},
 		},
 		flowChange{
 			kind:  flowRemoved,
-			match: []string{"table=50", "arp", "arp_tpa=10.129.0.0/23", "192.168.1.2->tun_dst"},
+			match: []string{"table=250", "arp", "arp_tpa=10.129.0.0/23", "192.168.1.2->tun_dst"},
 		},
 		flowChange{
 			kind:  flowRemoved,
@@ -217,19 +217,19 @@ func TestHostSubnetReassignment(t *testing.T) {
 	err = assertHostSubnetFlowChanges(hsw, &flows,
 		flowChange{
 			kind:  flowAdded,
-			match: []string{"table=10", "tun_src=192.168.0.2"},
+			match: []string{"table=1", "tun_src=192.168.0.2"},
 		},
 		flowChange{
 			kind:  flowAdded,
-			match: []string{"table=10", "tun_src=192.168.1.2"},
+			match: []string{"table=1", "tun_src=192.168.1.2"},
 		},
 		flowChange{
 			kind:  flowAdded,
-			match: []string{"table=50", "arp", "arp_tpa=10.128.0.0/23", "192.168.0.2->tun_dst"},
+			match: []string{"table=250", "arp", "arp_tpa=10.128.0.0/23", "192.168.0.2->tun_dst"},
 		},
 		flowChange{
 			kind:  flowAdded,
-			match: []string{"table=50", "arp", "arp_tpa=10.129.0.0/23", "192.168.1.2->tun_dst"},
+			match: []string{"table=250", "arp", "arp_tpa=10.129.0.0/23", "192.168.1.2->tun_dst"},
 		},
 		flowChange{
 			kind:  flowAdded,
@@ -274,41 +274,41 @@ func TestHostSubnetReassignment(t *testing.T) {
 	}
 
 	err = assertHostSubnetFlowChanges(hsw, &flows,
-		// (We have to check for these table=10 removes+adds because they're not
+		// (We have to check for these table=1 removes+adds because they're not
 		// actually identical; the cookies will have changed.)
 		flowChange{
 			kind:  flowRemoved,
-			match: []string{"table=10", "tun_src=192.168.0.2"},
+			match: []string{"table=1", "tun_src=192.168.0.2"},
 		},
 		flowChange{
 			kind:  flowAdded,
-			match: []string{"table=10", "tun_src=192.168.0.2"},
+			match: []string{"table=1", "tun_src=192.168.0.2"},
 		},
 		flowChange{
 			kind:  flowRemoved,
-			match: []string{"table=10", "tun_src=192.168.1.2"},
+			match: []string{"table=1", "tun_src=192.168.1.2"},
 		},
 		flowChange{
 			kind:  flowAdded,
-			match: []string{"table=10", "tun_src=192.168.1.2"},
+			match: []string{"table=1", "tun_src=192.168.1.2"},
 		},
 
 		flowChange{
 			kind:  flowRemoved,
-			match: []string{"table=50", "arp", "arp_tpa=10.128.0.0/23", "192.168.0.2->tun_dst"},
+			match: []string{"table=250", "arp", "arp_tpa=10.128.0.0/23", "192.168.0.2->tun_dst"},
 		},
 		flowChange{
 			kind:  flowAdded,
-			match: []string{"table=50", "arp", "arp_tpa=10.128.0.0/23", "192.168.1.2->tun_dst"},
+			match: []string{"table=250", "arp", "arp_tpa=10.128.0.0/23", "192.168.1.2->tun_dst"},
 		},
 
 		flowChange{
 			kind:  flowRemoved,
-			match: []string{"table=50", "arp", "arp_tpa=10.129.0.0/23", "192.168.1.2->tun_dst"},
+			match: []string{"table=250", "arp", "arp_tpa=10.129.0.0/23", "192.168.1.2->tun_dst"},
 		},
 		flowChange{
 			kind:  flowAdded,
-			match: []string{"table=50", "arp", "arp_tpa=10.129.0.0/23", "192.168.0.2->tun_dst"},
+			match: []string{"table=250", "arp", "arp_tpa=10.129.0.0/23", "192.168.0.2->tun_dst"},
 		},
 
 		flowChange{
