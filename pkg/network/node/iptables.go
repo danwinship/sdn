@@ -13,13 +13,13 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/kubernetes/pkg/util/iptables"
 	utilexec "k8s.io/utils/exec"
+	utilnet "k8s.io/utils/net"
 
 	"github.com/openshift/sdn/pkg/network/common"
 )
 
 type NodeIPTables struct {
-	// IPV6FIXME: dual ipts
-	ipt                iptables.Interface
+	ipts               []iptables.Interface
 	clusterNetworkCIDR []string
 	masqueradeServices bool
 	vxlanPort          int
@@ -27,6 +27,7 @@ type NodeIPTables struct {
 
 	mu sync.Mutex // Protects concurrent access to syncIPTableRules()
 
+	v4ipt     iptables.Interface
 	egressIPs map[string]string
 }
 
@@ -63,15 +64,22 @@ func isResourceError(err error) bool {
 	return false
 }
 
-func newNodeIPTables(sdnConfig *common.SDNConfig, nodeConfig *NodeConfig, ipt iptables.Interface) *NodeIPTables {
-	return &NodeIPTables{
-		ipt:                ipt,
+func newNodeIPTables(sdnConfig *common.SDNConfig, nodeConfig *NodeConfig, ipts []iptables.Interface) *NodeIPTables {
+	n := &NodeIPTables{
+		ipts:               ipts,
 		clusterNetworkCIDR: sdnConfig.ClusterNetworkCIDRStrings,
 		masqueradeServices: !nodeConfig.UseConnTrack,
 		vxlanPort:          sdnConfig.VXLANPort,
 		masqueradeBitHex:   fmt.Sprintf("%#x", nodeConfig.MasqueradeBitMask),
 		egressIPs:          make(map[string]string),
 	}
+	for _, ipt := range ipts {
+		if !ipt.IsIPv6() {
+			n.v4ipt = ipt
+		}
+	}
+
+	return n
 }
 
 func (n *NodeIPTables) Setup() error {
@@ -86,17 +94,28 @@ type Chain struct {
 	name     string
 	srcChain string
 	srcRule  []string
-	rules    [][]string
+
+	rules   [][]string
+	v4rules [][]string
+	v6rules [][]string
 }
 
-// Adds all the rules in chain, returning true if they were all already present
-func (n *NodeIPTables) addChainRules(chain Chain) (bool, error) {
+// addChainRules adds all the rules in chain, returning true if they were all already present
+func (n *NodeIPTables) addChainRules(ipt iptables.Interface, chain Chain) (bool, error) {
 	allExisted := true
-	for _, rule := range chain.rules {
+	rules := chain.rules
+	if rules == nil {
+		if ipt.IsIPv6() {
+			rules = chain.v6rules
+		} else {
+			rules = chain.v4rules
+		}
+	}
+	for _, rule := range rules {
 		var existed bool
 		err := execIPTablesWithRetry(func() error {
 			var err error
-			existed, err = n.ipt.EnsureRule(iptables.Append, iptables.Table(chain.table), iptables.Chain(chain.name), rule...)
+			existed, err = ipt.EnsureRule(iptables.Append, iptables.Table(chain.table), iptables.Chain(chain.name), rule...)
 			return err
 		})
 		if err != nil {
@@ -107,6 +126,34 @@ func (n *NodeIPTables) addChainRules(chain Chain) (bool, error) {
 		}
 	}
 	return allExisted, nil
+}
+
+// setupChain ensures that the chain exists, returning true if it already did
+func (n *NodeIPTables) setupChain(ipt iptables.Interface, chain Chain) (bool, error) {
+	var chainExisted bool
+	err := execIPTablesWithRetry(func() error {
+		var err error
+		chainExisted, err = ipt.EnsureChain(iptables.Table(chain.table), iptables.Chain(chain.name))
+		return err
+	})
+	if err != nil {
+		return false, fmt.Errorf("failed to ensure chain %s exists: %v", chain.name, err)
+	}
+	if chain.srcChain != "" {
+		// Create the rule pointing to it from its parent chain. Note that since we
+		// use iptables.Prepend each time, but process the chains in reverse order,
+		// chains with the same table and srcChain (ie, OPENSHIFT-FIREWALL-FORWARD
+		// and OPENSHIFT-ADMIN-OUTPUT-RULES) will run in the same order as they
+		// appear in getNodeIPTablesChains().
+		err = execIPTablesWithRetry(func() error {
+			_, err = ipt.EnsureRule(iptables.Prepend, iptables.Table(chain.table), iptables.Chain(chain.srcChain), append(chain.srcRule, "-j", chain.name)...)
+			return err
+		})
+		if err != nil {
+			return false, fmt.Errorf("failed to ensure rule from %s to %s exists: %v", chain.srcChain, chain.name, err)
+		}
+	}
+	return chainExisted, nil
 }
 
 // syncIPTableRules syncs the cluster network cidr iptables rules.
@@ -121,52 +168,34 @@ func (n *NodeIPTables) syncIPTableRules() error {
 	}()
 	klog.V(3).Infof("Syncing openshift iptables rules")
 
-	// IPV6FIXME: dual-stack syncing
-	chains := n.getNodeIPTablesChains()
-	for i := len(chains) - 1; i >= 0; i-- {
-		chain := chains[i]
-		// Create chain if it does not already exist
-		var chainExisted bool
-		err := execIPTablesWithRetry(func() error {
-			var err error
-			chainExisted, err = n.ipt.EnsureChain(iptables.Table(chain.table), iptables.Chain(chain.name))
-			return err
-		})
-		if err != nil {
-			return fmt.Errorf("failed to ensure chain %s exists: %v", chain.name, err)
-		}
-		if chain.srcChain != "" {
-			// Create the rule pointing to it from its parent chain. Note that since we
-			// use iptables.Prepend each time, but process the chains in reverse order,
-			// chains with the same table and srcChain (ie, OPENSHIFT-FIREWALL-FORWARD
-			// and OPENSHIFT-ADMIN-OUTPUT-RULES) will run in the same order as they
-			// appear in getNodeIPTablesChains().
-			err = execIPTablesWithRetry(func() error {
-				_, err = n.ipt.EnsureRule(iptables.Prepend, iptables.Table(chain.table), iptables.Chain(chain.srcChain), append(chain.srcRule, "-j", chain.name)...)
-				return err
-			})
+	for _, ipt := range n.ipts {
+		chains := n.getNodeIPTablesChains(ipt)
+		for i := len(chains) - 1; i >= 0; i-- {
+			chain := chains[i]
+			// Create chain if it does not already exist
+			chainExisted, err := n.setupChain(ipt, chain)
 			if err != nil {
-				return fmt.Errorf("failed to ensure rule from %s to %s exists: %v", chain.srcChain, chain.name, err)
+				return err
 			}
-		}
 
-		// Add/sync the rules
-		rulesExisted, err := n.addChainRules(chain)
-		if err != nil {
-			return err
-		}
-		if chainExisted && !rulesExisted {
-			// Chain existed but not with the expected rules; this probably means
-			// it contained rules referring to a *different* subnet; flush them
-			// and try again.
-			err = execIPTablesWithRetry(func() error {
-				return n.ipt.FlushChain(iptables.Table(chain.table), iptables.Chain(chain.name))
-			})
+			// Add/sync the rules
+			rulesExisted, err := n.addChainRules(ipt, chain)
 			if err != nil {
-				return fmt.Errorf("failed to flush chain %s: %v", chain.name, err)
-			}
-			if _, err = n.addChainRules(chain); err != nil {
 				return err
+			}
+			if chainExisted && !rulesExisted {
+				// Chain existed but not with the expected rules; this
+				// probably means it contained rules referring to a
+				// *different* subnet; flush them and try again.
+				err = execIPTablesWithRetry(func() error {
+					return ipt.FlushChain(iptables.Table(chain.table), iptables.Chain(chain.name))
+			})
+				if err != nil {
+					return fmt.Errorf("failed to flush chain %s: %v", chain.name, err)
+				}
+				if _, err = n.addChainRules(ipt, chain); err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -180,8 +209,7 @@ func (n *NodeIPTables) syncIPTableRules() error {
 	return nil
 }
 
-func (n *NodeIPTables) getNodeIPTablesChains() []Chain {
-
+func (n *NodeIPTables) getNodeIPTablesChains(ipt iptables.Interface) []Chain {
 	var chainArray []Chain
 
 	chainArray = append(chainArray,
@@ -212,8 +240,12 @@ func (n *NodeIPTables) getNodeIPTablesChains() []Chain {
 	}
 	var masq2Rules [][]string
 	var filterRules [][]string
-	// IPV6FIXME: need to pass IPv4 CIDRs to iptables and IPv6 CIDRs to iptables6
 	for _, cidr := range n.clusterNetworkCIDR {
+		if utilnet.IsIPv6CIDRString(cidr) != ipt.IsIPv6() {
+			// Wrong family
+			continue
+		}
+
 		if n.masqueradeServices {
 			masqRules = append(masqRules, []string{"-s", cidr, "-m", "comment", "--comment", "masquerade pod-to-service and pod-to-external traffic", "-j", "MASQUERADE"})
 		} else {
@@ -305,17 +337,26 @@ func (n *NodeIPTables) getNodeIPTablesChains() []Chain {
 // ovn-kubernetes-style EgressIP API.
 
 func (n *NodeIPTables) ensureEgressIPRules(egressIP, mark string) error {
+	if n.v4ipt == nil {
+		return nil
+	}
+
 	for _, cidr := range n.clusterNetworkCIDR {
+		if !utilnet.IsIPv4CIDRString(cidr) {
+			continue
+		}
+
 		err := execIPTablesWithRetry(func() error {
-			_, err := n.ipt.EnsureRule(iptables.Prepend, iptables.TableNAT, iptables.Chain("OPENSHIFT-MASQUERADE"), "-s", cidr, "-m", "mark", "--mark", mark, "-j", "SNAT", "--to-source", egressIP)
+			_, err := n.v4ipt.EnsureRule(iptables.Prepend, iptables.TableNAT, iptables.Chain("OPENSHIFT-MASQUERADE"), "-s", cidr, "-m", "mark", "--mark", mark, "-j", "SNAT", "--to-source", egressIP)
 			return err
 		})
 		if err != nil {
 			return err
 		}
 	}
+
 	err := execIPTablesWithRetry(func() error {
-		_, err := n.ipt.EnsureRule(iptables.Append, iptables.TableFilter, iptables.Chain("OPENSHIFT-FIREWALL-ALLOW"), "-d", egressIP, "-m", "conntrack", "--ctstate", "NEW", "-j", "REJECT")
+		_, err := n.v4ipt.EnsureRule(iptables.Append, iptables.TableFilter, iptables.Chain("OPENSHIFT-FIREWALL-ALLOW"), "-d", egressIP, "-m", "conntrack", "--ctstate", "NEW", "-j", "REJECT")
 		return err
 	})
 	return err
@@ -333,21 +374,29 @@ func (n *NodeIPTables) AddEgressIPRules(egressIP, mark string) error {
 }
 
 func (n *NodeIPTables) DeleteEgressIPRules(egressIP, mark string) error {
+	if n.v4ipt == nil {
+		return nil
+	}
+
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
 	delete(n.egressIPs, egressIP)
 
 	for _, cidr := range n.clusterNetworkCIDR {
+		if !utilnet.IsIPv4CIDRString(cidr) {
+			continue
+		}
+
 		err := execIPTablesWithRetry(func() error {
-			return n.ipt.DeleteRule(iptables.TableNAT, iptables.Chain("OPENSHIFT-MASQUERADE"), "-s", cidr, "-m", "mark", "--mark", mark, "-j", "SNAT", "--to-source", egressIP)
+			return n.v4ipt.DeleteRule(iptables.TableNAT, iptables.Chain("OPENSHIFT-MASQUERADE"), "-s", cidr, "-m", "mark", "--mark", mark, "-j", "SNAT", "--to-source", egressIP)
 		})
 		if err != nil {
 			return err
 		}
 	}
 	err := execIPTablesWithRetry(func() error {
-		return n.ipt.DeleteRule(iptables.TableFilter, iptables.Chain("OPENSHIFT-FIREWALL-ALLOW"), "-d", egressIP, "-m", "conntrack", "--ctstate", "NEW", "-j", "REJECT")
+		return n.v4ipt.DeleteRule(iptables.TableFilter, iptables.Chain("OPENSHIFT-FIREWALL-ALLOW"), "-d", egressIP, "-m", "conntrack", "--ctstate", "NEW", "-j", "REJECT")
 	})
 	return err
 }
@@ -357,7 +406,7 @@ var filterRuleRE = regexp.MustCompile(`-A OPENSHIFT-FIREWALL-ALLOW -d ([^ ]*)/32
 
 func (n *NodeIPTables) findStaleEgressIPRules(table iptables.Table, ruleMatch *regexp.Regexp) (map[string]string, error) {
 	buf := bytes.NewBuffer(nil)
-	err := n.ipt.SaveInto(table, buf)
+	err := n.v4ipt.SaveInto(table, buf)
 	if err != nil {
 		return nil, err
 	}
@@ -378,6 +427,10 @@ func (n *NodeIPTables) findStaleEgressIPRules(table iptables.Table, ruleMatch *r
 }
 
 func (n *NodeIPTables) SyncEgressIPRules() {
+	if n.v4ipt == nil {
+		return
+	}
+
 	masqRules, err := n.findStaleEgressIPRules(iptables.TableNAT, masqRuleRE)
 	if err != nil {
 		klog.Warningf("Error looking for stale egress IP iptables rules: %v", err)
@@ -396,7 +449,7 @@ func (n *NodeIPTables) SyncEgressIPRules() {
 		}
 		args = args[2:]
 		err := execIPTablesWithRetry(func() error {
-			return n.ipt.DeleteRule(iptables.TableNAT, iptables.Chain("OPENSHIFT-MASQUERADE"), args...)
+			return n.v4ipt.DeleteRule(iptables.TableNAT, iptables.Chain("OPENSHIFT-MASQUERADE"), args...)
 		})
 		if err != nil {
 			klog.Warningf("Error deleting iptables masquerade rule for stale egress IP %s: %v", ip, err)
@@ -412,7 +465,7 @@ func (n *NodeIPTables) SyncEgressIPRules() {
 		}
 		args = args[2:]
 		err := execIPTablesWithRetry(func() error {
-			return n.ipt.DeleteRule(iptables.TableFilter, iptables.Chain("OPENSHIFT-FIREWALL-ALLOW"), args...)
+			return n.v4ipt.DeleteRule(iptables.TableFilter, iptables.Chain("OPENSHIFT-FIREWALL-ALLOW"), args...)
 		})
 		if err != nil {
 			klog.Warningf("Error deleting iptables filter rule for stale egress IP %s: %v", ip, err)

@@ -64,8 +64,7 @@ type OsdnNodeConfig struct {
 	ProxyConfig *kubeproxyconfig.KubeProxyConfiguration
 
 	Recorder record.EventRecorder
-	// IPV6FIXME: dual IPTables
-	IPTables iptables.Interface
+	IPTables []iptables.Interface
 }
 
 type OsdnNode struct {
@@ -77,7 +76,6 @@ type OsdnNode struct {
 	recorder     record.EventRecorder
 	oc           *ovsController
 	podManager   *podManager
-	ipt          iptables.Interface
 	nodeIPTables *NodeIPTables
 
 	// Synchronizes operations on egressPolicies
@@ -99,7 +97,6 @@ func New(c *OsdnNodeConfig) (*OsdnNode, error) {
 		nodeConfig: c.NodeConfig,
 
 		recorder: c.Recorder,
-		ipt:      c.IPTables,
 	}
 
 	if err := c.validateNodeIP(); err != nil {

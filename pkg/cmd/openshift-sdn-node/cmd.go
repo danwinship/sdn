@@ -19,6 +19,7 @@ import (
 	"k8s.io/kubernetes/pkg/util/interrupt"
 	"k8s.io/kubernetes/pkg/util/iptables"
 	kexec "k8s.io/utils/exec"
+	utilnet "k8s.io/utils/net"
 
 	"github.com/openshift/library-go/pkg/serviceability"
 	sdncommon "github.com/openshift/sdn/pkg/network/common"
@@ -44,8 +45,7 @@ type openShiftSDN struct {
 	sdnRecorder record.EventRecorder
 	osdnProxy   *sdnproxy.OsdnProxy
 
-	// IPV6FIXME: dual ipts
-	ipt iptables.Interface
+	ipts []iptables.Interface
 }
 
 var networkLong = `
@@ -149,7 +149,15 @@ func (sdn *openShiftSDN) init() error {
 		return fmt.Errorf("failed to get SDN config: %v", err)
 	}
 
-	sdn.ipt = iptables.New(kexec.New(), iptables.ProtocolIPv4)
+	exec := kexec.New()
+	sdn.ipts = make([]iptables.Interface, len(sdn.nodeIPs))
+	for i, ip := range sdn.nodeIPs {
+		if utilnet.IsIPv4String(ip) {
+			sdn.ipts[i] = iptables.New(exec, iptables.ProtocolIPv4)
+		} else {
+			sdn.ipts[i] = iptables.New(exec, iptables.ProtocolIPv6)
+		}
+	}
 
 	// Configure SDN
 	err = sdn.initSDN()
@@ -187,11 +195,14 @@ func (sdn *openShiftSDN) start(stopCh <-chan struct{}) error {
 	}
 	klog.V(2).Infof("openshift-sdn network plugin ready")
 
-	go sdn.ipt.Monitor(iptables.Chain("OPENSHIFT-SDN-CANARY"),
-		[]iptables.Table{iptables.TableMangle, iptables.TableNAT, iptables.TableFilter},
-		sdn.reloadIPTables,
-		sdn.proxyConfig.IPTables.SyncPeriod.Duration,
-		utilwait.NeverStop)
+	for i := range sdn.ipts {
+		ipt := sdn.ipts[i]
+		go ipt.Monitor(iptables.Chain("OPENSHIFT-SDN-CANARY"),
+			[]iptables.Table{iptables.TableMangle, iptables.TableNAT, iptables.TableFilter},
+			sdn.reloadIPTables,
+			sdn.proxyConfig.IPTables.SyncPeriod.Duration,
+			utilwait.NeverStop)
+	}
 
 	return nil
 }

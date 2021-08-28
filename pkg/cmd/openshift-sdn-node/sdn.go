@@ -30,7 +30,7 @@ func (sdn *openShiftSDN) initSDN() error {
 		NodeConfig:  nodeConfig,
 		ProxyConfig: sdn.proxyConfig,
 
-		IPTables: sdn.ipt,
+		IPTables: sdn.ipts,
 		Recorder: sdn.sdnRecorder,
 	})
 	return err
