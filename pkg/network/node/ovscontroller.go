@@ -199,7 +199,7 @@ const (
 	Vxlan0 = "vxlan0"
 
 	// rule versioning; increment each time flow rules change
-	ruleVersion = 14
+	ruleVersion = 15
 
 	ruleVersionTable = 253
 )
@@ -491,8 +491,7 @@ func (oc *ovsController) FinishSetupOVS() error {
 
 type podNetworkInfo struct {
 	vethName string
-	// IPV6FIXME: dual ips
-	ip       string
+	ips      []string
 	ofport   int
 }
 
@@ -519,8 +518,13 @@ func (oc *ovsController) GetPodNetworkInfo() (map[string]podNetworkInfo, error) 
 			klog.Errorf("ovs-vsctl output missing one or more external_ids: %v", ids)
 			continue
 		}
-		// IPV6FIXME: dual ips
-		if net.ParseIP(ids["ip"]) == nil {
+
+		podIPs := strings.Split(ids["ip"], ";")
+		if len(podIPs) == 0 || len(podIPs) > 2 {
+			klog.Errorf("Could not parse IP(s) %q for sandbox %q", ids["ip"], ids["sandbox"])
+			continue
+		}
+		if net.ParseIP(podIPs[0]) == nil || (len(podIPs) == 2 && net.ParseIP(podIPs[1]) == nil) {
 			klog.Errorf("Could not parse IP %q for sandbox %q", ids["ip"], ids["sandbox"])
 			continue
 		}
@@ -533,7 +537,7 @@ func (oc *ovsController) GetPodNetworkInfo() (map[string]podNetworkInfo, error) 
 
 		results[ids["sandbox"]] = podNetworkInfo{
 			vethName: row["name"],
-			ip:       ids["ip"],
+			ips:      podIPs,
 			ofport:   ofport,
 		}
 	}
@@ -545,10 +549,14 @@ func (oc *ovsController) NewTransaction() ovs.Transaction {
 	return oc.ovs.NewTransaction()
 }
 
-// IPV6FIXME: dual podIPs
-func (oc *ovsController) ensureOvsPort(hostVeth, sandboxID, podIP string) (int, error) {
+func (oc *ovsController) ensureOvsPort(hostVeth, sandboxID string, podIPs []net.IP) (int, error) {
+	ipStrings := make([]string, len(podIPs))
+	for i, ip := range podIPs {
+		ipStrings[i] = ip.String()
+	}
+
 	ofport, err := oc.ovs.AddPort(hostVeth, -1,
-		fmt.Sprintf(`external_ids=sandbox="%s",ip="%s"`, sandboxID, podIP),
+		fmt.Sprintf(`external_ids=sandbox="%s",ip="%s"`, sandboxID, strings.Join(ipStrings, ";")),
 	)
 	if err != nil {
 		// If hostVeth doesn't exist, ovs-vsctl will return an error, but will
@@ -607,13 +615,12 @@ func (oc *ovsController) cleanupPodFlows(sandboxID string) error {
 	return otx.Commit()
 }
 
-// IPV6FIXME: dual podIPs
-func (oc *ovsController) SetUpPod(sandboxID, hostVeth string, podIP net.IP, vnid uint32) (int, error) {
-	ofport, err := oc.ensureOvsPort(hostVeth, sandboxID, podIP.String())
+func (oc *ovsController) SetUpPod(sandboxID, hostVeth string, podIPs []net.IP, vnid uint32) (int, error) {
+	ofport, err := oc.ensureOvsPort(hostVeth, sandboxID, podIPs)
 	if err != nil {
 		return -1, err
 	}
-	return ofport, oc.setupPodFlows(sandboxID, ofport, []net.IP{podIP}, vnid)
+	return ofport, oc.setupPodFlows(sandboxID, ofport, podIPs, vnid)
 }
 
 // Returned list can also be used for port names
@@ -676,8 +683,7 @@ func (oc *ovsController) SetPodBandwidth(hostVeth, sandboxID string, ingressBPS,
 	return nil
 }
 
-// IPV6FIXME: dual podIPs
-func (oc *ovsController) getPodDetailsBySandboxID(sandboxID string) (int, net.IP, error) {
+func (oc *ovsController) getPodDetailsBySandboxID(sandboxID string) (int, []net.IP, error) {
 	rows, err := oc.ovs.Find("interface", []string{"ofport", "external_ids"}, "external_ids:sandbox="+sandboxID)
 	if err != nil {
 		return 0, nil, err
@@ -700,18 +706,23 @@ func (oc *ovsController) getPodDetailsBySandboxID(sandboxID string) (int, net.IP
 	} else if ids["ip"] == "" {
 		return 0, nil, fmt.Errorf("external_ids %#v does not contain IP", ids)
 	}
-	// IPV6FIXME: dual podIPs
-	podIP := net.ParseIP(ids["ip"])
-	if podIP == nil {
-		return 0, nil, fmt.Errorf("failed to parse IP %q", ids["ip"])
-	}
 
-	return ofport, podIP, nil
+	podIPStrings := strings.Split(ids["ip"], ";")
+	if len(podIPStrings) == 0 {
+		return 0, nil, fmt.Errorf("failed to parse IP(s) %q", ids["ip"])
+	}
+	podIPs := make([]net.IP, len(podIPStrings))
+	for i, ipStr := range podIPStrings {
+		podIPs[i] = net.ParseIP(ipStr)
+		if podIPs[i] == nil {
+			return 0, nil, fmt.Errorf("failed to parse IP %q", ipStr)
+		}
+	}
+	return ofport, podIPs, nil
 }
 
 func (oc *ovsController) UpdatePod(sandboxID string, vnid uint32) error {
-	// IPV6FIXME: dual podIPs
-	ofport, podIP, err := oc.getPodDetailsBySandboxID(sandboxID)
+	ofport, podIPs, err := oc.getPodDetailsBySandboxID(sandboxID)
 	if err != nil {
 		return err
 	} else if ofport == -1 {
@@ -721,7 +732,7 @@ func (oc *ovsController) UpdatePod(sandboxID string, vnid uint32) error {
 	if err != nil {
 		return err
 	}
-	return oc.setupPodFlows(sandboxID, ofport, []net.IP{podIP}, vnid)
+	return oc.setupPodFlows(sandboxID, ofport, podIPs, vnid)
 }
 
 func (oc *ovsController) TearDownPod(sandboxID string) error {

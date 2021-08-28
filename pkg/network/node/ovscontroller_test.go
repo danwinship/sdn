@@ -223,7 +223,7 @@ func TestOVSPod(t *testing.T) {
 	ovsif, oc, origFlows := setupOVSController(t)
 
 	// Add
-	ofport, err := oc.SetUpPod(sandboxID, "veth1", net.ParseIP("10.128.0.2"), 42)
+	ofport, err := oc.SetUpPod(sandboxID, "veth1", []net.IP{net.ParseIP("10.128.0.2")}, 42)
 	if err != nil {
 		t.Fatalf("Unexpected error adding pod rules: %v", err)
 	}
@@ -330,12 +330,12 @@ func TestGetPodDetails(t *testing.T) {
 
 	for _, tc := range testcases {
 		_, oc, _ := setupOVSController(t)
-		tcOFPort, err := oc.SetUpPod(tc.sandboxID, "veth1", net.ParseIP(tc.ip), 42)
+		tcOFPort, err := oc.SetUpPod(tc.sandboxID, "veth1", []net.IP{net.ParseIP(tc.ip)}, 42)
 		if err != nil {
 			t.Fatalf("Unexpected error adding pod rules: %v", err)
 		}
 
-		ofport, ip, err := oc.getPodDetailsBySandboxID(tc.sandboxID)
+		ofport, ips, err := oc.getPodDetailsBySandboxID(tc.sandboxID)
 		if err != nil {
 			if tc.errStr != "" {
 				if !strings.Contains(err.Error(), tc.errStr) {
@@ -350,8 +350,8 @@ func TestGetPodDetails(t *testing.T) {
 		if ofport != tcOFPort {
 			t.Fatalf("unexpected ofport %d (expected %d)", ofport, tcOFPort)
 		}
-		if ip.String() != tc.ip {
-			t.Fatalf("unexpected ip %q (expected %q)", ip.String(), tc.ip)
+		if len(ips) != 1 || ips[0].String() != tc.ip {
+			t.Fatalf("unexpected ip %v (expected %q)", ips, tc.ip)
 		}
 	}
 }
@@ -1209,7 +1209,7 @@ var expectedFlows = []string{
 	" cookie=0x0f46ee1a3cac3bd5, table=250, priority=100, arp, arp_tpa=10.128.2.0/23, actions=move:NXM_NX_REG0[]->NXM_NX_TUN_ID[0..31],set_field:10.0.123.45->tun_dst,output:1",
 	" cookie=0, table=250, priority=0, actions=drop",
 
-	" cookie=0, table=253, actions=note:02.0E",
+	" cookie=0, table=253, actions=note:02.0F",
 }
 
 // Ensure that we do not change the OVS flows without bumping ruleVersion
@@ -1219,7 +1219,7 @@ func TestRuleVersion(t *testing.T) {
 	// Now call each oc method that adds flows
 
 	// Pod-related flows
-	_, err := oc.SetUpPod(sandboxID, "veth1", net.ParseIP("10.128.0.2"), 42)
+	_, err := oc.SetUpPod(sandboxID, "veth1", []net.IP{net.ParseIP("10.128.0.2")}, 42)
 	if err != nil {
 		t.Fatalf("Unexpected error adding pod rules: %v", err)
 	}
@@ -1373,7 +1373,7 @@ var expectedv6Flows = []string{
 	" cookie=0x0f46ee1a3cac3bd5, table=250, priority=100, icmp6, icmpv6_type=135, nd_target=fd01:0:0:2::/64, actions=move:NXM_NX_REG0[]->NXM_NX_TUN_ID[0..31],set_field:2001:172:17::5->tun_ipv6_dst,output:1",
 	" cookie=0x0f46ee1a3cac3bd5, table=250, priority=100, icmp6, icmpv6_type=136, ipv6_dst=fd01:0:0:2::/64, actions=move:NXM_NX_REG0[]->NXM_NX_TUN_ID[0..31],set_field:2001:172:17::5->tun_ipv6_dst,output:1",
 	" cookie=0, table=250, priority=0, actions=drop",
-	" cookie=0, table=253, actions=note:02.0E",
+	" cookie=0, table=253, actions=note:02.0F",
 }
 
 // Ensure proper IPv4->IPv6 translation
@@ -1383,7 +1383,7 @@ func TestIPv6Translation(t *testing.T) {
 	// Now call each oc method that adds flows
 
 	// Pod-related flows
-	_, err := oc.SetUpPod(sandboxID, "veth1", net.ParseIP("fd01:0:0:1::2"), 42)
+	_, err := oc.SetUpPod(sandboxID, "veth1", []net.IP{net.ParseIP("fd01:0:0:1::2")}, 42)
 	if err != nil {
 		t.Fatalf("Unexpected error adding pod rules: %v", err)
 	}
@@ -1464,9 +1464,11 @@ var expectedDualStackFlows = []string{
 	" cookie=0, table=10, priority=150, in_port=1, actions=drop",
 	" cookie=0, table=10, priority=0, actions=goto_table:20",
 	" cookie=0x04a7761d70ec6c41, table=20, priority=100, in_port=3, ip, nw_src=10.128.0.2, actions=load:42->NXM_NX_REG0[],goto_table:21",
+	" cookie=0x04a7761d70ec6c41, table=20, priority=100, in_port=3, ipv6, ipv6_src=fd01:0:0:1::2, actions=load:42->NXM_NX_REG0[],goto_table:21",
 	" cookie=0, table=20, priority=0, actions=drop",
 	" cookie=0, table=21, priority=0, actions=goto_table:30",
 	" cookie=0x04a7761d70ec6c41, table=25, priority=100, ip, nw_src=10.128.0.2, actions=load:42->NXM_NX_REG0[],goto_table:30",
+	" cookie=0x04a7761d70ec6c41, table=25, priority=100, ipv6, ipv6_src=fd01:0:0:1::2, actions=load:42->NXM_NX_REG0[],goto_table:30",
 	" cookie=0, table=25, priority=0, actions=drop",
 	" cookie=0, table=30, priority=300, ip, nw_dst=10.128.0.1, actions=output:2",
 	" cookie=0, table=30, priority=300, ipv6, ipv6_dst=fd01:0:0:1::1, actions=output:2",
@@ -1484,6 +1486,7 @@ var expectedDualStackFlows = []string{
 	" cookie=0, table=30, priority=25, ipv6, ipv6_dst=ff00::/8, actions=goto_table:110",
 	" cookie=0, table=30, priority=0, actions=goto_table:99",
 	" cookie=0x04a7761d70ec6c41, table=70, priority=100, ip, nw_dst=10.128.0.2, actions=load:42->NXM_NX_REG1[],load:3->NXM_NX_REG2[],goto_table:80",
+	" cookie=0x04a7761d70ec6c41, table=70, priority=100, ipv6, ipv6_dst=fd01:0:0:1::2, actions=load:42->NXM_NX_REG1[],load:3->NXM_NX_REG2[],goto_table:80",
 	" cookie=0, table=70, priority=0, actions=drop",
 	" cookie=0, table=80, priority=300, ip, nw_src=10.128.0.1, actions=output:NXM_NX_REG2[]",
 	" cookie=0, table=80, priority=300, ipv6, ipv6_src=fd01:0:0:1::1, actions=output:NXM_NX_REG2[]",
@@ -1512,6 +1515,8 @@ var expectedDualStackFlows = []string{
 	" cookie=0, table=220, priority=100, icmp6, icmpv6_type=136, nd_tll=00:00:00:00:00:00, actions=move:NXM_OF_ETH_SRC[]->NXM_NX_ND_TLL[],goto_table:221",
 	" cookie=0, table=220, priority=0, actions=goto_table:221",
 	" cookie=0x04a7761d70ec6c41, table=221, priority=100, in_port=3, arp, arp_spa=10.128.0.2, arp_sha=00:00:0a:80:00:02/00:00:ff:ff:ff:ff, actions=load:42->NXM_NX_REG0[],goto_table:230",
+	" cookie=0x04a7761d70ec6c41, table=221, priority=100, in_port=3, icmp6, icmpv6_type=135, ipv6_src=fd01:0:0:1::2, eth_src=00:00:0a:80:00:02/00:00:ff:ff:ff:ff, nd_sll=00:00:0a:80:00:02/00:00:ff:ff:ff:ff, actions=load:42->NXM_NX_REG0[],goto_table:230",
+	" cookie=0x04a7761d70ec6c41, table=221, priority=100, in_port=3, icmp6, icmpv6_type=136, nd_target=fd01:0:0:1::2, eth_src=00:00:0a:80:00:02/00:00:ff:ff:ff:ff, nd_tll=00:00:0a:80:00:02/00:00:ff:ff:ff:ff, actions=load:42->NXM_NX_REG0[],goto_table:230",
 	" cookie=0, table=221, priority=0, actions=drop",
 	" cookie=0, table=230, priority=300, arp, arp_tpa=10.128.0.1, actions=output:2",
 	" cookie=0, table=230, priority=300, icmp6, icmpv6_type=135, nd_target=fd01:0:0:1::1, actions=output:2",
@@ -1524,13 +1529,15 @@ var expectedDualStackFlows = []string{
 	" cookie=0, table=230, priority=100, icmp6, icmpv6_type=136, ipv6_dst=fd01::/48, actions=goto_table:250",
 	" cookie=0, table=230, priority=0, actions=drop",
 	" cookie=0x04a7761d70ec6c41, table=240, priority=100, arp, arp_tpa=10.128.0.2, actions=output:3",
+	" cookie=0x04a7761d70ec6c41, table=240, priority=100, icmp6, icmpv6_type=135, nd_target=fd01:0:0:1::2, actions=output:3",
+	" cookie=0x04a7761d70ec6c41, table=240, priority=100, icmp6, icmpv6_type=136, ipv6_dst=fd01:0:0:1::2, actions=output:3",
 	" cookie=0, table=240, priority=0, actions=drop",
 	" cookie=0x0f46ee1a3cac3bd5, table=250, priority=100, arp, arp_tpa=10.128.2.0/23, actions=move:NXM_NX_REG0[]->NXM_NX_TUN_ID[0..31],set_field:10.0.123.45->tun_dst,output:1",
 	" cookie=0x0f46ee1a3cac3bd5, table=250, priority=100, icmp6, icmpv6_type=135, nd_target=fd01:0:0:2::/64, actions=move:NXM_NX_REG0[]->NXM_NX_TUN_ID[0..31],set_field:10.0.123.45->tun_dst,output:1",
 	" cookie=0x0f46ee1a3cac3bd5, table=250, priority=100, icmp6, icmpv6_type=136, ipv6_dst=fd01:0:0:2::/64, actions=move:NXM_NX_REG0[]->NXM_NX_TUN_ID[0..31],set_field:10.0.123.45->tun_dst,output:1",
 	" cookie=0, table=250, priority=0, actions=drop",
 
-	" cookie=0, table=253, actions=note:02.0E",
+	" cookie=0, table=253, actions=note:02.0F",
 }
 
 // Ensure proper IPv4->IPv6 translation / dual-stack merging
@@ -1540,8 +1547,9 @@ func TestDualStackTranslation(t *testing.T) {
 	// Now call each oc method that adds flows
 
 	// Pod-related flows
-	// IPv6FIXME: dual-stack pod IPs
-	_, err := oc.SetUpPod(sandboxID, "veth1", net.ParseIP("10.128.0.2"), 42)
+	_, err := oc.SetUpPod(sandboxID, "veth1",
+		[]net.IP{net.ParseIP("10.128.0.2"), net.ParseIP("fd01:0:0:1::2")},
+		42)
 	if err != nil {
 		t.Fatalf("Unexpected error adding pod rules: %v", err)
 	}

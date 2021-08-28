@@ -526,8 +526,7 @@ func (m *podManager) setup(req *cniserver.PodRequest) (cnitypes.Result, *running
 		return nil, nil, err
 	}
 
-	// IPV6FIXME: pass all pod IPs to ovscontroller
-	ofport, err := m.ovs.SetUpPod(req.SandboxID, req.HostVeth, podIPs[0], vnid)
+	ofport, err := m.ovs.SetUpPod(req.SandboxID, req.HostVeth, podIPs, vnid)
 	if err != nil {
 		return nil, nil, err
 	}

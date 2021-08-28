@@ -379,7 +379,7 @@ func (node *OsdnNode) reattachPods(existingPodSandboxes map[string]*kruntimeapi.
 	for sandboxID, podInfo := range existingOFPodNetworks {
 		sandbox, ok := existingPodSandboxes[sandboxID]
 		if !ok {
-			klog.V(5).Infof("Sandbox for pod with IP %s no longer exists", podInfo.ip)
+			klog.V(5).Infof("Sandbox for pod with IP %s no longer exists", podInfo.ips[0])
 			continue
 		}
 		if _, err := netlink.LinkByName(podInfo.vethName); err != nil {
@@ -393,8 +393,7 @@ func (node *OsdnNode) reattachPods(existingPodSandboxes map[string]*kruntimeapi.
 			PodName:      sandbox.Metadata.Name,
 			SandboxID:    sandboxID,
 			HostVeth:     podInfo.vethName,
-			// IPV6FIXME: dual IPs
-			AssignedIPs:  []string{podInfo.ip},
+			AssignedIPs:  podInfo.ips,
 			Result:       make(chan *cniserver.PodResult),
 		}
 		klog.Infof("Reattaching pod '%s/%s' to SDN", req.PodNamespace, req.PodName)
