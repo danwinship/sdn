@@ -26,6 +26,46 @@ func TestGenerateGateway(t *testing.T) {
 	if gatewayIP.String() != "10.1.0.1" {
 		t.Fatalf("Did not get expected gateway IP Address (gatewayIP=%s)", gatewayIP.String())
 	}
+
+	_, ip6Net, err := net.ParseCIDR("fd01:0:0:1::/64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gatewayIP6 := GenerateDefaultGateway(ip6Net)
+	if gatewayIP6.String() != "fd01:0:0:1::1" {
+		t.Fatalf("Did not get expected gateway IP6 Address (gatewayIP6=%s)", gatewayIP6.String())
+	}
+}
+
+func TestIPAddrToHWAddr(t *testing.T) {
+	tests := []struct {
+		desc   string
+		inIP   string
+		outMAC string
+	}{
+		{
+			desc:   "ipv4",
+			inIP:   "192.168.1.5",
+			outMAC: "0a:58:c0:a8:01:05",
+		},
+		{
+			desc:  "ipv6",
+			inIP:  "fd01::1234",
+			outMAC: "0a:58:a7:8d:d6:d9",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.desc, func(t *testing.T) {
+			ip := net.ParseIP(tc.inIP)
+			if ip == nil {
+				t.Fatalf("unexpectedly could not parse IP %q", tc.inIP)
+			}
+			mac := IPAddrToHWAddr(ip)
+			if mac.String() != tc.outMAC {
+				t.Fatalf("wrong MAC: expected %q got %q", tc.outMAC, mac)
+			}
+		})
+	}
 }
 
 func TestValidateHostSubnetEgress(t *testing.T) {

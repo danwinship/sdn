@@ -1,6 +1,7 @@
 package common
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"net"
 
@@ -18,15 +19,14 @@ func ClusterNetworkToString(n *osdnv1.ClusterNetwork) string {
 }
 
 // Generate the default gateway IP Address for a subnet
-// IPV6FIXME: IPv4-specific
 func GenerateDefaultGateway(sna *net.IPNet) net.IP {
-	ip := sna.IP.To4()
-	return net.IPv4(ip[0], ip[1], ip[2], ip[3]|0x1)
+	ip := append([]byte{}, sna.IP...)
+	ip[len(ip)-1] |= 0x1
+	return ip
 }
 
 // Return Host IP Networks
-// Ignores provided interfaces and filters loopback and non IPv4 addrs.
-// IPV6FIXME: IPv4-specific
+// Ignores provided interfaces and filters loopback addrs.
 func GetHostIPNetworks(skipInterfaces []string) ([]*net.IPNet, []net.IP, error) {
 	hostInterfaces, err := net.Interfaces()
 	if err != nil {
@@ -58,11 +58,12 @@ func GetHostIPNetworks(skipInterfaces []string) ([]*net.IPNet, []net.IP, error) 
 				continue
 			}
 
-			// Skip loopback and non IPv4 addrs
-			if !ip.IsLoopback() && ip.To4() != nil {
-				hostIPNets = append(hostIPNets, ipNet)
-				hostIPs = append(hostIPs, ip)
+			if ip.IsLoopback() {
+				continue
 			}
+
+			hostIPNets = append(hostIPNets, ipNet)
+			hostIPs = append(hostIPs, ip)
 		}
 	}
 	return hostIPNets, hostIPs, kerrors.NewAggregate(errList)
@@ -82,4 +83,19 @@ func StringsToHSEgressIPs(ips []string) []osdnv1.HostSubnetEgressIP {
 		out = append(out, osdnv1.HostSubnetEgressIP(ip))
 	}
 	return out
+}
+
+// IPAddrToHWAddr takes the four octets of IPv4 address (aa.bb.cc.dd, for example) and
+// uses them in creating a MAC address (0A:58:AA:BB:CC:DD). For IPv6, create a hash from
+// the IPv6 string and use that for MAC Address.
+func IPAddrToHWAddr(ip net.IP) net.HardwareAddr {
+	// Ensure that for IPv4, we are always working with the IP in 4-byte form.
+	ip4 := ip.To4()
+	if ip4 != nil {
+		// safe to use private MAC prefix: 0A:58
+		return net.HardwareAddr{0x0A, 0x58, ip4[0], ip4[1], ip4[2], ip4[3]}
+	}
+
+	hash := sha256.Sum256(ip)
+	return net.HardwareAddr{0x0A, 0x58, hash[0], hash[1], hash[2], hash[3]}
 }

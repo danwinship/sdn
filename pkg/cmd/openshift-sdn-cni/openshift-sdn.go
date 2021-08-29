@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/openshift/sdn/pkg/network/common"
 	"github.com/openshift/sdn/pkg/network/common/cniserver"
 
 	"github.com/containernetworking/cni/pkg/skel"
@@ -186,8 +187,12 @@ func (p *cniPlugin) CmdAdd(args *skel.CmdArgs) error {
 
 	err = ns.WithNetNSPath(args.Netns, func(hostNS ns.NetNS) error {
 		// Set up eth0
-		// IPV6FIXME: ip.SetHWAddrByIP() only supports IPv4
-		if err := ip.SetHWAddrByIP(args.IfName, result.IPs[0].Address.IP, nil); err != nil {
+		link, err := netlink.LinkByName(args.IfName)
+		if err != nil {
+			return fmt.Errorf("could not find default network interface: %v", err)
+		}
+		mac := common.IPAddrToHWAddr(result.IPs[0].Address.IP)
+		if err := netlink.LinkSetHardwareAddr(link, mac); err != nil {
 			return fmt.Errorf("failed to set pod interface MAC address: %v", err)
 		}
 		if err := ipam.ConfigureIface(args.IfName, result); err != nil {
@@ -195,7 +200,7 @@ func (p *cniPlugin) CmdAdd(args *skel.CmdArgs) error {
 		}
 
 		// Set up lo
-		link, err := netlink.LinkByName("lo")
+		link, err = netlink.LinkByName("lo")
 		if err == nil {
 			err = netlink.LinkSetUp(link)
 		}

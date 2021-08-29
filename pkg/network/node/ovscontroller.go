@@ -456,9 +456,8 @@ func (oc *ovsController) setupPodFlows(sandboxID string, ofport int, podIP net.I
 
 	cookie := stringToCookie(sandboxID)
 	ipstr := podIP.String()
-	// IPV6FIXME: need MAC generation for IPv6
-	podIP = podIP.To4()
-	ipmac := fmt.Sprintf("00:00:%02x:%02x:%02x:%02x/00:00:ff:ff:ff:ff", podIP[0], podIP[1], podIP[2], podIP[3])
+	mac := common.IPAddrToHWAddr(podIP)
+	ipmac := fmt.Sprintf("00:00:%02x:%02x:%02x:%02x/00:00:ff:ff:ff:ff", mac[2], mac[3], mac[4], mac[5])
 
 	// IPV6FIXME: ipv6 rules
 
