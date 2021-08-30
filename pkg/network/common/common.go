@@ -18,6 +18,7 @@ func ClusterNetworkToString(n *osdnv1.ClusterNetwork) string {
 }
 
 // Generate the default gateway IP Address for a subnet
+// IPV6FIXME: IPv4-specific
 func GenerateDefaultGateway(sna *net.IPNet) net.IP {
 	ip := sna.IP.To4()
 	return net.IPv4(ip[0], ip[1], ip[2], ip[3]|0x1)
@@ -25,6 +26,7 @@ func GenerateDefaultGateway(sna *net.IPNet) net.IP {
 
 // Return Host IP Networks
 // Ignores provided interfaces and filters loopback and non IPv4 addrs.
+// IPV6FIXME: IPv4-specific
 func GetHostIPNetworks(skipInterfaces []string) ([]*net.IPNet, []net.IP, error) {
 	hostInterfaces, err := net.Interfaces()
 	if err != nil {

@@ -309,6 +309,8 @@ func ParseFlow(ptype ParseType, flow string, args ...interface{}) (*OvsFlow, err
 		}
 	}
 
+	// IPV6FIXME: add sanity-checking for IPv6 fields
+
 	if anyFieldSet(parsed, "nw_src", "nw_dst") && !anyFieldSet(parsed, "arp", "ip", "tcp", "udp", "sctp") {
 		return nil, fmt.Errorf("bad flow %q (specified nw_src/nw_dst without ip/tcp/udp/sctp)", flow)
 	}

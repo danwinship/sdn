@@ -30,6 +30,7 @@ import (
 // processess from the command line.
 type openShiftSDN struct {
 	nodeName string
+	// IPV6FIXME: dual node IPs
 	nodeIP   string
 
 	sdnConfig *sdncommon.SDNConfig
@@ -42,6 +43,7 @@ type openShiftSDN struct {
 	sdnRecorder record.EventRecorder
 	osdnProxy   *sdnproxy.OsdnProxy
 
+	// IPV6FIXME: dual ipts
 	ipt iptables.Interface
 }
 

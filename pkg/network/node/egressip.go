@@ -16,6 +16,10 @@ import (
 	"github.com/vishvananda/netlink"
 )
 
+// IPV6FIXME: Egress IP-related fields in osdnv1.NetNamespace and osdnv1.HostSubnet are
+// required to be IPv4-only by their CRDs. Presumably we will only support IPv6 with the
+// ovn-kubernetes-style EgressIP API.
+
 const (
 	defaultPollInterval = 5 * time.Second
 	repollInterval      = time.Second

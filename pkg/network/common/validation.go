@@ -36,6 +36,7 @@ func validateIPv4(ip string) (net.IP, error) {
 }
 
 // ValidateClusterNetwork tests if required fields in the ClusterNetwork are set, and ensures that the "default" ClusterNetwork can only be set to the correct values
+// IPV6FIXME: osdnv1.ClusterNetwork is required to be IPv4-only by its CRD
 func ValidateClusterNetwork(clusterNet *osdnv1.ClusterNetwork) error {
 	allErrs := validation.ValidateObjectMeta(&clusterNet.ObjectMeta, false, path.ValidatePathSegmentName, field.NewPath("metadata"))
 	var testedCIDRS []*net.IPNet
@@ -122,6 +123,7 @@ func ValidateClusterNetwork(clusterNet *osdnv1.ClusterNetwork) error {
 }
 
 // ValidateHostSubnet checks if the system-maintained fields of hostsubnet are valid.
+// IPV6FIXME: osdnv1.HostSubnet is validated to be IPv4-only by its CRD
 func ValidateHostSubnet(hs *osdnv1.HostSubnet) error {
 	allErrs := validation.ValidateObjectMeta(&hs.ObjectMeta, false, path.ValidatePathSegmentName, field.NewPath("metadata"))
 
@@ -153,6 +155,7 @@ func ValidateHostSubnet(hs *osdnv1.HostSubnet) error {
 }
 
 // ValidateHostSubnetEgress checks if the user-maintained fields of hostsubnet are valid.
+// IPV6FIXME: osdnv1.HostSubnet is validated to be IPv4-only by its CRD
 func ValidateHostSubnetEgress(hs *osdnv1.HostSubnet) error {
 	allErrs := validation.ValidateObjectMeta(&hs.ObjectMeta, false, path.ValidatePathSegmentName, field.NewPath("metadata"))
 

@@ -70,6 +70,7 @@ type OsdnProxy struct {
 func New(clients *common.SDNClients, sdnConfig *common.SDNConfig,
 	proxyConfig *kubeproxyconfig.KubeProxyConfiguration) (*OsdnProxy, error) {
 
+	// IPV6FIXME: pass correct ipv4/ipv6 values
 	egressDNS, err := common.NewEgressDNS(true, false)
 	if err != nil {
 		return nil, err

@@ -17,6 +17,10 @@ import (
 	unidlingapi "github.com/openshift/api/unidling/v1alpha1"
 )
 
+// IPV6FIXME: in a dual-stack cluster, the mainProxy will be a dual-stack metaproxy, but
+// the unidling proxy is single-stack, so we will have to fake dual-stack-ness by sending
+// it a pair of Services/Endpoints for each dual-stack Service.
+
 // HybridizableProxy is an extra interface we layer on top of Provider
 type HybridizableProxy interface {
 	proxy.Provider
@@ -52,6 +56,7 @@ type hybridProxierService struct {
 
 	// cached info about the Service/Endpoints
 	serviceHasIdleAnnotation bool
+	// IPV6FIXME: dual emptyEndpoints
 	emptyEndpoints           *corev1.Endpoints
 
 	// idling/unidling state
@@ -164,14 +169,17 @@ func (p *HybridProxier) releaseService(svcName types.NamespacedName) {
 		if hsvc.shouldBeIdled() {
 			klog.Infof("switching svc %s to unidling proxy", svcName)
 			p.mainProxy.OnServiceDelete(service)
+			// IPV6FIXME: may need to add dual services
 			p.unidlingProxy.OnServiceAdd(service)
 			if !hsvc.unidlingProxyWantsEndpoints() {
+				// IPV6FIXME: may need to add dual endpoints
 				p.unidlingProxy.OnEndpointsAdd(hsvc.emptyEndpoints)
 			}
 			hsvc.isIdled = true
 			hsvc.unidledAt = nil
 		} else {
 			klog.Infof("switching svc %s to main proxy", svcName)
+			// IPV6FIXME: may need to delete dual services
 			p.unidlingProxy.OnServiceDelete(service)
 			p.mainProxy.OnServiceAdd(service)
 			hsvc.isIdled = false
@@ -216,6 +224,7 @@ func (p *HybridProxier) OnServiceUpdate(oldService, service *corev1.Service) {
 		// Send the Update to the proxy that already knows about the service
 		if hsvc.isIdled {
 			klog.V(6).Infof("update svc %s in unidling proxy", svcName)
+			// IPV6FIXME: may need to update dual services
 			p.unidlingProxy.OnServiceUpdate(oldService, service)
 		} else {
 			klog.V(6).Infof("update svc %s in main proxy", svcName)
@@ -236,6 +245,7 @@ func (p *HybridProxier) OnServiceDelete(service *corev1.Service) {
 
 	if hsvc.isIdled {
 		klog.V(6).Infof("del svc %s in unidling proxy", svcName)
+		// IPV6FIXME: may need to delete dual services
 		p.unidlingProxy.OnServiceDelete(service)
 	} else {
 		klog.V(6).Infof("del svc %s in main proxy", svcName)
@@ -332,6 +342,8 @@ func endpointsIfEmptySlice(slice *discoveryv1.EndpointSlice) *corev1.Endpoints {
 	return sliceToEndpoints(slice)
 }
 
+// IPV6FIXME: for a dual-stack Service, there will be separate IPv4 and IPv6 slices.
+// (actually, the current code doesn't currently handle multi-slice services anyway)
 func (p *HybridProxier) OnEndpointSliceAdd(slice *discoveryv1.EndpointSlice) {
 	svcName := types.NamespacedName{Namespace: slice.Namespace, Name: endpointSliceServiceName(slice)}
 	hsvc := p.getService(svcName)
@@ -347,6 +359,8 @@ func (p *HybridProxier) OnEndpointSliceAdd(slice *discoveryv1.EndpointSlice) {
 	}
 }
 
+// IPV6FIXME: for a dual-stack Service, there will be separate IPv4 and IPv6 slices.
+// (actually, the current code doesn't currently handle multi-slice services anyway)
 func (p *HybridProxier) OnEndpointSliceUpdate(oldSlice, slice *discoveryv1.EndpointSlice) {
 	svcName := types.NamespacedName{Namespace: slice.Namespace, Name: endpointSliceServiceName(slice)}
 	hsvc := p.getService(svcName)
@@ -364,6 +378,8 @@ func (p *HybridProxier) OnEndpointSliceUpdate(oldSlice, slice *discoveryv1.Endpo
 	}
 }
 
+// IPV6FIXME: for a dual-stack Service, there will be separate IPv4 and IPv6 slices.
+// (actually, the current code doesn't currently handle multi-slice services anyway)
 func (p *HybridProxier) OnEndpointSliceDelete(slice *discoveryv1.EndpointSlice) {
 	svcName := types.NamespacedName{Namespace: slice.Namespace, Name: endpointSliceServiceName(slice)}
 	hsvc := p.getService(svcName)

@@ -22,6 +22,10 @@ import (
 	masterutil "github.com/openshift/sdn/pkg/network/master/util"
 )
 
+// IPV6FIXME: HostSubnet is single-stack, and required to be IPv4-only by its CRD. We
+// could change the CRD, support IPv6 via annotations, or abandon HostSubnet in favor of
+// ovn-kubernetes-style annotations-on-nodes.
+
 type subnetManager struct {
 	clients   *common.SDNClients
 	sdnConfig *common.SDNConfig
@@ -30,6 +34,7 @@ type subnetManager struct {
 	hostSubnetLister osdnlisters.HostSubnetLister
 
 	subnetAllocator   *masterutil.SubnetAllocator
+	// IPV6FIXME: dual-stack
 	hostSubnetNodeIPs map[ktypes.UID]string
 }
 
@@ -124,6 +129,7 @@ func (sm *subnetManager) handleDeleteNode(obj interface{}) {
 
 // addNode takes the nodeName, a preferred nodeIP and the node's annotations
 // Creates or updates a HostSubnet if needed
+// IPV6FIXME: dual-stack
 func (sm *subnetManager) addNode(nodeName string, nodeUID string, nodeIP string, hsAnnotations map[string]string) error {
 	// Validate node IP before proceeding
 	if err := sm.sdnConfig.ValidateNodeIP(nodeIP); err != nil {
@@ -162,6 +168,7 @@ func (sm *subnetManager) addNode(nodeName string, nodeUID string, nodeIP string,
 	if err != nil {
 		return fmt.Errorf("error allocating network for node %s: %v", nodeName, err)
 	}
+	// IPV6FIXME: dual-stack
 	sub = &osdnv1.HostSubnet{
 		TypeMeta:   metav1.TypeMeta{Kind: "HostSubnet"},
 		ObjectMeta: metav1.ObjectMeta{Name: nodeName, Annotations: hsAnnotations},
@@ -242,6 +249,7 @@ func (sm *subnetManager) clearInitialNodeNetworkUnavailableCondition(origNode *c
 	}
 }
 
+// IPV6FIXME: dual-stack
 func getNodeInternalIP(node *corev1.Node) string {
 	var nodeIP string
 	for _, addr := range node.Status.Addresses {

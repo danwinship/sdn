@@ -64,6 +64,7 @@ type OsdnNodeConfig struct {
 	ProxyConfig *kubeproxyconfig.KubeProxyConfiguration
 
 	Recorder record.EventRecorder
+	// IPV6FIXME: dual IPTables
 	IPTables iptables.Interface
 }
 
@@ -129,6 +130,7 @@ func New(c *OsdnNodeConfig) (*OsdnNode, error) {
 	node.nodeIPTables = newNodeIPTables(node.sdnConfig, node.nodeConfig, c.IPTables)
 
 	node.egressPolicies = make(map[uint32][]osdnv1.EgressNetworkPolicy)
+	// IPV6FIXME: pass correct ipv4/ipv6 values here
 	node.egressDNS, err = common.NewEgressDNS(true, false)
 	if err != nil {
 		return nil, err
@@ -142,6 +144,7 @@ func New(c *OsdnNodeConfig) (*OsdnNode, error) {
 }
 
 func (c *OsdnNodeConfig) validateNodeIP() error {
+	// IPV6FIXME: dual node IPs
 	if _, _, err := GetLinkDetails(c.NodeConfig.IPString); err != nil {
 		if err == ErrorNetworkInterfaceNotFound {
 			err = fmt.Errorf("node IP %q is not a local/private address (hostname %q)", c.NodeConfig.IPString, c.NodeConfig.Name)
@@ -172,6 +175,7 @@ func GetLinkDetails(ip string) (netlink.Link, *net.IPNet, error) {
 	}
 
 	for _, link := range links {
+		// IPV6FIXME: ipv4-specific
 		addrs, err := netlink.AddrList(link, netlink.FAMILY_V4)
 		if err != nil {
 			klog.Warningf("Could not get addresses of interface %q: %v", link.Attrs().Name, err)
@@ -196,7 +200,7 @@ func (node *OsdnNode) validateMTU() error {
 	klog.V(2).Infof("Checking default interface MTU")
 
 	// Get the interface with the default route
-	// TODO(cdc) handle v6-only nodes
+	// IPV6FIXME: ipv4-specific
 	routes, err := netlink.RouteList(nil, netlink.FAMILY_V4)
 	if err != nil {
 		return fmt.Errorf("could not list routes while validating MTU: %v", err)
@@ -219,6 +223,7 @@ func (node *OsdnNode) validateMTU() error {
 
 		// we want to check the mtu only for the interface assigned to the node's primary ip
 		found := false
+		// IPV6FIXME: ipv4-specific
 		addresses, err := netlink.AddrList(link, netlink.FAMILY_V4)
 		for _, address := range addresses {
 			if node.nodeConfig.IP.Equal(address.IP) {
@@ -239,6 +244,7 @@ func (node *OsdnNode) validateMTU() error {
 		return fmt.Errorf("unable to determine MTU while performing validation")
 	}
 
+	// IPV6FIXME: overhead depends on primary node IP family
 	needsTaint := mtu < node.sdnConfig.MTU+50
 	const MTUTaintKey string = "network.openshift.io/mtu-too-small"
 	mtuTooSmallTaint := &corev1.Taint{Key: MTUTaintKey, Value: "value", Effect: "NoSchedule"}
@@ -392,6 +398,7 @@ func (node *OsdnNode) reattachPods(existingPodSandboxes map[string]*kruntimeapi.
 			PodName:      sandbox.Metadata.Name,
 			SandboxID:    sandboxID,
 			HostVeth:     podInfo.vethName,
+			// IPV6FIXME: dual IPs
 			AssignedIP:   podInfo.ip,
 			Result:       make(chan *cniserver.PodResult),
 		}

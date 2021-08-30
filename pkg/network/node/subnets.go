@@ -16,6 +16,7 @@ import (
 
 type hostSubnetWatcher struct {
 	oc        *ovsController
+	// IPV6FIXME: dual local IPs
 	localIP   string
 	sdnConfig *common.SDNConfig
 
@@ -66,6 +67,7 @@ func (hsw *hostSubnetWatcher) updateHostSubnet(hs *osdnv1.HostSubnet) error {
 	}
 	oldSubnet, exists := hsw.hostSubnetMap[hs.UID]
 	if exists {
+		// IPV6FIXME: dual host IPs
 		if oldSubnet.HostIP == hs.HostIP {
 			return nil
 		} else {
@@ -73,6 +75,7 @@ func (hsw *hostSubnetWatcher) updateHostSubnet(hs *osdnv1.HostSubnet) error {
 			hsw.oc.DeleteHostSubnetRules(oldSubnet)
 		}
 	}
+	// IPV6FIXME: dual host IPs
 	if err := hsw.sdnConfig.ValidateNodeIP(hs.HostIP); err != nil {
 		return fmt.Errorf("ignoring invalid subnet for node %s: %v", hs.HostIP, err)
 	}

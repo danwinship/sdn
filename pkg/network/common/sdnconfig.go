@@ -15,6 +15,8 @@ import (
 	"github.com/openshift/library-go/pkg/network/networkutils"
 )
 
+// IPV6FIXME: dual-stack support
+
 // SDNConfig holds the openshift-sdn configuration
 type SDNConfig struct {
 	PluginName      string
@@ -69,6 +71,7 @@ func ParseSDNConfig(cn *osdnv1.ClusterNetwork) (*SDNConfig, error) {
 		sdnConfig.ClusterNetworkCIDRStrings = append(sdnConfig.ClusterNetworkCIDRStrings, entry.CIDR)
 	}
 
+	// IPV6FIXME: osdnv1.ClusterNetwork only supports a single ServiceNetwork value
 	var err error
 	sdnConfig.ServiceNetwork, err = networkutils.ParseCIDRMask(cn.ServiceNetwork)
 	if err != nil {
@@ -89,6 +92,7 @@ func ParseSDNConfig(cn *osdnv1.ClusterNetwork) (*SDNConfig, error) {
 	if cn.MTU != nil {
 		sdnConfig.MTU = int(*cn.MTU)
 	} else {
+		// IPV6FIXME: ipv4-specific default
 		sdnConfig.MTU = 1450
 	}
 
@@ -106,6 +110,7 @@ func (sdnConfig *SDNConfig) PodNetworkContains(ip net.IP) bool {
 }
 
 // ServiceNetworkContains determines whether sdnConfig's service network contains ip
+// IPV6FIXME: multiple service cidrs
 func (sdnConfig *SDNConfig) ServiceNetworkContains(ip net.IP) bool {
 	if sdnConfig.ServiceNetwork != nil {
 		if sdnConfig.ServiceNetwork.Contains(ip) {
@@ -116,6 +121,7 @@ func (sdnConfig *SDNConfig) ServiceNetworkContains(ip net.IP) bool {
 }
 
 func (sdnConfig *SDNConfig) ValidateNodeIP(nodeIP string) error {
+	// IPV6FIXME: ipv4-specific
 	if nodeIP == "" || nodeIP == "127.0.0.1" {
 		return fmt.Errorf("invalid node IP %q", nodeIP)
 	}
@@ -132,6 +138,7 @@ func (sdnConfig *SDNConfig) ValidateNodeIP(nodeIP string) error {
 			return fmt.Errorf("node IP %s conflicts with cluster network %s", nodeIP, cn.CIDR.String())
 		}
 	}
+	// IPV6FIXME: multiple service cidrs
 	if sdnConfig.ServiceNetwork.Contains(ipaddr) {
 		return fmt.Errorf("node IP %s conflicts with service network %s", nodeIP, sdnConfig.ServiceNetworkCIDRString)
 	}
@@ -203,6 +210,7 @@ func (sdnConfig *SDNConfig) CheckClusterObjects(subnets []osdnv1.HostSubnet, pod
 }
 
 // NewTestSDNConfig creates a new basic SDNConfig for unit tests
+// IPV6FIXME: will need to be able to test IPv6 and dual-stack configs
 func NewTestSDNConfig() *SDNConfig {
 	sdnConfig, err := ParseSDNConfig(
 		&osdnv1.ClusterNetwork{

@@ -22,13 +22,16 @@ type NodeConfig struct {
 	// Name is the node name, passed on the command line
 	Name string
 	// IP is the node IP, passed on the command line
+	// IPV6FIXME: dual node IPs
 	IP       net.IP
 	IPString string
 
 	// LocalSubnet is the local HostSubnet CIDR
+	// IPV6FIXME: dual local subnets
 	LocalSubnet           *net.IPNet
 	LocalSubnetCIDRString string
 	// LocalGateway is the IP of tun0, in CIDR form
+	// IPV6FIXME: dual local gateways
 	LocalGateway             *net.IPNet
 	LocalGatewayIPString     string
 	LocalGatewayIfAddrString string
@@ -131,6 +134,7 @@ func (nodeConfig *NodeConfig) getLocalSubnet(clients *common.SDNClients) error {
 		if err == nil {
 			if err = common.ValidateHostSubnet(subnet); err != nil {
 				return false, err
+			// IPV6FIXME: validate both IPs
 			} else if subnet.HostIP == nodeConfig.IPString {
 				return true, nil
 			} else {

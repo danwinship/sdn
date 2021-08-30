@@ -55,6 +55,7 @@ const CNIServerConfigFilePath string = CNIServerRunDir + "/" + CNIServerConfigFi
 // Server-to-plugin config data
 type Config struct {
 	MTU                int    `json:"mtu"`
+	// IPV6FIXME: dual service cidrs
 	ServiceNetworkCIDR string `json:"serviceNetworkCIDR"`
 }
 
@@ -91,6 +92,7 @@ type PodRequest struct {
 	// for an ADD request, the host side of the created veth
 	HostVeth string
 	// for an ADD request, the (optional) already-assigned IP
+	// IPV6FIXME: dual AssignedIPs
 	AssignedIP string
 	// Channel for returning the operation result to the CNIServer
 	Result chan *PodResult

@@ -6,6 +6,8 @@ import (
 	"sync"
 )
 
+// IPV6FIXME: import dual-stackified version from ovn-kubernetes
+
 var ErrSubnetAllocatorFull = fmt.Errorf("no subnets available.")
 
 type SubnetAllocator struct {

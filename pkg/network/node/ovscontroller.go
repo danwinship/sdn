@@ -226,6 +226,8 @@ func (oc *ovsController) SetupOVS() error {
 
 	otx := oc.ovs.NewTransaction()
 
+	// IPV6FIXME: ipv4-vs-ipv6 / dual-stack
+
 	// Table 0: initial dispatch based on in_port
 	if oc.nodeConfig.UseConnTrack {
 		otx.AddFlow("table=0, priority=1000, ip, ct_state=-trk, actions=ct(table=0)")
@@ -376,6 +378,7 @@ func (oc *ovsController) FinishSetupOVS() error {
 
 type podNetworkInfo struct {
 	vethName string
+	// IPV6FIXME: dual ips
 	ip       string
 	ofport   int
 }
@@ -403,6 +406,7 @@ func (oc *ovsController) GetPodNetworkInfo() (map[string]podNetworkInfo, error) 
 			klog.Errorf("ovs-vsctl output missing one or more external_ids: %v", ids)
 			continue
 		}
+		// IPV6FIXME: dual ips
 		if net.ParseIP(ids["ip"]) == nil {
 			klog.Errorf("Could not parse IP %q for sandbox %q", ids["ip"], ids["sandbox"])
 			continue
@@ -428,6 +432,7 @@ func (oc *ovsController) NewTransaction() ovs.Transaction {
 	return oc.ovs.NewTransaction()
 }
 
+// IPV6FIXME: dual podIPs
 func (oc *ovsController) ensureOvsPort(hostVeth, sandboxID, podIP string) (int, error) {
 	ofport, err := oc.ovs.AddPort(hostVeth, -1,
 		fmt.Sprintf(`external_ids=sandbox="%s",ip="%s"`, sandboxID, podIP),
@@ -445,13 +450,17 @@ func stringToCookie(str string) string {
 	return fmt.Sprintf("0x%016x", binary.BigEndian.Uint64(hash[0:8]))
 }
 
+// IPV6FIXME: dual podIPs
 func (oc *ovsController) setupPodFlows(sandboxID string, ofport int, podIP net.IP, vnid uint32) error {
 	otx := oc.ovs.NewTransaction()
 
 	cookie := stringToCookie(sandboxID)
 	ipstr := podIP.String()
+	// IPV6FIXME: need MAC generation for IPv6
 	podIP = podIP.To4()
 	ipmac := fmt.Sprintf("00:00:%02x:%02x:%02x:%02x/00:00:ff:ff:ff:ff", podIP[0], podIP[1], podIP[2], podIP[3])
+
+	// IPV6FIXME: ipv6 rules
 
 	// ARP/IP traffic from container
 	otx.AddFlow("table=20, priority=100, cookie=%s, in_port=%d, arp, nw_src=%s, arp_sha=%s, actions=load:%d->NXM_NX_REG0[], goto_table:21", cookie, ofport, ipstr, ipmac, vnid)
@@ -475,6 +484,7 @@ func (oc *ovsController) cleanupPodFlows(sandboxID string) error {
 	return otx.Commit()
 }
 
+// IPV6FIXME: dual podIPs
 func (oc *ovsController) SetUpPod(sandboxID, hostVeth string, podIP net.IP, vnid uint32) (int, error) {
 	ofport, err := oc.ensureOvsPort(hostVeth, sandboxID, podIP.String())
 	if err != nil {
@@ -543,6 +553,7 @@ func (oc *ovsController) SetPodBandwidth(hostVeth, sandboxID string, ingressBPS,
 	return nil
 }
 
+// IPV6FIXME: dual podIPs
 func (oc *ovsController) getPodDetailsBySandboxID(sandboxID string) (int, net.IP, error) {
 	rows, err := oc.ovs.Find("interface", []string{"ofport", "external_ids"}, "external_ids:sandbox="+sandboxID)
 	if err != nil {
@@ -566,6 +577,7 @@ func (oc *ovsController) getPodDetailsBySandboxID(sandboxID string) (int, net.IP
 	} else if ids["ip"] == "" {
 		return 0, nil, fmt.Errorf("external_ids %#v does not contain IP", ids)
 	}
+	// IPV6FIXME: dual podIPs
 	podIP := net.ParseIP(ids["ip"])
 	if podIP == nil {
 		return 0, nil, fmt.Errorf("failed to parse IP %q", ids["ip"])
@@ -575,6 +587,7 @@ func (oc *ovsController) getPodDetailsBySandboxID(sandboxID string) (int, net.IP
 }
 
 func (oc *ovsController) UpdatePod(sandboxID string, vnid uint32) error {
+	// IPV6FIXME: dual podIPs
 	ofport, podIP, err := oc.getPodDetailsBySandboxID(sandboxID)
 	if err != nil {
 		return err
@@ -626,6 +639,8 @@ func policyNames(policies []osdnv1.EgressNetworkPolicy) string {
 	return strings.Join(names, ", ")
 }
 
+// IPV6FIXME: osdnv1.EgressNetworkPolicy is required to be IPv4-only by its CRD.
+// Presumably we will only support IPv6 with the ovn-kubernetes-style EgressFirewall API.
 func (oc *ovsController) UpdateEgressNetworkPolicyRules(policies []osdnv1.EgressNetworkPolicy, vnid uint32, namespaces []string, egressDNS *common.EgressDNS) error {
 	otx := oc.ovs.NewTransaction()
 	errs := []error{}
@@ -697,11 +712,14 @@ func (oc *ovsController) AddHostSubnetRules(subnet *osdnv1.HostSubnet) error {
 	cookie := stringToCookie(string(subnet.UID))
 	otx := oc.ovs.NewTransaction()
 
+	// IPV6FIXME: need tun_ipv6_src for IPv6 HostIP
 	otx.AddFlow("table=10, priority=100, cookie=%s, tun_src=%s, actions=goto_table:30", cookie, subnet.HostIP)
 	if vnid, ok := subnet.Annotations[osdnv1.FixedVNIDHostAnnotation]; ok {
+		// IPV6FIXME: ipv4-vs-ipv6, tun_dst vs tun_ipv6_dst
 		otx.AddFlow("table=50, priority=100, cookie=%s, arp, nw_dst=%s, actions=load:%s->NXM_NX_TUN_ID[0..31],set_field:%s->tun_dst,output:1", cookie, subnet.Subnet, vnid, subnet.HostIP)
 		otx.AddFlow("table=90, priority=100, cookie=%s, ip, nw_dst=%s, actions=load:%s->NXM_NX_TUN_ID[0..31],set_field:%s->tun_dst,output:1", cookie, subnet.Subnet, vnid, subnet.HostIP)
 	} else {
+		// IPV6FIXME: ipv4-vs-ipv6, tun_dst vs tun_ipv6_dst
 		otx.AddFlow("table=50, priority=100, cookie=%s, arp, nw_dst=%s, actions=move:NXM_NX_REG0[]->NXM_NX_TUN_ID[0..31],set_field:%s->tun_dst,output:1", cookie, subnet.Subnet, subnet.HostIP)
 		otx.AddFlow("table=90, priority=100, cookie=%s, ip, nw_dst=%s, actions=move:NXM_NX_REG0[]->NXM_NX_TUN_ID[0..31],set_field:%s->tun_dst,output:1", cookie, subnet.Subnet, subnet.HostIP)
 	}
@@ -717,6 +735,9 @@ func (oc *ovsController) DeleteHostSubnetRules(subnet *osdnv1.HostSubnet) error 
 
 func (oc *ovsController) AddServiceRules(service *corev1.Service, netID uint32) error {
 	otx := oc.ovs.NewTransaction()
+
+	// Note that AddServiceRules is only used in non-conntrack mode, and thus only
+	// with single-stack IPv4, so it doesn't have to worry about IPv6/dual-stack.
 
 	baseRule := fmt.Sprintf("table=60, priority=100, cookie=%s, ip, nw_dst=%s", stringToCookie(string(service.UID)), service.Spec.ClusterIP)
 
@@ -744,6 +765,7 @@ func (oc *ovsController) AddServiceRules(service *corev1.Service, netID uint32) 
 	return otx.Commit()
 }
 
+// DeleteServiceRules is only used in non-conntrack mode, and thus only with IPv4
 func (oc *ovsController) DeleteServiceRules(service *corev1.Service) error {
 	otx := oc.ovs.NewTransaction()
 	otx.DeleteFlows("table=60, cookie=%s/-1", stringToCookie(string(service.UID)))
@@ -780,6 +802,7 @@ func (oc *ovsController) UpdateVXLANMulticastFlows(remoteIPs []string) error {
 	if len(remoteIPs) > 0 {
 		actions := make([]string, len(remoteIPs))
 		for i, ip := range remoteIPs {
+			// IPV6FIXME: tun_dst vs tun_ipv6_dst
 			actions[i] = fmt.Sprintf("set_field:%s->tun_dst,output:1", ip)
 		}
 		sort.Strings(actions)
@@ -920,6 +943,7 @@ func (oc *ovsController) SetNamespaceEgressViaEgressIPs(vnid uint32, egressIPsMe
 			if oc.nodeConfig.UseConnTrack {
 				commit = "ct(commit),"
 			}
+			// IPV6FIXME: tun_dst vs tun_ipv6_dst
 			buildBuckets = append(buildBuckets, fmt.Sprintf("actions=%smove:NXM_NX_REG0[]->NXM_NX_TUN_ID[0..31],set_field:%s->tun_dst,output:vxlan0", commit, egressIPMetaData.nodeIP))
 		}
 

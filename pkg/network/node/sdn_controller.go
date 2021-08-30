@@ -22,12 +22,14 @@ func (node *OsdnNode) alreadySetUp() error {
 		return err
 	}
 
+	// IPV6FIXME: IPv4-specific
 	addrs, err := netlink.AddrList(l, netlink.FAMILY_V4)
 	if err != nil {
 		return err
 	}
 	found = false
 	for _, addr := range addrs {
+		// IPV6FIXME: dual-stack check
 		if addr.IPNet.String() == node.nodeConfig.LocalGateway.String() {
 			found = true
 			break
@@ -37,6 +39,7 @@ func (node *OsdnNode) alreadySetUp() error {
 		return errors.New("local subnet gateway CIDR not found")
 	}
 
+	// IPV6FIXME: IPv4-specific
 	routes, err := netlink.RouteList(l, netlink.FAMILY_V4)
 	if err != nil {
 		return err
@@ -73,6 +76,7 @@ func deleteLocalSubnetRoute(device, localSubnetCIDR string) {
 		if err != nil {
 			return false, fmt.Errorf("could not get interface %s: %v", device, err)
 		}
+		// IPV6FIXME: IPv4-specific
 		routes, err := netlink.RouteList(l, netlink.FAMILY_V4)
 		if err != nil {
 			return false, fmt.Errorf("could not get routes: %v", err)
@@ -96,6 +100,7 @@ func deleteLocalSubnetRoute(device, localSubnetCIDR string) {
 
 func (node *OsdnNode) SetupSDN() (bool, map[string]podNetworkInfo, error) {
 	// Make sure IPv4 forwarding state is 1
+	// IPV6FIXME: not for single-stack IPv6
 	sysctl := sysctl.New()
 	val, err := sysctl.GetSysctl("net/ipv4/ip_forward")
 	if err != nil {
@@ -105,6 +110,7 @@ func (node *OsdnNode) SetupSDN() (bool, map[string]podNetworkInfo, error) {
 		return false, nil, fmt.Errorf("net/ipv4/ip_forward=0, it must be set to 1")
 	}
 
+	// IPV6FIXME: dual
 	klog.V(5).Infof("[SDN setup] node pod subnet %s gateway %s", node.nodeConfig.LocalSubnet, node.nodeConfig.LocalGateway)
 
 	if err := healthCheckOVS(); err != nil {
@@ -145,8 +151,10 @@ func (node *OsdnNode) setup() error {
 
 	l, err := netlink.LinkByName(Tun0)
 	if err == nil {
+		// IPV6FIXME: add dual addresses
 		err = netlink.AddrAdd(l, &netlink.Addr{IPNet: node.nodeConfig.LocalGateway})
 		if err == nil {
+			// IPV6FIXME: dual deletions
 			defer deleteLocalSubnetRoute(Tun0, node.nodeConfig.LocalSubnetCIDRString)
 		}
 	}
@@ -166,6 +174,7 @@ func (node *OsdnNode) setup() error {
 		}
 	}
 	if err == nil {
+		// IPV6FIXME: dual service networks
 		route := &netlink.Route{
 			LinkIndex: l.Attrs().Index,
 			Dst:       node.sdnConfig.ServiceNetwork,

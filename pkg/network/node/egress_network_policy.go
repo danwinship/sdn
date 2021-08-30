@@ -14,6 +14,9 @@ import (
 	"k8s.io/apimachinery/pkg/watch"
 )
 
+// IPV6FIXME: osdnv1.EgressNetworkPolicy is required to be IPv4-only by its CRD.
+// Presumably we will only support IPv6 with the ovn-kubernetes-style EgressFirewall API.
+
 func (node *OsdnNode) SetupEgressNetworkPolicy() error {
 	policies, err := node.clients.OSDNClient.NetworkV1().EgressNetworkPolicies(metav1.NamespaceAll).List(context.TODO(), metav1.ListOptions{})
 	if err != nil {

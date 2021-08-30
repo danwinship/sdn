@@ -117,8 +117,10 @@ func (np *networkPolicyPlugin) Start(node *OsdnNode) error {
 		// Must pass packets through CT NAT to ensure NAT state is handled
 		// correctly by OVS when NAT-ed packets have tuple collisions.
 		// https://bugzilla.redhat.com/show_bug.cgi?id=1910378
+		// IPV6FIXME: ipv4-vs-ipv6
 		otx.AddFlow("table=21, priority=200, ip, nw_dst=%s, ct_state=-rpl, actions=ct(commit,nat(src=0.0.0.0),table=30)", cidr)
 	}
+	// IPV6FIXME: ipv6 too
 	otx.AddFlow("table=80, priority=200, ip, ct_state=+rpl, actions=output:NXM_NX_REG2[]")
 	if err := otx.Commit(); err != nil {
 		return err
@@ -330,6 +332,7 @@ func (np *networkPolicyPlugin) generateNamespaceFlows(otx ovs.Transaction, npns 
 				for _, ip := range npp.selectedIPs {
 					if !selectedIPs.Has(ip) {
 						selectedIPs.Insert(ip)
+						// IPV6FIXME: ipv4-vs-ipv6
 						otx.AddFlow("table=80, priority=100, reg1=%d, ip, nw_dst=%s, actions=drop", npns.vnid, ip)
 					}
 				}
@@ -446,6 +449,7 @@ func (np *networkPolicyPlugin) selectPodsFromNamespaces(nsLabelSel, podLabelSel 
 		}
 		for _, pod := range pods {
 			if isOnPodNetwork(pod) {
+				// IPV6FIXME: ipv4-vs-ipv6, dual-stack pod IPs
 				peerFlows = append(peerFlows, fmt.Sprintf("reg0=%d, ip, nw_src=%s, ", vnid, pod.Status.PodIP))
 			}
 		}
@@ -521,6 +525,7 @@ func (np *networkPolicyPlugin) parseNetworkPolicy(npns *npNamespace, policy *net
 		npp.watchesOwnPods = true
 		npp.selectedIPs = np.selectPods(npns, &policy.Spec.PodSelector)
 		for _, ip := range npp.selectedIPs {
+			// IPV6FIXME: ipv4-vs-ipv6
 			destFlows = append(destFlows, fmt.Sprintf("ip, nw_dst=%s, ", ip))
 		}
 	} else {
@@ -555,6 +560,7 @@ func (np *networkPolicyPlugin) parseNetworkPolicy(npns *npNamespace, policy *net
 			} else {
 				portNum = int(port.Port.IntVal)
 			}
+			// IPV6FIXME: ipv4-vs-ipv6
 			portFlows = append(portFlows, fmt.Sprintf("%s, tp_dst=%d, ", protocol, portNum))
 		}
 
@@ -592,6 +598,7 @@ func (np *networkPolicyPlugin) parseNetworkPolicy(npns *npNamespace, policy *net
 					klog.Warningf("IPBlocks with except rules are not supported (NetworkPolicy [%s], Namespace [%s])", policy.Name, policy.Namespace)
 				} else {
 					// Network Policy has ipBlocks, allow traffic from those ips.
+					// IPV6FIXME: ipv4-vs-ipv6
 					peerFlows = append(peerFlows, fmt.Sprintf("ip, nw_src=%s, ", peer.IPBlock.CIDR))
 				}
 			}
@@ -695,6 +702,7 @@ func isOnPodNetwork(pod *corev1.Pod) bool {
 	if pod.Spec.HostNetwork {
 		return false
 	}
+	// IPV6FIXME: PodIPs
 	return pod.Status.PodIP != ""
 }
 

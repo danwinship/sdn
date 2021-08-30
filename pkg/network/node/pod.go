@@ -109,8 +109,10 @@ func getIPAMConfig(clusterNetworks []common.ClusterNetworkEntry, localSubnet *ne
 		IPAM       *hostLocalIPAM `json:"ipam"`
 	}
 
+	// IPV6FIXME: ff00::/8
 	_, mcnet, _ := net.ParseCIDR("224.0.0.0/4")
 
+	// IPV6FIXME: ipv6 / dual-stack routes
 	routes := []cnitypes.Route{
 		{
 			// Default route
@@ -137,6 +139,7 @@ func getIPAMConfig(clusterNetworks []common.ClusterNetworkEntry, localSubnet *ne
 		IPAM: &hostLocalIPAM{
 			Type:    "host-local",
 			DataDir: hostLocalDataDir,
+			// IPV6FIXME: use Ranges to support dual-stack
 			Subnet: cnitypes.IPNet{
 				IP:   localSubnet.IP,
 				Mask: localSubnet.Mask,
@@ -325,6 +328,7 @@ func maybeAddMacvlan(pod *corev1.Pod, netns string) error {
 	var err error
 	if annotation == "true" {
 		// Find interface with the default route
+		// IPV6FIXME: ipv4-specific
 		routes, err := netlink.RouteList(nil, netlink.FAMILY_V4)
 		if err != nil {
 			return fmt.Errorf("failed to read routes: %v", err)
@@ -382,6 +386,7 @@ func createIPAMArgs(netnsPath string, action cniserver.CNICommand, id string) *i
 }
 
 // Run CNI IPAM allocation for the container and return the allocated IP address
+// IPV6FIXME: return multiple IPs
 func (m *podManager) ipamAdd(netnsPath string, id string) (*current.Result, net.IP, error) {
 	if netnsPath == "" {
 		return nil, nil, fmt.Errorf("netns required for CNI_ADD")
@@ -474,8 +479,10 @@ func (m *podManager) setup(req *cniserver.PodRequest) (cnitypes.Result, *running
 	}
 
 	var ipamResult cnitypes.Result
+	// IPV6FIXME: dual AssignedIPs
 	podIP := net.ParseIP(req.AssignedIP)
 	if podIP == nil {
+		// IPV6FIXME: dual IPAM IPs
 		ipamResult, podIP, err = m.ipamAdd(req.Netns, req.SandboxID)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to run IPAM for %v: %v", req.SandboxID, err)

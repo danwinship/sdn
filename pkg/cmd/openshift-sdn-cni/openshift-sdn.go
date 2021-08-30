@@ -115,6 +115,8 @@ func (p *cniPlugin) testCmdAdd(args *skel.CmdArgs) (types.Result, error) {
 	return convertToRequestedVersion(args.StdinData, result)
 }
 
+// IPV6FIXME: need to do MCS blocking (but not metadata blocking) in both IPv4 and IPv6
+
 var iptablesCommands = [][]string{
 	// Block MCS
 	{"-A", "OUTPUT", "-p", "tcp", "-m", "tcp", "--dport", "22623", "--syn", "-j", "REJECT"},
@@ -135,6 +137,7 @@ func (p *cniPlugin) CmdAdd(args *skel.CmdArgs) error {
 	if err != nil {
 		return err
 	}
+	// IPV6FIXME: need dual ServiceNetworkCIDRs
 	_, serviceIPNet, err := net.ParseCIDR(config.ServiceNetworkCIDR)
 	if err != nil {
 		return fmt.Errorf("failed to parse ServiceNetworkCIDR: %v", err)
@@ -156,6 +159,7 @@ func (p *cniPlugin) CmdAdd(args *skel.CmdArgs) error {
 		return err
 	}
 
+	// IPV6FIXME: allow ipv6, dual-stack
 	if err != nil || len(result.IPs) != 1 || result.IPs[0].Version != "4" {
 		return fmt.Errorf("Unexpected IPAM result: %v", err)
 	}
@@ -164,6 +168,7 @@ func (p *cniPlugin) CmdAdd(args *skel.CmdArgs) error {
 	// means to pass the default gateway as the next hop to ip.AddRoute,
 	// but that's not what we want; we want to pass nil as the next hop.
 	// So we need to clear the default gateway.
+	// IPV6FIXME: do for all gateways, remember both gateways for later
 	defaultGW := result.IPs[0].Gateway
 	result.IPs[0].Gateway = nil
 
@@ -176,10 +181,12 @@ func (p *cniPlugin) CmdAdd(args *skel.CmdArgs) error {
 			Sandbox: args.Netns,
 		},
 	}
+	// IPV6FIXME: dual
 	result.IPs[0].Interface = current.Int(0)
 
 	err = ns.WithNetNSPath(args.Netns, func(hostNS ns.NetNS) error {
 		// Set up eth0
+		// IPV6FIXME: ip.SetHWAddrByIP() only supports IPv4
 		if err := ip.SetHWAddrByIP(args.IfName, result.IPs[0].Address.IP, nil); err != nil {
 			return fmt.Errorf("failed to set pod interface MAC address: %v", err)
 		}
@@ -219,6 +226,7 @@ func (p *cniPlugin) CmdAdd(args *skel.CmdArgs) error {
 				if err != nil {
 					return err
 				}
+				// IPV6FIXME: do IPv6 routes too
 				addrs, err = netlink.AddrList(parent, netlink.FAMILY_V4)
 				return err
 			})
@@ -226,10 +234,12 @@ func (p *cniPlugin) CmdAdd(args *skel.CmdArgs) error {
 				return fmt.Errorf("failed to configure macvlan device: %v", err)
 			}
 			for _, addr := range addrs {
+				// IPV6FIXME: IPv4-specific math
 				dsts = append(dsts, &net.IPNet{IP: addr.IP, Mask: net.CIDRMask(32, 32)})
 			}
 		}
 
+		// IPV6FIXME: dual service cidrs (and gateways)
 		dsts = append(dsts, serviceIPNet)
 		for _, dst := range dsts {
 			route := &netlink.Route{

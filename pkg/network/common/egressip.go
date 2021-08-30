@@ -18,6 +18,10 @@ import (
 	osdnv1 "github.com/openshift/api/network/v1"
 )
 
+// IPV6FIXME: Egress IP-related fields in osdnv1.NetNamespace and osdnv1.HostSubnet are
+// required to be IPv4-only by their CRDs. Presumably we will only support IPv6 with the
+// ovn-kubernetes-style EgressIP API.
+
 type nodeEgress struct {
 	nodeName string
 	nodeIP   string

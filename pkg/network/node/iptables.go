@@ -18,6 +18,7 @@ import (
 )
 
 type NodeIPTables struct {
+	// IPV6FIXME: dual ipts
 	ipt                iptables.Interface
 	clusterNetworkCIDR []string
 	masqueradeServices bool
@@ -120,6 +121,7 @@ func (n *NodeIPTables) syncIPTableRules() error {
 	}()
 	klog.V(3).Infof("Syncing openshift iptables rules")
 
+	// IPV6FIXME: dual-stack syncing
 	chains := n.getNodeIPTablesChains()
 	for i := len(chains) - 1; i >= 0; i-- {
 		chain := chains[i]
@@ -210,6 +212,7 @@ func (n *NodeIPTables) getNodeIPTablesChains() []Chain {
 	}
 	var masq2Rules [][]string
 	var filterRules [][]string
+	// IPV6FIXME: need to pass IPv4 CIDRs to iptables and IPv6 CIDRs to iptables6
 	for _, cidr := range n.clusterNetworkCIDR {
 		if n.masqueradeServices {
 			masqRules = append(masqRules, []string{"-s", cidr, "-m", "comment", "--comment", "masquerade pod-to-service and pod-to-external traffic", "-j", "MASQUERADE"})
@@ -296,6 +299,10 @@ func (n *NodeIPTables) getNodeIPTablesChains() []Chain {
 
 	return chainArray
 }
+
+// IPV6FIXME: Egress IP-related fields in osdnv1.NetNamespace and osdnv1.HostSubnet are
+// required to be IPv4-only by their CRDs. Presumably we will only support IPv6 with the
+// ovn-kubernetes-style EgressIP API.
 
 func (n *NodeIPTables) ensureEgressIPRules(egressIP, mark string) error {
 	for _, cidr := range n.clusterNetworkCIDR {

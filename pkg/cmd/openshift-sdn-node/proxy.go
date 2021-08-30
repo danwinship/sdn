@@ -79,6 +79,7 @@ func (sdn *openShiftSDN) wrapProxy(s *ProxyServer, waitChan chan<- bool) error {
 		unidlingRecorder := unidlingBroadcaster.NewRecorder(scheme.Scheme, corev1.EventSource{Component: "kube-proxy", Host: sdn.nodeName})
 
 		signaler := unidler.NewEventSignaler(unidlingRecorder)
+		// IPV6FIXME: create two unidlers and a metaproxier, if dual-stack
 		unidlingProxy, err = unidler.NewUnidlerProxier(
 			userspace.NewLoadBalancerRR(),
 			net.ParseIP(sdn.proxyConfig.BindAddress),
