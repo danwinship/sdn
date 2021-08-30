@@ -394,7 +394,7 @@ func (node *OsdnNode) reattachPods(existingPodSandboxes map[string]*kruntimeapi.
 			SandboxID:    sandboxID,
 			HostVeth:     podInfo.vethName,
 			// IPV6FIXME: dual IPs
-			AssignedIP:   podInfo.ip,
+			AssignedIPs:  []string{podInfo.ip},
 			Result:       make(chan *cniserver.PodResult),
 		}
 		klog.Infof("Reattaching pod '%s/%s' to SDN", req.PodNamespace, req.PodName)

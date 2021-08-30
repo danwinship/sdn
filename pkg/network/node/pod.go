@@ -23,6 +23,7 @@ import (
 	"k8s.io/klog/v2"
 	kcontainer "k8s.io/kubernetes/pkg/kubelet/container"
 	kbandwidth "k8s.io/kubernetes/pkg/util/bandwidth"
+	utilnet "k8s.io/utils/net"
 
 	"github.com/containernetworking/cni/pkg/invoke"
 	cnitypes "github.com/containernetworking/cni/pkg/types"
@@ -94,10 +95,14 @@ func newDefaultPodManager(sdnConfig *common.SDNConfig, nodeConfig *NodeConfig) *
 // Generates a CNI IPAM config from a given node cluster and local subnet that
 // CNI 'host-local' IPAM plugin will use to create an IP address lease for the
 // container
-func getIPAMConfig(clusterNetworks []common.ClusterNetworkEntry, localSubnet *net.IPNet, localGateway net.IP) ([]byte, error) {
+func getIPAMConfig(clusterNetworks []common.ClusterNetworkEntry, localSubnets []*net.IPNet, localGateways []*net.IPNet) ([]byte, error) {
+	type ipamRange struct {
+		Subnet cnitypes.IPNet `json:"subnet"`
+	}
+
 	type hostLocalIPAM struct {
 		Type    string           `json:"type"`
-		Subnet  cnitypes.IPNet   `json:"subnet"`
+		Ranges  [][]ipamRange    `json:"ranges"`
 		Routes  []cnitypes.Route `json:"routes"`
 		DataDir string           `json:"dataDir"`
 	}
@@ -109,27 +114,47 @@ func getIPAMConfig(clusterNetworks []common.ClusterNetworkEntry, localSubnet *ne
 		IPAM       *hostLocalIPAM `json:"ipam"`
 	}
 
-	// IPV6FIXME: ff00::/8
-	_, mcnet, _ := net.ParseCIDR("224.0.0.0/4")
+	routes := []cnitypes.Route{}
 
-	// IPV6FIXME: ipv6 / dual-stack routes
-	routes := []cnitypes.Route{
-		{
-			// Default route
-			Dst: net.IPNet{
-				IP:   net.IPv4zero,
-				Mask: net.IPMask(net.IPv4zero),
+	for _, localGateway := range localGateways {
+		var defaultNet, multicastNet *net.IPNet
+		if utilnet.IsIPv4(localGateway.IP) {
+			_, defaultNet, _ = net.ParseCIDR("0.0.0.0/0")
+			_, multicastNet, _ = net.ParseCIDR("224.0.0.0/4")
+		} else {
+			_, defaultNet, _ = net.ParseCIDR("::/0")
+			_, multicastNet, _ = net.ParseCIDR("ff00::/8")
+		}
+
+		routes = append(routes,
+			cnitypes.Route{
+				Dst: *defaultNet,
+				GW: localGateway.IP,
 			},
-			GW: localGateway,
-		},
-		{
-			// Multicast
-			Dst: *mcnet,
-		},
+			cnitypes.Route{
+				Dst: *multicastNet,
+			},
+		)
 	}
 
 	for _, cn := range clusterNetworks {
-		routes = append(routes, cnitypes.Route{Dst: *cn.CIDR})
+		routes = append(routes,
+			cnitypes.Route{
+				Dst: *cn.CIDR,
+			},
+		)
+	}
+
+	ranges := []ipamRange{}
+	for _, localSubnet := range localSubnets {
+		ranges = append(ranges, 
+			ipamRange{
+				Subnet: cnitypes.IPNet{
+					IP:   localSubnet.IP,
+					Mask: localSubnet.Mask,
+				},
+			},
+		)
 	}
 
 	return json.Marshal(&cniNetworkConfig{
@@ -139,12 +164,8 @@ func getIPAMConfig(clusterNetworks []common.ClusterNetworkEntry, localSubnet *ne
 		IPAM: &hostLocalIPAM{
 			Type:    "host-local",
 			DataDir: hostLocalDataDir,
-			// IPV6FIXME: use Ranges to support dual-stack
-			Subnet: cnitypes.IPNet{
-				IP:   localSubnet.IP,
-				Mask: localSubnet.Mask,
-			},
-			Routes: routes,
+			Ranges:  [][]ipamRange{ranges},
+			Routes:  routes,
 		},
 	})
 }
@@ -152,13 +173,16 @@ func getIPAMConfig(clusterNetworks []common.ClusterNetworkEntry, localSubnet *ne
 // Start the CNI server and start processing requests from it
 func (m *podManager) Start(rundir string) error {
 	var err error
-	if m.ipamConfig, err = getIPAMConfig(m.sdnConfig.ClusterNetworks, m.nodeConfig.LocalSubnets[0], m.nodeConfig.LocalGateways[0].IP); err != nil {
+	if m.ipamConfig, err = getIPAMConfig(m.sdnConfig.ClusterNetworks, m.nodeConfig.LocalSubnets, m.nodeConfig.LocalGateways); err != nil {
 		return err
 	}
 
 	go m.processCNIRequests()
 
-	m.cniServer = cniserver.NewCNIServer(rundir, &cniserver.Config{MTU: m.sdnConfig.MTU, ServiceNetworkCIDR: m.sdnConfig.ServiceNetworkCIDRStrings[0]})
+	m.cniServer = cniserver.NewCNIServer(rundir, &cniserver.Config{
+		MTU:                 m.sdnConfig.MTU,
+		ServiceNetworkCIDRs: m.sdnConfig.ServiceNetworkCIDRStrings,
+	})
 	return m.cniServer.Start(m.handleCNIRequest)
 }
 
@@ -328,8 +352,7 @@ func maybeAddMacvlan(pod *corev1.Pod, netns string) error {
 	var err error
 	if annotation == "true" {
 		// Find interface with the default route
-		// IPV6FIXME: ipv4-specific
-		routes, err := netlink.RouteList(nil, netlink.FAMILY_V4)
+		routes, err := netlink.RouteList(nil, netlink.FAMILY_ALL)
 		if err != nil {
 			return fmt.Errorf("failed to read routes: %v", err)
 		}
@@ -386,8 +409,7 @@ func createIPAMArgs(netnsPath string, action cniserver.CNICommand, id string) *i
 }
 
 // Run CNI IPAM allocation for the container and return the allocated IP address
-// IPV6FIXME: return multiple IPs
-func (m *podManager) ipamAdd(netnsPath string, id string) (*current.Result, net.IP, error) {
+func (m *podManager) ipamAdd(netnsPath string, id string) (*current.Result, []net.IP, error) {
 	if netnsPath == "" {
 		return nil, nil, fmt.Errorf("netns required for CNI_ADD")
 	}
@@ -406,8 +428,12 @@ func (m *podManager) ipamAdd(netnsPath string, id string) (*current.Result, net.
 	if len(result.IPs) == 0 {
 		return nil, nil, fmt.Errorf("failed to obtain IP address from CNI IPAM")
 	}
+	podIPs := make([]net.IP, len(result.IPs))
+	for i, ip := range result.IPs {
+		podIPs[i] = ip.Address.IP
+	}
 
-	return result, result.IPs[0].Address.IP, nil
+	return result, podIPs, nil
 }
 
 // Run CNI IPAM release for the container
@@ -479,11 +505,14 @@ func (m *podManager) setup(req *cniserver.PodRequest) (cnitypes.Result, *running
 	}
 
 	var ipamResult cnitypes.Result
-	// IPV6FIXME: dual AssignedIPs
-	podIP := net.ParseIP(req.AssignedIP)
-	if podIP == nil {
-		// IPV6FIXME: dual IPAM IPs
-		ipamResult, podIP, err = m.ipamAdd(req.Netns, req.SandboxID)
+	var podIPs []net.IP
+	if len(req.AssignedIPs) != 0 {
+		podIPs = make([]net.IP, len(req.AssignedIPs))
+		for i, ipStr := range req.AssignedIPs {
+			podIPs[i] = net.ParseIP(ipStr)
+		}
+	} else {
+		ipamResult, podIPs, err = m.ipamAdd(req.Netns, req.SandboxID)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to run IPAM for %v: %v", req.SandboxID, err)
 		}
@@ -497,7 +526,8 @@ func (m *podManager) setup(req *cniserver.PodRequest) (cnitypes.Result, *running
 		return nil, nil, err
 	}
 
-	ofport, err := m.ovs.SetUpPod(req.SandboxID, req.HostVeth, podIP, vnid)
+	// IPV6FIXME: pass all pod IPs to ovscontroller
+	ofport, err := m.ovs.SetUpPod(req.SandboxID, req.HostVeth, podIPs[0], vnid)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -507,7 +537,7 @@ func (m *podManager) setup(req *cniserver.PodRequest) (cnitypes.Result, *running
 
 	m.policy.EnsureVNIDRules(vnid)
 	success = true
-	klog.Infof("CNI_ADD %s/%s got IP %s, ofport %d", req.PodNamespace, req.PodName, podIP, ofport)
+	klog.Infof("CNI_ADD %s/%s got IP %v, ofport %d", req.PodNamespace, req.PodName, podIPs, ofport)
 	return ipamResult, &runningPod{vnid: vnid, ofport: ofport}, nil
 }
 

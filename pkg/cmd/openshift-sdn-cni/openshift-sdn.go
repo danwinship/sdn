@@ -23,6 +23,8 @@ import (
 	"github.com/containernetworking/plugins/pkg/ns"
 
 	"github.com/vishvananda/netlink"
+
+	utilnet "k8s.io/utils/net"
 )
 
 type cniPlugin struct {
@@ -116,15 +118,15 @@ func (p *cniPlugin) testCmdAdd(args *skel.CmdArgs) (types.Result, error) {
 	return convertToRequestedVersion(args.StdinData, result)
 }
 
-// IPV6FIXME: need to do MCS blocking (but not metadata blocking) in both IPv4 and IPv6
-
 var iptablesCommands = [][]string{
 	// Block MCS
 	{"-A", "OUTPUT", "-p", "tcp", "-m", "tcp", "--dport", "22623", "--syn", "-j", "REJECT"},
 	{"-A", "OUTPUT", "-p", "tcp", "-m", "tcp", "--dport", "22624", "--syn", "-j", "REJECT"},
 	{"-A", "FORWARD", "-p", "tcp", "-m", "tcp", "--dport", "22623", "--syn", "-j", "REJECT"},
 	{"-A", "FORWARD", "-p", "tcp", "-m", "tcp", "--dport", "22624", "--syn", "-j", "REJECT"},
+}
 
+var iptables4OnlyCommands = [][]string{
 	// Block cloud provider metadata IP except DNS
 	{"-A", "OUTPUT", "-p", "tcp", "-m", "tcp", "-d", "169.254.169.254", "!", "--dport", "53", "-j", "REJECT"},
 	{"-A", "OUTPUT", "-p", "udp", "-m", "udp", "-d", "169.254.169.254", "!", "--dport", "53", "-j", "REJECT"},
@@ -138,10 +140,14 @@ func (p *cniPlugin) CmdAdd(args *skel.CmdArgs) error {
 	if err != nil {
 		return err
 	}
-	// IPV6FIXME: need dual ServiceNetworkCIDRs
-	_, serviceIPNet, err := net.ParseCIDR(config.ServiceNetworkCIDR)
-	if err != nil {
-		return fmt.Errorf("failed to parse ServiceNetworkCIDR: %v", err)
+
+	var serviceIPNets []*net.IPNet
+	for _, cidr := range config.ServiceNetworkCIDRs {
+		_, ipNet, err := net.ParseCIDR(cidr)
+		if err != nil {
+			return fmt.Errorf("failed to parse ServiceNetworkCIDR: %v", err)
+		}
+		serviceIPNets = append(serviceIPNets, ipNet)
 	}
 
 	var hostVeth, contVeth net.Interface
@@ -160,18 +166,36 @@ func (p *cniPlugin) CmdAdd(args *skel.CmdArgs) error {
 		return err
 	}
 
-	// IPV6FIXME: allow ipv6, dual-stack
-	if err != nil || len(result.IPs) != 1 || result.IPs[0].Version != "4" {
+	if err != nil || len(result.IPs) == 0 {
 		return fmt.Errorf("Unexpected IPAM result: %v", err)
+	}
+
+	var hasIPv4, hasIPv6 bool
+	for _, ip := range result.IPs {
+		if ip.Version == "4" {
+			hasIPv4 = true
+		}
+		if ip.Version == "6" {
+			hasIPv6 = true
+		}
 	}
 
 	// ipam.ConfigureIface thinks that a route with no gateway specified
 	// means to pass the default gateway as the next hop to ip.AddRoute,
 	// but that's not what we want; we want to pass nil as the next hop.
 	// So we need to clear the default gateway.
-	// IPV6FIXME: do for all gateways, remember both gateways for later
-	defaultGW := result.IPs[0].Gateway
-	result.IPs[0].Gateway = nil
+	var v4Gateway, v6Gateway net.IP
+	for i := range result.IPs {
+		if result.IPs[i].Gateway == nil {
+			continue
+		}
+		if utilnet.IsIPv6(result.IPs[i].Gateway) {
+			v6Gateway = result.IPs[i].Gateway
+		} else {
+			v4Gateway = result.IPs[i].Gateway
+		}
+		result.IPs[i].Gateway = nil
+	}
 
 	// Add a sandbox interface record which ConfigureInterface expects.
 	// The only interface we report is the pod interface.
@@ -182,8 +206,9 @@ func (p *cniPlugin) CmdAdd(args *skel.CmdArgs) error {
 			Sandbox: args.Netns,
 		},
 	}
-	// IPV6FIXME: dual
-	result.IPs[0].Interface = current.Int(0)
+	for i := range result.IPs {
+		result.IPs[i].Interface = current.Int(0)
+	}
 
 	err = ns.WithNetNSPath(args.Netns, func(hostNS ns.NetNS) error {
 		// Set up eth0
@@ -231,25 +256,24 @@ func (p *cniPlugin) CmdAdd(args *skel.CmdArgs) error {
 				if err != nil {
 					return err
 				}
-				// IPV6FIXME: do IPv6 routes too
-				addrs, err = netlink.AddrList(parent, netlink.FAMILY_V4)
+				addrs, err = netlink.AddrList(parent, netlink.FAMILY_ALL)
 				return err
 			})
 			if err != nil {
 				return fmt.Errorf("failed to configure macvlan device: %v", err)
 			}
 			for _, addr := range addrs {
-				// IPV6FIXME: IPv4-specific math
-				dsts = append(dsts, &net.IPNet{IP: addr.IP, Mask: net.CIDRMask(32, 32)})
+				dsts = append(dsts, netlink.NewIPNet(addr.IP))
 			}
 		}
 
-		// IPV6FIXME: dual service cidrs (and gateways)
-		dsts = append(dsts, serviceIPNet)
+		dsts = append(dsts, serviceIPNets...)
 		for _, dst := range dsts {
-			route := &netlink.Route{
-				Dst: dst,
-				Gw:  defaultGW,
+			route := &netlink.Route{Dst: dst}
+			if utilnet.IsIPv6CIDR(dst) {
+				route.Gw = v6Gateway
+			} else {
+				route.Gw = v4Gateway
 			}
 			if err := netlink.RouteAdd(route); err != nil && !os.IsExist(err) {
 				return fmt.Errorf("failed to add route to dst: %v via SDN: %v", dst, err)
@@ -258,12 +282,29 @@ func (p *cniPlugin) CmdAdd(args *skel.CmdArgs) error {
 
 		// Block access to certain things
 		for _, args := range iptablesCommands {
-			out, err := exec.Command("iptables", append([]string{"-w"}, args...)...).CombinedOutput()
-			if err != nil {
-				return fmt.Errorf("could not set up pod iptables rules: %s", string(out))
+			if hasIPv4 {
+				out, err := exec.Command("iptables", append([]string{"-w"}, args...)...).CombinedOutput()
+				if err != nil {
+					return fmt.Errorf("could not set up pod iptables rules: %s", string(out))
+
+				}
+			}
+			if hasIPv6 {
+				out, err := exec.Command("ip6tables", append([]string{"-w"}, args...)...).CombinedOutput()
+				if err != nil {
+					return fmt.Errorf("could not set up pod iptables rules: %s", string(out))
+
+				}
 			}
 		}
-
+		if hasIPv4 {
+			for _, args := range iptables4OnlyCommands {
+				out, err := exec.Command("iptables", append([]string{"-w"}, args...)...).CombinedOutput()
+				if err != nil {
+					return fmt.Errorf("could not set up pod iptables rules: %s", string(out))
+				}
+			}
+		}
 		return nil
 	})
 	if err != nil {
