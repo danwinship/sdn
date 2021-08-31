@@ -176,6 +176,18 @@ func TestParseFlowsBad(t *testing.T) {
 			// nw_src/nw_dst without arp/ip
 			input: "table=0, priority=200, in_port=1, nw_src=10.128.0.0/14, nw_dst=10.128.0.0/23, nw_dst=10.128.0.0/23, actions=move:NXM_NX_TUN_ID[0..31]->NXM_NX_REG0[],goto_table:10",
 		},
+		{
+			// using arp-specific src/dst matches, which we don't like
+			input: "table=0, priority=200, in_port=1, arp, arp_spa=10.128.0.0/14, arp_tpa=10.128.0.0/23, actions=move:NXM_NX_TUN_ID[0..31]->NXM_NX_REG0[],goto_table:10",
+		},
+		{
+			// src/dst without type (L3)
+			input: "table=0, priority=250, in_port=2, nw_dst=224.0.0.0/4, actions=drop",
+		},
+		{
+			// src/dst without type (L4)
+			input: "table=20, priority=300, udp_dst=4789, actions=drop",
+		},
 	}
 
 	for i, test := range parseTests {

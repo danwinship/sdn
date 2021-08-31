@@ -64,16 +64,31 @@ func fieldSet(parsed *OvsFlow, field string) bool {
 	return false
 }
 
-func checkNotAllowedField(flow string, parsed *OvsFlow, field string, ptype ParseType) error {
-	if fieldSet(parsed, field) {
-		return fmt.Errorf("bad flow %q (field %q not allowed in %s)", flow, field, ptype)
+func anyFieldSet(parsed *OvsFlow, fields ...string) bool {
+	for _, f := range parsed.Fields {
+		for _, field := range fields {
+			if f.Name == field {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func checkNotAllowedFields(flow string, parsed *OvsFlow, ptype ParseType, fields ...string) error {
+	for _, field := range fields {
+		if fieldSet(parsed, field) {
+			return fmt.Errorf("bad flow %q (field %q not allowed in %s)", flow, field, ptype)
+		}
 	}
 	return nil
 }
 
-func checkUnimplementedField(flow string, parsed *OvsFlow, field string) error {
-	if fieldSet(parsed, field) {
-		return fmt.Errorf("bad flow %q (field %q not implemented)", flow, field)
+func checkUnimplementedFields(flow string, parsed *OvsFlow, fields ...string) error {
+	for _, field := range fields {
+		if fieldSet(parsed, field) {
+			return fmt.Errorf("bad flow %q (field %q not implemented)", flow, field)
+		}
 	}
 	return nil
 }
@@ -257,10 +272,7 @@ func ParseFlow(ptype ParseType, flow string, args ...interface{}) (*OvsFlow, err
 	// Sanity-checking and defaults
 	switch ptype {
 	case ParseForAdd:
-		if err := checkNotAllowedField(flow, parsed, "out_port", ptype); err != nil {
-			return nil, err
-		}
-		if err := checkNotAllowedField(flow, parsed, "out_group", ptype); err != nil {
+		if err := checkNotAllowedFields(flow, parsed, ptype, "out_port", "out_group", "arp_spa", "arp_tpa"); err != nil {
 			return nil, err
 		}
 
@@ -281,13 +293,10 @@ func ParseFlow(ptype ParseType, flow string, args ...interface{}) (*OvsFlow, err
 		}
 
 	case ParseForFilter:
-		if err := checkNotAllowedField(flow, parsed, "priority", ptype); err != nil {
+		if err := checkNotAllowedFields(flow, parsed, ptype, "priority"); err != nil {
 			return nil, err
 		}
-		if err := checkUnimplementedField(flow, parsed, "out_port"); err != nil {
-			return nil, err
-		}
-		if err := checkUnimplementedField(flow, parsed, "out_group"); err != nil {
+		if err := checkUnimplementedFields(flow, parsed, "out_port", "out_group"); err != nil {
 			return nil, err
 		}
 
@@ -300,24 +309,26 @@ func ParseFlow(ptype ParseType, flow string, args ...interface{}) (*OvsFlow, err
 		}
 	}
 
-	if (fieldSet(parsed, "nw_src") || fieldSet(parsed, "nw_dst")) &&
-		!(fieldSet(parsed, "ip") || fieldSet(parsed, "arp") || fieldSet(parsed, "tcp") || fieldSet(parsed, "udp")) {
-		return nil, fmt.Errorf("bad flow %q (specified nw_src/nw_dst without ip/arp/tcp/udp)", flow)
+	if anyFieldSet(parsed, "nw_src", "nw_dst") && !anyFieldSet(parsed, "arp", "ip", "tcp", "udp", "sctp") {
+		return nil, fmt.Errorf("bad flow %q (specified nw_src/nw_dst without ip/tcp/udp/sctp)", flow)
 	}
-	if (fieldSet(parsed, "arp_spa") || fieldSet(parsed, "arp_tpa") || fieldSet(parsed, "arp_sha") || fieldSet(parsed, "arp_tha")) && !fieldSet(parsed, "arp") {
-		return nil, fmt.Errorf("bad flow %q (specified arp_spa/arp_tpa/arp_sha/arp_tpa without arp)", flow)
+	if anyFieldSet(parsed, "arp_sha", "arp_tha") && !fieldSet(parsed, "arp") {
+		return nil, fmt.Errorf("bad flow %q (specified arp_sha/arp_tpa without arp)", flow)
 	}
-	if (fieldSet(parsed, "tcp_src") || fieldSet(parsed, "tcp_dst")) && !fieldSet(parsed, "tcp") {
+	if anyFieldSet(parsed, "tcp_src", "tcp_dst") && !fieldSet(parsed, "tcp") {
 		return nil, fmt.Errorf("bad flow %q (specified tcp_src/tcp_dst without tcp)", flow)
 	}
-	if (fieldSet(parsed, "udp_src") || fieldSet(parsed, "udp_dst")) && !fieldSet(parsed, "udp") {
+	if anyFieldSet(parsed, "udp_src", "udp_dst") && !fieldSet(parsed, "udp") {
 		return nil, fmt.Errorf("bad flow %q (specified udp_src/udp_dst without udp)", flow)
 	}
-	if (fieldSet(parsed, "tp_src") || fieldSet(parsed, "tp_dst")) && !(fieldSet(parsed, "tcp") || fieldSet(parsed, "udp")) {
-		return nil, fmt.Errorf("bad flow %q (specified tp_src/tp_dst without tcp/udp)", flow)
+	if anyFieldSet(parsed, "sctp_src", "sctp_dst") && !fieldSet(parsed, "sctp") {
+		return nil, fmt.Errorf("bad flow %q (specified sctp_src/sctp_dst without sctp)", flow)
 	}
-	if fieldSet(parsed, "ip_frag") && (fieldSet(parsed, "tcp") || fieldSet(parsed, "udp")) {
-		return nil, fmt.Errorf("bad flow %q (specified ip_frag with tcp/udp)", flow)
+	if anyFieldSet(parsed, "tp_src", "tp_dst") && !anyFieldSet(parsed, "tcp", "udp", "sctp") {
+		return nil, fmt.Errorf("bad flow %q (specified tp_src/tp_dst without tcp/udp/sctp)", flow)
+	}
+	if fieldSet(parsed, "ip_frag") && anyFieldSet(parsed, "tcp", "udp", "sctp") {
+		return nil, fmt.Errorf("bad flow %q (specified ip_frag with tcp/udp/sctp)", flow)
 	}
 
 	return parsed, nil
