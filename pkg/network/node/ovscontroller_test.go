@@ -22,11 +22,11 @@ import (
 	"github.com/containernetworking/plugins/pkg/utils/hwaddr"
 )
 
-func setupOVSController(t *testing.T) (ovs.Interface, *ovsController, []string) {
-	sdnConfig := common.NewTestSDNConfig()
+func setupOVSController(t *testing.T, families ...corev1.IPFamily) (ovs.Interface, *ovsController, []string) {
+	sdnConfig := common.NewTestSDNConfig(families...)
 	nodeConfig := NewTestNodeConfig(sdnConfig)
 
-	ovsif := ovs.NewFake(Br0)
+	ovsif := ovs.NewFake(Br0, sdnConfig.HasIPv4, sdnConfig.HasIPv6)
 	oc := NewOVSController(sdnConfig, nodeConfig, ovsif)
 	oc.tunMAC = "c6:ac:2c:13:48:4b"
 	err := oc.SetupOVS()
@@ -235,7 +235,7 @@ func TestOVSPod(t *testing.T) {
 	err = assertFlowChanges(origFlows, flows,
 		flowChange{
 			kind:  flowAdded,
-			match: []string{"table=220", fmt.Sprintf("in_port=%d", ofport), "arp", "10.128.0.2", "00:00:0a:80:00:02/00:00:ff:ff:ff:ff"},
+			match: []string{"table=221", fmt.Sprintf("in_port=%d", ofport), "arp", "10.128.0.2", "00:00:0a:80:00:02/00:00:ff:ff:ff:ff"},
 		},
 		flowChange{
 			kind:  flowAdded,
@@ -273,7 +273,7 @@ func TestOVSPod(t *testing.T) {
 	err = assertFlowChanges(origFlows, flows,
 		flowChange{
 			kind:  flowAdded,
-			match: []string{"table=220", fmt.Sprintf("in_port=%d", ofport), "arp", "10.128.0.2", "00:00:0a:80:00:02/00:00:ff:ff:ff:ff"},
+			match: []string{"table=221", fmt.Sprintf("in_port=%d", ofport), "arp", "10.128.0.2", "00:00:0a:80:00:02/00:00:ff:ff:ff:ff"},
 		},
 		flowChange{
 			kind:  flowAdded,
@@ -856,13 +856,13 @@ func TestAlreadySetUp(t *testing.T) {
 	nodeConfig := NewTestNodeConfig(sdnConfig)
 
 	for i, tc := range testcases {
-		ovsif := ovs.NewFake(Br0)
+		ovsif := ovs.NewFake(Br0, sdnConfig.HasIPv4, sdnConfig.HasIPv6)
 		if err := ovsif.AddBridge("fail_mode=secure", "protocols=OpenFlow13"); err != nil {
 			t.Fatalf("(%d) unexpected error from AddBridge: %v", i, err)
 		}
 		oc := NewOVSController(sdnConfig, nodeConfig, ovsif)
 		/* In order to test AlreadySetUp the vxlan port has to be added, we are not testing AddPort here */
-		_, err := ovsif.AddPort("vxlan0", 1, "type=vxlan", `options:remote_ip="flow"`, `options:key="flow"`, fmt.Sprintf("options:dst_port=%d", sdnConfig.VXLANPort))
+		_, err := oc.ovs.AddPort("vxlan0", 1, "type=vxlan", `options:remote_ip="flow"`, `options:key="flow"`, fmt.Sprintf("options:dst_port=%d", sdnConfig.VXLANPort))
 		if err != nil {
 			t.Fatalf("(%d) unexpected error from AddPort: %v", i, err)
 		}
@@ -1144,7 +1144,7 @@ var expectedFlows = []string{
 	" cookie=0, table=0, priority=0, actions=goto_table:2",
 	" cookie=0x0f46ee1a3cac3bd5, table=1, priority=100, tun_src=10.0.123.45, actions=goto_table:2",
 	" cookie=0, table=1, priority=0, actions=drop",
-	" cookie=0, table=2, arp, actions=goto_table:200",
+	" cookie=0, table=2, priority=300, arp, actions=goto_table:200",
 	" cookie=0, table=2, priority=200, ip, ct_state=-trk, actions=ct(table=10)",
 	" cookie=0, table=2, priority=100, ip, actions=goto_table:10",
 	" cookie=0, table=2, priority=0, actions=drop",
@@ -1164,19 +1164,17 @@ var expectedFlows = []string{
 	" cookie=0, table=30, priority=300, ip, nw_dst=10.128.0.1, actions=output:2",
 	" cookie=0, table=30, priority=250, ip, nw_dst=10.128.0.0/23, ct_state=+rpl, actions=ct(nat,table=70)",
 	" cookie=0, table=30, priority=200, ip, nw_dst=10.128.0.0/23, actions=goto_table:70",
-	" cookie=0, table=30, priority=100, ip, nw_dst=172.30.0.0/16, actions=goto_table:60",
+	" cookie=0, table=30, priority=100, ip, nw_dst=172.30.0.0/16, actions=output:2",
 	" cookie=0, table=30, priority=100, ip, nw_dst=10.128.0.0/14, actions=goto_table:90",
 	" cookie=0, table=30, priority=50, in_port=1, ip, nw_dst=224.0.0.0/4, actions=goto_table:120",
 	" cookie=0, table=30, priority=25, ip, nw_dst=224.0.0.0/4, actions=goto_table:110",
 	" cookie=0, table=30, priority=0, actions=goto_table:99",
-	" cookie=0, table=60, priority=200, actions=output:2",
 	" cookie=0xe3b0c44298fc1c14, table=60, priority=100, ip, nw_dst=172.30.99.99, ip_frag=later, actions=load:42->NXM_NX_REG1[],load:2->NXM_NX_REG2[],goto_table:80",
 	" cookie=0xe3b0c44298fc1c14, table=60, priority=100, ip, nw_dst=172.30.99.99, tcp, tcp_dst=80, actions=load:42->NXM_NX_REG1[],load:2->NXM_NX_REG2[],goto_table:80",
 	" cookie=0xe3b0c44298fc1c14, table=60, priority=100, ip, nw_dst=172.30.99.99, tcp, tcp_dst=443, actions=load:42->NXM_NX_REG1[],load:2->NXM_NX_REG2[],goto_table:80",
-	" cookie=0, table=60, priority=0, actions=drop",
 	" cookie=0x04a7761d70ec6c41, table=70, priority=100, ip, nw_dst=10.128.0.2, actions=load:42->NXM_NX_REG1[],load:3->NXM_NX_REG2[],goto_table:80",
 	" cookie=0, table=70, priority=0, actions=drop",
-	" cookie=0, table=80, priority=300, ip, nw_src=10.128.0.1/32, actions=output:NXM_NX_REG2[]",
+	" cookie=0, table=80, priority=300, ip, nw_src=10.128.0.1, actions=output:NXM_NX_REG2[]",
 	" cookie=0, table=80, priority=0, actions=drop",
 	" cookie=0x0f46ee1a3cac3bd5, table=90, priority=100, ip, nw_dst=10.128.2.0/23, actions=move:NXM_NX_REG0[]->NXM_NX_TUN_ID[0..31],set_field:10.0.123.45->tun_dst,output:1",
 	" cookie=0, table=90, priority=0, actions=drop",
@@ -1199,8 +1197,9 @@ var expectedFlows = []string{
 	" cookie=0, table=200, priority=100, in_port=1, arp, arp_spa=10.128.0.0/14, arp_tpa=10.128.0.0/23, actions=move:NXM_NX_TUN_ID[0..31]->NXM_NX_REG0[],goto_table:230",
 	" cookie=0, table=200, priority=100, in_port=2, arp, arp_spa=10.128.0.1, arp_tpa=10.128.0.0/14, actions=goto_table:230",
 	" cookie=0, table=200, priority=0, actions=goto_table:220",
-	" cookie=0x04a7761d70ec6c41, table=220, priority=100, in_port=3, arp, arp_spa=10.128.0.2, arp_sha=00:00:0a:80:00:02/00:00:ff:ff:ff:ff, actions=load:42->NXM_NX_REG0[],goto_table:230",
-	" cookie=0, table=220, priority=0, actions=drop",
+	" cookie=0, table=220, priority=0, actions=goto_table:221",
+	" cookie=0x04a7761d70ec6c41, table=221, priority=100, in_port=3, arp, arp_spa=10.128.0.2, arp_sha=00:00:0a:80:00:02/00:00:ff:ff:ff:ff, actions=load:42->NXM_NX_REG0[],goto_table:230",
+	" cookie=0, table=221, priority=0, actions=drop",
 	" cookie=0, table=230, priority=300, arp, arp_tpa=10.128.0.1, actions=output:2",
 	" cookie=0, table=230, priority=200, arp, arp_tpa=10.128.0.0/23, actions=goto_table:240",
 	" cookie=0, table=230, priority=100, arp, arp_tpa=10.128.0.0/14, actions=goto_table:250",
@@ -1210,7 +1209,7 @@ var expectedFlows = []string{
 	" cookie=0x0f46ee1a3cac3bd5, table=250, priority=100, arp, arp_tpa=10.128.2.0/23, actions=move:NXM_NX_REG0[]->NXM_NX_TUN_ID[0..31],set_field:10.0.123.45->tun_dst,output:1",
 	" cookie=0, table=250, priority=0, actions=drop",
 
-	" cookie=0, table=253, actions=note:02.0D",
+	" cookie=0, table=253, actions=note:02.0E",
 }
 
 // Ensure that we do not change the OVS flows without bumping ruleVersion
@@ -1298,6 +1297,291 @@ func TestRuleVersion(t *testing.T) {
 	}
 
 	t.Logf("*** FLOWS HAVE CHANGED FROM PREVIOUS COMMIT ***\n%s\nIf this change is expected then make sure you have bumped ruleVersion in pkg/network/node/ovscontroller.go, and then update expectedFlows in pkg/network/node/ovscontroller_test.go", diffFlows(expectedFlows, flows))
+
+	t.Fatalf("flows changed")
+}
+
+// *** IF YOU UPDATE THIS ARRAY YOU *MUST* CHANGE ruleVersion IN ovscontroller.go ***
+var expectedv6Flows = []string{
+	" cookie=0, table=0, priority=200, in_port=1, actions=goto_table:1",
+	" cookie=0, table=0, priority=100, udp6, udp_dst=4789, actions=drop",
+	" cookie=0, table=0, priority=0, actions=goto_table:2",
+	" cookie=0x0f46ee1a3cac3bd5, table=1, priority=100, tun_ipv6_src=2001:172:17::5, actions=goto_table:2",
+	" cookie=0, table=1, priority=0, actions=drop",
+	" cookie=0, table=2, priority=300, icmp6, icmpv6_type=135, actions=goto_table:200",
+	" cookie=0, table=2, priority=300, icmp6, icmpv6_type=136, actions=goto_table:200",
+	" cookie=0, table=2, priority=200, ipv6, ct_state=-trk, actions=ct(table=10)",
+	" cookie=0, table=2, priority=100, ipv6, actions=goto_table:10",
+	" cookie=0, table=2, priority=0, actions=drop",
+	" cookie=0, table=10, priority=400, in_port=2, ipv6, ipv6_src=fd01:0:0:1::1, actions=goto_table:30",
+	" cookie=0, table=10, priority=300, in_port=2, ipv6, ipv6_src=fd01:0:0:1::/64, ipv6_dst=fd01::/48, actions=goto_table:25",
+	" cookie=0, table=10, priority=250, in_port=2, ipv6, ipv6_dst=ff00::/8, actions=drop",
+	" cookie=0, table=10, priority=200, in_port=1, ipv6, ipv6_src=fd01::/48, actions=move:NXM_NX_TUN_ID[0..31]->NXM_NX_REG0[],goto_table:10",
+	" cookie=0, table=10, priority=200, in_port=1, ipv6, ipv6_dst=fd01::/48, actions=move:NXM_NX_TUN_ID[0..31]->NXM_NX_REG0[],goto_table:10",
+	" cookie=0, table=10, priority=200, in_port=2, actions=goto_table:30",
+	" cookie=0, table=10, priority=150, in_port=1, actions=drop",
+	" cookie=0, table=10, priority=0, actions=goto_table:20",
+	" cookie=0x04a7761d70ec6c41, table=20, priority=100, in_port=3, ipv6, ipv6_src=fd01:0:0:1::2, actions=load:42->NXM_NX_REG0[],goto_table:21",
+	" cookie=0, table=20, priority=0, actions=drop",
+	" cookie=0, table=21, priority=0, actions=goto_table:30",
+	" cookie=0x04a7761d70ec6c41, table=25, priority=100, ipv6, ipv6_src=fd01:0:0:1::2, actions=load:42->NXM_NX_REG0[],goto_table:30",
+	" cookie=0, table=25, priority=0, actions=drop",
+	" cookie=0, table=30, priority=300, ipv6, ipv6_dst=fd01:0:0:1::1, actions=output:2",
+	" cookie=0, table=30, priority=250, ipv6, ipv6_dst=fd01:0:0:1::/64, ct_state=+rpl, actions=ct(nat,table=70)",
+	" cookie=0, table=30, priority=200, ipv6, ipv6_dst=fd01:0:0:1::/64, actions=goto_table:70",
+	" cookie=0, table=30, priority=100, ipv6, ipv6_dst=fd02::/112, actions=output:2",
+	" cookie=0, table=30, priority=100, ipv6, ipv6_dst=fd01::/48, actions=goto_table:90",
+	" cookie=0, table=30, priority=50, in_port=1, ipv6, ipv6_dst=ff00::/8, actions=goto_table:120",
+	" cookie=0, table=30, priority=25, ipv6, ipv6_dst=ff00::/8, actions=goto_table:110",
+	" cookie=0, table=30, priority=0, actions=goto_table:99",
+	" cookie=0x04a7761d70ec6c41, table=70, priority=100, ipv6, ipv6_dst=fd01:0:0:1::2, actions=load:42->NXM_NX_REG1[],load:3->NXM_NX_REG2[],goto_table:80",
+	" cookie=0, table=70, priority=0, actions=drop",
+	" cookie=0, table=80, priority=300, ipv6, ipv6_src=fd01:0:0:1::1, actions=output:NXM_NX_REG2[]",
+	" cookie=0, table=80, priority=0, actions=drop",
+	" cookie=0x0f46ee1a3cac3bd5, table=90, priority=100, ipv6, ipv6_dst=fd01:0:0:2::/64, actions=move:NXM_NX_REG0[]->NXM_NX_TUN_ID[0..31],set_field:2001:172:17::5->tun_ipv6_dst,output:1",
+	" cookie=0, table=90, priority=0, actions=drop",
+	" cookie=0, table=99, priority=0, actions=goto_table:100",
+	" cookie=0, table=100, priority=0, actions=goto_table:101",
+	" cookie=0, table=101, priority=150, ct_state=+rpl, actions=output:2",
+	" cookie=0, table=101, priority=0, actions=output:2",
+	" cookie=0, table=110, reg0=99, actions=goto_table:111",
+	" cookie=0, table=110, priority=0, actions=drop",
+	" cookie=0, table=111, priority=100, actions=move:NXM_NX_REG0[]->NXM_NX_TUN_ID[0..31],set_field:2001:172:17::5->tun_ipv6_dst,output:1,set_field:2001:172:17::6->tun_ipv6_dst,output:1,goto_table:120",
+	" cookie=0, table=120, priority=100, reg0=99, actions=output:4,output:5,output:6",
+	" cookie=0, table=120, priority=0, actions=drop",
+	" cookie=0, table=200, priority=100, in_port=1, icmp6, icmpv6_type=135, ipv6_src=fd01::/48, nd_target=fd01:0:0:1::/64, actions=move:NXM_NX_TUN_ID[0..31]->NXM_NX_REG0[],goto_table:230",
+	" cookie=0, table=200, priority=100, in_port=1, icmp6, icmpv6_type=136, nd_target=fd01::/48, ipv6_dst=fd01:0:0:1::/64, actions=move:NXM_NX_TUN_ID[0..31]->NXM_NX_REG0[],goto_table:230",
+	" cookie=0, table=200, priority=100, in_port=2, icmp6, icmpv6_type=135, ipv6_src=fd01:0:0:1::1, nd_target=fd01::/48, actions=goto_table:230",
+	" cookie=0, table=200, priority=100, in_port=2, icmp6, icmpv6_type=136, nd_target=fd01:0:0:1::1, ipv6_dst=fd01::/48, actions=goto_table:230",
+	" cookie=0, table=200, priority=0, actions=goto_table:220",
+	" cookie=0, table=220, priority=100, icmp6, icmpv6_type=135, nd_sll=00:00:00:00:00:00, actions=move:NXM_OF_ETH_SRC[]->NXM_NX_ND_SLL[],goto_table:221",
+	" cookie=0, table=220, priority=100, icmp6, icmpv6_type=136, nd_tll=00:00:00:00:00:00, actions=move:NXM_OF_ETH_SRC[]->NXM_NX_ND_TLL[],goto_table:221",
+	" cookie=0, table=220, priority=0, actions=goto_table:221",
+	" cookie=0x04a7761d70ec6c41, table=221, priority=100, in_port=3, icmp6, icmpv6_type=135, ipv6_src=fd01:0:0:1::2, eth_src=00:00:b9:51:82:c7/00:00:ff:ff:ff:ff, nd_sll=00:00:b9:51:82:c7/00:00:ff:ff:ff:ff, actions=load:42->NXM_NX_REG0[],goto_table:230",
+	" cookie=0x04a7761d70ec6c41, table=221, priority=100, in_port=3, icmp6, icmpv6_type=136, nd_target=fd01:0:0:1::2, eth_src=00:00:b9:51:82:c7/00:00:ff:ff:ff:ff, nd_tll=00:00:b9:51:82:c7/00:00:ff:ff:ff:ff, actions=load:42->NXM_NX_REG0[],goto_table:230",
+	" cookie=0, table=221, priority=0, actions=drop",
+	" cookie=0, table=230, priority=300, icmp6, icmpv6_type=135, nd_target=fd01:0:0:1::1, actions=output:2",
+	" cookie=0, table=230, priority=300, icmp6, icmpv6_type=136, ipv6_dst=fd01:0:0:1::1, actions=output:2",
+	" cookie=0, table=230, priority=200, icmp6, icmpv6_type=135, nd_target=fd01:0:0:1::/64, actions=goto_table:240",
+	" cookie=0, table=230, priority=200, icmp6, icmpv6_type=136, ipv6_dst=fd01:0:0:1::/64, actions=goto_table:240",
+	" cookie=0, table=230, priority=100, icmp6, icmpv6_type=135, nd_target=fd01::/48, actions=goto_table:250",
+	" cookie=0, table=230, priority=100, icmp6, icmpv6_type=136, ipv6_dst=fd01::/48, actions=goto_table:250",
+	" cookie=0, table=230, priority=0, actions=drop",
+	" cookie=0x04a7761d70ec6c41, table=240, priority=100, icmp6, icmpv6_type=135, nd_target=fd01:0:0:1::2, actions=output:3",
+	" cookie=0x04a7761d70ec6c41, table=240, priority=100, icmp6, icmpv6_type=136, ipv6_dst=fd01:0:0:1::2, actions=output:3",
+	" cookie=0, table=240, priority=0, actions=drop",
+	" cookie=0x0f46ee1a3cac3bd5, table=250, priority=100, icmp6, icmpv6_type=135, nd_target=fd01:0:0:2::/64, actions=move:NXM_NX_REG0[]->NXM_NX_TUN_ID[0..31],set_field:2001:172:17::5->tun_ipv6_dst,output:1",
+	" cookie=0x0f46ee1a3cac3bd5, table=250, priority=100, icmp6, icmpv6_type=136, ipv6_dst=fd01:0:0:2::/64, actions=move:NXM_NX_REG0[]->NXM_NX_TUN_ID[0..31],set_field:2001:172:17::5->tun_ipv6_dst,output:1",
+	" cookie=0, table=250, priority=0, actions=drop",
+	" cookie=0, table=253, actions=note:02.0E",
+}
+
+// Ensure proper IPv4->IPv6 translation
+func TestIPv6Translation(t *testing.T) {
+	ovsif, oc, _ := setupOVSController(t, corev1.IPv6Protocol)
+
+	// Now call each oc method that adds flows
+
+	// Pod-related flows
+	_, err := oc.SetUpPod(sandboxID, "veth1", net.ParseIP("fd01:0:0:1::2"), 42)
+	if err != nil {
+		t.Fatalf("Unexpected error adding pod rules: %v", err)
+	}
+
+	// We don't test AddServiceRules because that's only used with non-conntrack mode,
+	// which is not supported for IPv6/dual stack.
+
+	// VXLAN flows
+	hs := osdnv1.HostSubnet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "node1",
+			UID:         "node1UID",
+			Annotations: map[string]string{
+				common.HostSubnetIPv6HostIPAnnotation: "2001:172:17::5",
+				common.HostSubnetIPv6SubnetAnnotation: "fd01:0:0:2::/64",
+			},
+		},
+		HostIP: "0.0.0.0",
+		Subnet: "0.0.0.0/0",
+	}
+	err = oc.AddHostSubnetRules(&hs)
+	if err != nil {
+		t.Fatalf("Unexpected error adding hostsubnet rules: %v", err)
+	}
+
+	// Multicast flows
+	err = oc.UpdateLocalMulticastFlows(99, true, []int{4, 5, 6})
+	if err != nil {
+		t.Fatalf("Unexpected error adding local multicast flows: %v", err)
+	}
+	err = oc.UpdateVXLANMulticastFlows([]string{"2001:172:17::5", "2001:172:17::6"})
+	if err != nil {
+		t.Fatalf("Unexpected error adding local multicast flows: %v", err)
+	}
+
+	// EgressNetworkPolicy and EgressIP are IPv4-only
+
+	flows, err := ovsif.DumpFlows("")
+	if err != nil {
+		t.Fatalf("Unexpected error dumping flows: %v", err)
+	}
+	if reflect.DeepEqual(flows, expectedv6Flows) {
+		return
+	}
+
+	t.Logf("*** FLOWS HAVE CHANGED FROM PREVIOUS COMMIT ***\n%s\nIf this change is expected then make sure you have bumped ruleVersion in pkg/network/node/ovscontroller.go, and then update expectedv6Flows in pkg/network/node/ovscontroller_test.go", diffFlows(expectedv6Flows, flows))
+
+	t.Fatalf("flows changed")
+}
+
+// *** IF YOU UPDATE THIS ARRAY YOU *MUST* CHANGE ruleVersion IN ovscontroller.go ***
+var expectedDualStackFlows = []string{
+	" cookie=0, table=0, priority=200, in_port=1, actions=goto_table:1",
+	" cookie=0, table=0, priority=100, udp, udp_dst=4789, actions=drop",
+	" cookie=0, table=0, priority=100, udp6, udp_dst=4789, actions=drop",
+	" cookie=0, table=0, priority=0, actions=goto_table:2",
+	" cookie=0x0f46ee1a3cac3bd5, table=1, priority=100, tun_src=10.0.123.45, actions=goto_table:2",
+	" cookie=0, table=1, priority=0, actions=drop",
+	" cookie=0, table=2, priority=300, arp, actions=goto_table:200",
+	" cookie=0, table=2, priority=300, icmp6, icmpv6_type=135, actions=goto_table:200",
+	" cookie=0, table=2, priority=300, icmp6, icmpv6_type=136, actions=goto_table:200",
+	" cookie=0, table=2, priority=200, ip, ct_state=-trk, actions=ct(table=10)",
+	" cookie=0, table=2, priority=200, ipv6, ct_state=-trk, actions=ct(table=10)",
+	" cookie=0, table=2, priority=100, ip, actions=goto_table:10",
+	" cookie=0, table=2, priority=100, ipv6, actions=goto_table:10",
+	" cookie=0, table=2, priority=0, actions=drop",
+	" cookie=0, table=10, priority=400, in_port=2, ip, nw_src=10.128.0.1, actions=goto_table:30",
+	" cookie=0, table=10, priority=400, in_port=2, ipv6, ipv6_src=fd01:0:0:1::1, actions=goto_table:30",
+	" cookie=0, table=10, priority=300, in_port=2, ip, nw_src=10.128.0.0/23, nw_dst=10.128.0.0/14, actions=goto_table:25",
+	" cookie=0, table=10, priority=300, in_port=2, ipv6, ipv6_src=fd01:0:0:1::/64, ipv6_dst=fd01::/48, actions=goto_table:25",
+	" cookie=0, table=10, priority=250, in_port=2, ip, nw_dst=224.0.0.0/4, actions=drop",
+	" cookie=0, table=10, priority=250, in_port=2, ipv6, ipv6_dst=ff00::/8, actions=drop",
+	" cookie=0, table=10, priority=200, in_port=1, ip, nw_src=10.128.0.0/14, actions=move:NXM_NX_TUN_ID[0..31]->NXM_NX_REG0[],goto_table:10",
+	" cookie=0, table=10, priority=200, in_port=1, ip, nw_dst=10.128.0.0/14, actions=move:NXM_NX_TUN_ID[0..31]->NXM_NX_REG0[],goto_table:10",
+	" cookie=0, table=10, priority=200, in_port=1, ipv6, ipv6_src=fd01::/48, actions=move:NXM_NX_TUN_ID[0..31]->NXM_NX_REG0[],goto_table:10",
+	" cookie=0, table=10, priority=200, in_port=1, ipv6, ipv6_dst=fd01::/48, actions=move:NXM_NX_TUN_ID[0..31]->NXM_NX_REG0[],goto_table:10",
+	" cookie=0, table=10, priority=200, in_port=2, actions=goto_table:30",
+	" cookie=0, table=10, priority=150, in_port=1, actions=drop",
+	" cookie=0, table=10, priority=0, actions=goto_table:20",
+	" cookie=0x04a7761d70ec6c41, table=20, priority=100, in_port=3, ip, nw_src=10.128.0.2, actions=load:42->NXM_NX_REG0[],goto_table:21",
+	" cookie=0, table=20, priority=0, actions=drop",
+	" cookie=0, table=21, priority=0, actions=goto_table:30",
+	" cookie=0x04a7761d70ec6c41, table=25, priority=100, ip, nw_src=10.128.0.2, actions=load:42->NXM_NX_REG0[],goto_table:30",
+	" cookie=0, table=25, priority=0, actions=drop",
+	" cookie=0, table=30, priority=300, ip, nw_dst=10.128.0.1, actions=output:2",
+	" cookie=0, table=30, priority=300, ipv6, ipv6_dst=fd01:0:0:1::1, actions=output:2",
+	" cookie=0, table=30, priority=250, ip, nw_dst=10.128.0.0/23, ct_state=+rpl, actions=ct(nat,table=70)",
+	" cookie=0, table=30, priority=250, ipv6, ipv6_dst=fd01:0:0:1::/64, ct_state=+rpl, actions=ct(nat,table=70)",
+	" cookie=0, table=30, priority=200, ip, nw_dst=10.128.0.0/23, actions=goto_table:70",
+	" cookie=0, table=30, priority=200, ipv6, ipv6_dst=fd01:0:0:1::/64, actions=goto_table:70",
+	" cookie=0, table=30, priority=100, ip, nw_dst=172.30.0.0/16, actions=output:2",
+	" cookie=0, table=30, priority=100, ip, nw_dst=10.128.0.0/14, actions=goto_table:90",
+	" cookie=0, table=30, priority=100, ipv6, ipv6_dst=fd02::/112, actions=output:2",
+	" cookie=0, table=30, priority=100, ipv6, ipv6_dst=fd01::/48, actions=goto_table:90",
+	" cookie=0, table=30, priority=50, in_port=1, ip, nw_dst=224.0.0.0/4, actions=goto_table:120",
+	" cookie=0, table=30, priority=50, in_port=1, ipv6, ipv6_dst=ff00::/8, actions=goto_table:120",
+	" cookie=0, table=30, priority=25, ip, nw_dst=224.0.0.0/4, actions=goto_table:110",
+	" cookie=0, table=30, priority=25, ipv6, ipv6_dst=ff00::/8, actions=goto_table:110",
+	" cookie=0, table=30, priority=0, actions=goto_table:99",
+	" cookie=0x04a7761d70ec6c41, table=70, priority=100, ip, nw_dst=10.128.0.2, actions=load:42->NXM_NX_REG1[],load:3->NXM_NX_REG2[],goto_table:80",
+	" cookie=0, table=70, priority=0, actions=drop",
+	" cookie=0, table=80, priority=300, ip, nw_src=10.128.0.1, actions=output:NXM_NX_REG2[]",
+	" cookie=0, table=80, priority=300, ipv6, ipv6_src=fd01:0:0:1::1, actions=output:NXM_NX_REG2[]",
+	" cookie=0, table=80, priority=0, actions=drop",
+	" cookie=0x0f46ee1a3cac3bd5, table=90, priority=100, ip, nw_dst=10.128.2.0/23, actions=move:NXM_NX_REG0[]->NXM_NX_TUN_ID[0..31],set_field:10.0.123.45->tun_dst,output:1",
+	" cookie=0x0f46ee1a3cac3bd5, table=90, priority=100, ipv6, ipv6_dst=fd01:0:0:2::/64, actions=move:NXM_NX_REG0[]->NXM_NX_TUN_ID[0..31],set_field:10.0.123.45->tun_dst,output:1",
+	" cookie=0, table=90, priority=0, actions=drop",
+	" cookie=0, table=99, priority=200, tcp, tcp_dst=53, nw_dst=172.17.0.4, actions=output:2",
+	" cookie=0, table=99, priority=200, udp, udp_dst=53, nw_dst=172.17.0.4, actions=output:2",
+	" cookie=0, table=99, priority=0, actions=goto_table:100",
+	" cookie=0, table=100, priority=0, actions=goto_table:101",
+	" cookie=0, table=101, priority=150, ct_state=+rpl, actions=output:2",
+	" cookie=0, table=101, priority=0, actions=output:2",
+	" cookie=0, table=110, priority=0, actions=drop",
+	" cookie=0, table=111, priority=100, actions=goto_table:120",
+	" cookie=0, table=120, priority=0, actions=drop",
+
+	" cookie=0, table=200, priority=100, in_port=1, arp, arp_spa=10.128.0.0/14, arp_tpa=10.128.0.0/23, actions=move:NXM_NX_TUN_ID[0..31]->NXM_NX_REG0[],goto_table:230",
+	" cookie=0, table=200, priority=100, in_port=2, arp, arp_spa=10.128.0.1, arp_tpa=10.128.0.0/14, actions=goto_table:230",
+	" cookie=0, table=200, priority=100, in_port=1, icmp6, icmpv6_type=135, ipv6_src=fd01::/48, nd_target=fd01:0:0:1::/64, actions=move:NXM_NX_TUN_ID[0..31]->NXM_NX_REG0[],goto_table:230",
+	" cookie=0, table=200, priority=100, in_port=1, icmp6, icmpv6_type=136, nd_target=fd01::/48, ipv6_dst=fd01:0:0:1::/64, actions=move:NXM_NX_TUN_ID[0..31]->NXM_NX_REG0[],goto_table:230",
+	" cookie=0, table=200, priority=100, in_port=2, icmp6, icmpv6_type=135, ipv6_src=fd01:0:0:1::1, nd_target=fd01::/48, actions=goto_table:230",
+	" cookie=0, table=200, priority=100, in_port=2, icmp6, icmpv6_type=136, nd_target=fd01:0:0:1::1, ipv6_dst=fd01::/48, actions=goto_table:230",
+	" cookie=0, table=200, priority=0, actions=goto_table:220",
+	" cookie=0, table=220, priority=100, icmp6, icmpv6_type=135, nd_sll=00:00:00:00:00:00, actions=move:NXM_OF_ETH_SRC[]->NXM_NX_ND_SLL[],goto_table:221",
+	" cookie=0, table=220, priority=100, icmp6, icmpv6_type=136, nd_tll=00:00:00:00:00:00, actions=move:NXM_OF_ETH_SRC[]->NXM_NX_ND_TLL[],goto_table:221",
+	" cookie=0, table=220, priority=0, actions=goto_table:221",
+	" cookie=0x04a7761d70ec6c41, table=221, priority=100, in_port=3, arp, arp_spa=10.128.0.2, arp_sha=00:00:0a:80:00:02/00:00:ff:ff:ff:ff, actions=load:42->NXM_NX_REG0[],goto_table:230",
+	" cookie=0, table=221, priority=0, actions=drop",
+	" cookie=0, table=230, priority=300, arp, arp_tpa=10.128.0.1, actions=output:2",
+	" cookie=0, table=230, priority=300, icmp6, icmpv6_type=135, nd_target=fd01:0:0:1::1, actions=output:2",
+	" cookie=0, table=230, priority=300, icmp6, icmpv6_type=136, ipv6_dst=fd01:0:0:1::1, actions=output:2",
+	" cookie=0, table=230, priority=200, arp, arp_tpa=10.128.0.0/23, actions=goto_table:240",
+	" cookie=0, table=230, priority=200, icmp6, icmpv6_type=135, nd_target=fd01:0:0:1::/64, actions=goto_table:240",
+	" cookie=0, table=230, priority=200, icmp6, icmpv6_type=136, ipv6_dst=fd01:0:0:1::/64, actions=goto_table:240",
+	" cookie=0, table=230, priority=100, arp, arp_tpa=10.128.0.0/14, actions=goto_table:250",
+	" cookie=0, table=230, priority=100, icmp6, icmpv6_type=135, nd_target=fd01::/48, actions=goto_table:250",
+	" cookie=0, table=230, priority=100, icmp6, icmpv6_type=136, ipv6_dst=fd01::/48, actions=goto_table:250",
+	" cookie=0, table=230, priority=0, actions=drop",
+	" cookie=0x04a7761d70ec6c41, table=240, priority=100, arp, arp_tpa=10.128.0.2, actions=output:3",
+	" cookie=0, table=240, priority=0, actions=drop",
+	" cookie=0x0f46ee1a3cac3bd5, table=250, priority=100, arp, arp_tpa=10.128.2.0/23, actions=move:NXM_NX_REG0[]->NXM_NX_TUN_ID[0..31],set_field:10.0.123.45->tun_dst,output:1",
+	" cookie=0x0f46ee1a3cac3bd5, table=250, priority=100, icmp6, icmpv6_type=135, nd_target=fd01:0:0:2::/64, actions=move:NXM_NX_REG0[]->NXM_NX_TUN_ID[0..31],set_field:10.0.123.45->tun_dst,output:1",
+	" cookie=0x0f46ee1a3cac3bd5, table=250, priority=100, icmp6, icmpv6_type=136, ipv6_dst=fd01:0:0:2::/64, actions=move:NXM_NX_REG0[]->NXM_NX_TUN_ID[0..31],set_field:10.0.123.45->tun_dst,output:1",
+	" cookie=0, table=250, priority=0, actions=drop",
+
+	" cookie=0, table=253, actions=note:02.0E",
+}
+
+// Ensure proper IPv4->IPv6 translation / dual-stack merging
+func TestDualStackTranslation(t *testing.T) {
+	ovsif, oc, _ := setupOVSController(t, corev1.IPv4Protocol, corev1.IPv6Protocol)
+
+	// Now call each oc method that adds flows
+
+	// Pod-related flows
+	// IPv6FIXME: dual-stack pod IPs
+	_, err := oc.SetUpPod(sandboxID, "veth1", net.ParseIP("10.128.0.2"), 42)
+	if err != nil {
+		t.Fatalf("Unexpected error adding pod rules: %v", err)
+	}
+
+	// We don't test AddServiceRules because that's only used with non-conntrack mode,
+	// which is not supported for IPv6/dual stack.
+
+	// VXLAN flows
+	hs := osdnv1.HostSubnet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "node1",
+			UID:         "node1UID",
+			Annotations: map[string]string{
+				common.HostSubnetIPv6HostIPAnnotation: "2001:172:17::5",
+				common.HostSubnetIPv6SubnetAnnotation: "fd01:0:0:2::/64",
+			},
+		},
+		HostIP: "10.0.123.45",
+		Subnet: "10.128.2.0/23",
+	}
+	err = oc.AddHostSubnetRules(&hs)
+	if err != nil {
+		t.Fatalf("Unexpected error adding hostsubnet rules: %v", err)
+	}
+
+	// The multicast flows would be identical to either the v4 or v6 example,
+	// depending on the primary IP family. (It's not possible for some nodes
+	// to have an IPv4 primary IP and others to have IPv6.)
+
+	// EgressNetworkPolicy and EgressIP are IPv4-only
+
+	flows, err := ovsif.DumpFlows("")
+	if err != nil {
+		t.Fatalf("Unexpected error dumping flows: %v", err)
+	}
+	if reflect.DeepEqual(flows, expectedDualStackFlows) {
+		return
+	}
+
+	t.Logf("*** FLOWS HAVE CHANGED FROM PREVIOUS COMMIT ***\n%s\nIf this change is expected then make sure you have bumped ruleVersion in pkg/network/node/ovscontroller.go, and then update expectedDualStackFlows in pkg/network/node/ovscontroller_test.go", diffFlows(expectedDualStackFlows, flows))
 
 	t.Fatalf("flows changed")
 }

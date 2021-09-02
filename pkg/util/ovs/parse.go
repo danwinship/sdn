@@ -309,25 +309,29 @@ func ParseFlow(ptype ParseType, flow string, args ...interface{}) (*OvsFlow, err
 		}
 	}
 
-	// IPV6FIXME: add sanity-checking for IPv6 fields
-
 	if anyFieldSet(parsed, "nw_src", "nw_dst") && !anyFieldSet(parsed, "arp", "ip", "tcp", "udp", "sctp") {
 		return nil, fmt.Errorf("bad flow %q (specified nw_src/nw_dst without ip/tcp/udp/sctp)", flow)
 	}
 	if anyFieldSet(parsed, "arp_sha", "arp_tha") && !fieldSet(parsed, "arp") {
 		return nil, fmt.Errorf("bad flow %q (specified arp_sha/arp_tpa without arp)", flow)
 	}
-	if anyFieldSet(parsed, "tcp_src", "tcp_dst") && !fieldSet(parsed, "tcp") {
-		return nil, fmt.Errorf("bad flow %q (specified tcp_src/tcp_dst without tcp)", flow)
+	if anyFieldSet(parsed, "ipv6_src", "ipv6_dst") && !anyFieldSet(parsed, "ipv6", "icmp6", "tcp6", "udp6", "sctp6") {
+		return nil, fmt.Errorf("bad flow %q (specified ipv6_src/ipv6_dst without ipv6/icmp6/tcp6/udp6/sctp6)", flow)
 	}
-	if anyFieldSet(parsed, "udp_src", "udp_dst") && !fieldSet(parsed, "udp") {
-		return nil, fmt.Errorf("bad flow %q (specified udp_src/udp_dst without udp)", flow)
+	if fieldSet(parsed, "icmpv6_code") && !fieldSet(parsed, "icmp6") {
+		return nil, fmt.Errorf("bad flow %q (specified icmpv6_code without icmp6)", flow)
 	}
-	if anyFieldSet(parsed, "sctp_src", "sctp_dst") && !fieldSet(parsed, "sctp") {
-		return nil, fmt.Errorf("bad flow %q (specified sctp_src/sctp_dst without sctp)", flow)
+	if anyFieldSet(parsed, "tcp_src", "tcp_dst") && !anyFieldSet(parsed, "tcp", "tcp6") {
+		return nil, fmt.Errorf("bad flow %q (specified tcp_src/tcp_dst without tcp/tcp6)", flow)
 	}
-	if anyFieldSet(parsed, "tp_src", "tp_dst") && !anyFieldSet(parsed, "tcp", "udp", "sctp") {
-		return nil, fmt.Errorf("bad flow %q (specified tp_src/tp_dst without tcp/udp/sctp)", flow)
+	if anyFieldSet(parsed, "udp_src", "udp_dst") && !anyFieldSet(parsed, "udp", "udp6") {
+		return nil, fmt.Errorf("bad flow %q (specified udp_src/udp_dst without udp/udp6)", flow)
+	}
+	if anyFieldSet(parsed, "sctp_src", "sctp_dst") && !anyFieldSet(parsed, "sctp", "sctp6") {
+		return nil, fmt.Errorf("bad flow %q (specified sctp_src/sctp_dst without sctp/sctp6)", flow)
+	}
+	if anyFieldSet(parsed, "tp_src", "tp_dst") && !anyFieldSet(parsed, "tcp", "udp", "sctp", "tcp6", "udp6", "sctp6") {
+		return nil, fmt.Errorf("bad flow %q (specified tp_src/tp_dst without tcp/udp/sctp/tcp6/udp6/sctp6)", flow)
 	}
 	if fieldSet(parsed, "ip_frag") && anyFieldSet(parsed, "tcp", "udp", "sctp") {
 		return nil, fmt.Errorf("bad flow %q (specified ip_frag with tcp/udp/sctp)", flow)

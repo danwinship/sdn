@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ktypes "k8s.io/apimachinery/pkg/types"
 	utilnet "k8s.io/utils/net"
@@ -28,12 +29,9 @@ func assertHostSubnetFlowChanges(hsw *hostSubnetWatcher, flows *[]string, change
 	return nil
 }
 
-func setupHostSubnetWatcher(t *testing.T) (*hostSubnetWatcher, []string) {
-	_, oc, _ := setupOVSController(t)
-
-	sdnConfig := common.NewTestSDNConfig()
-	nodeConfig := NewTestNodeConfig(sdnConfig)
-	hsw := newHostSubnetWatcher(oc, sdnConfig, nodeConfig)
+func setupHostSubnetWatcher(t *testing.T, families ...corev1.IPFamily) (*hostSubnetWatcher, []string) {
+	_, oc, _ := setupOVSController(t, families...)
+	hsw := newHostSubnetWatcher(oc, oc.sdnConfig, oc.nodeConfig)
 
 	flows, err := hsw.oc.ovs.DumpFlows("")
 	if err != nil {
@@ -190,6 +188,152 @@ func TestHostSubnetWatcher(t *testing.T) {
 			kind:    flowAdded,
 			match:   []string{"table=111", "goto_table:120"},
 			noMatch: []string{"tun_dst"},
+		},
+	)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+}
+
+func TestHostSubnetWatcherIPv6(t *testing.T) {
+	hsw, flows := setupHostSubnetWatcher(t, corev1.IPv6Protocol)
+
+	hs1 := makeHostSubnet("node1", "2600:5200::2", "fd01:0:0:1::/64")
+	hs2 := makeHostSubnet("node2", "2600:5200::3", "fd01:0:0:2::/64")
+
+	err := hsw.updateHostSubnet(hs1)
+	if err != nil {
+		t.Fatalf("Unexpected error adding HostSubnet: %v", err)
+	}
+	err = assertHostSubnetFlowChanges(hsw, &flows,
+		flowChange{
+			kind:  flowAdded,
+			match: []string{"table=1", "tun_ipv6_src=2600:5200::2"},
+		},
+		flowChange{
+			kind:  flowAdded,
+			match: []string{"table=90", "ipv6", "ipv6_dst=fd01:0:0:1::/64", "2600:5200::2->tun_ipv6_dst"},
+		},
+		flowChange{
+			kind:    flowRemoved,
+			match:   []string{"table=111", "goto_table:120"},
+			noMatch: []string{"->tun_dst", "->tun_ipv6_dst"},
+		},
+		flowChange{
+			kind:  flowAdded,
+			match: []string{"table=111", "2600:5200::2->tun_ipv6_dst"},
+		},
+		flowChange{
+			kind:  flowAdded,
+			match: []string{"table=250", "icmp6", "icmpv6_type=135", "nd_target=fd01:0:0:1::/64", "2600:5200::2->tun_ipv6_dst"},
+		},
+		flowChange{
+			kind:  flowAdded,
+			match: []string{"table=250", "icmp6", "icmpv6_type=136", "ipv6_dst=fd01:0:0:1::/64", "2600:5200::2->tun_ipv6_dst"},
+		},
+	)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+
+	err = hsw.updateHostSubnet(hs2)
+	if err != nil {
+		t.Fatalf("Unexpected error adding HostSubnet: %v", err)
+	}
+	err = assertHostSubnetFlowChanges(hsw, &flows,
+		flowChange{
+			kind:  flowAdded,
+			match: []string{"table=1", "tun_ipv6_src=2600:5200::3"},
+		},
+		flowChange{
+			kind:  flowAdded,
+			match: []string{"table=90", "ipv6", "ipv6_dst=fd01:0:0:2::/64", "2600:5200::3->tun_ipv6_dst"},
+		},
+		flowChange{
+			kind:  flowRemoved,
+			match: []string{"table=111", "2600:5200::2->tun_ipv6_dst"},
+		},
+		flowChange{
+			kind:  flowAdded,
+			match: []string{"table=111", "2600:5200::2->tun_ipv6_dst", "2600:5200::3->tun_ipv6_dst"},
+		},
+		flowChange{
+			kind:  flowAdded,
+			match: []string{"table=250", "icmp6", "icmpv6_type=135", "nd_target=fd01:0:0:2::/64", "2600:5200::3->tun_ipv6_dst"},
+		},
+		flowChange{
+			kind:  flowAdded,
+			match: []string{"table=250", "icmp6", "icmpv6_type=136", "ipv6_dst=fd01:0:0:2::/64", "2600:5200::3->tun_ipv6_dst"},
+		},
+	)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+
+	err = hsw.deleteHostSubnet(hs1)
+	if err != nil {
+		t.Fatalf("Unexpected error deleting HostSubnet: %v", err)
+	}
+	err = assertHostSubnetFlowChanges(hsw, &flows,
+		flowChange{
+			kind:  flowRemoved,
+			match: []string{"table=1", "tun_ipv6_src=2600:5200::2"},
+		},
+		flowChange{
+			kind:  flowRemoved,
+			match: []string{"table=90", "ipv6", "ipv6_dst=fd01:0:0:1::/64", "2600:5200::2->tun_ipv6_dst"},
+		},
+		flowChange{
+			kind:  flowRemoved,
+			match: []string{"table=111", "2600:5200::2->tun_ipv6_dst", "2600:5200::3->tun_ipv6_dst"},
+		},
+		flowChange{
+			kind:    flowAdded,
+			match:   []string{"table=111", "2600:5200::3->tun_ipv6_dst"},
+			noMatch: []string{"2600:5200::2"},
+		},
+		flowChange{
+			kind:  flowRemoved,
+			match: []string{"table=250", "icmp6", "icmpv6_type=135", "nd_target=fd01:0:0:1::/64", "2600:5200::2->tun_ipv6_dst"},
+		},
+		flowChange{
+			kind:  flowRemoved,
+			match: []string{"table=250", "icmp6", "icmpv6_type=136", "ipv6_dst=fd01:0:0:1::/64", "2600:5200::2->tun_ipv6_dst"},
+		},
+	)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+
+	err = hsw.deleteHostSubnet(hs2)
+	if err != nil {
+		t.Fatalf("Unexpected error deleting HostSubnet: %v", err)
+	}
+	err = assertHostSubnetFlowChanges(hsw, &flows,
+		flowChange{
+			kind:  flowRemoved,
+			match: []string{"table=1", "tun_ipv6_src=2600:5200::3"},
+		},
+		flowChange{
+			kind:  flowRemoved,
+			match: []string{"table=90", "ipv6", "ipv6_dst=fd01:0:0:2::/64", "2600:5200::3->tun_ipv6_dst"},
+		},
+		flowChange{
+			kind:  flowRemoved,
+			match: []string{"table=111", "2600:5200::3->tun_ipv6_dst"},
+		},
+		flowChange{
+			kind:    flowAdded,
+			match:   []string{"table=111", "goto_table:120"},
+			noMatch: []string{"tun_dst"},
+		},
+		flowChange{
+			kind:  flowRemoved,
+			match: []string{"table=250", "icmp6", "icmpv6_type=135", "nd_target=fd01:0:0:2::/64", "2600:5200::3->tun_ipv6_dst"},
+		},
+		flowChange{
+			kind:  flowRemoved,
+			match: []string{"table=250", "icmp6", "icmpv6_type=136", "ipv6_dst=fd01:0:0:2::/64", "2600:5200::3->tun_ipv6_dst"},
 		},
 	)
 	if err != nil {

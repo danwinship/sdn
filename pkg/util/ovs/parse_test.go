@@ -188,6 +188,10 @@ func TestParseFlowsBad(t *testing.T) {
 			// src/dst without type (L4)
 			input: "table=20, priority=300, udp_dst=4789, actions=drop",
 		},
+		{
+			// mistakenly mixing IPv4 and IPv6 fields
+			input: "table=10, priority=400, in_port=2, ipv6, nw_src=fd01::1, actions=goto_table:30",
+		},
 	}
 
 	for i, test := range parseTests {
