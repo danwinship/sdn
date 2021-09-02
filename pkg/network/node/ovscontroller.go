@@ -2,6 +2,7 @@ package node
 
 import (
 	"crypto/sha256"
+	"encoding/binary"
 	"fmt"
 	"net"
 	"sort"
@@ -159,7 +160,7 @@ const (
 	Vxlan0 = "vxlan0"
 
 	// rule versioning; increment each time flow rules change
-	ruleVersion = 11
+	ruleVersion = 12
 
 	ruleVersionTable = 253
 )
@@ -433,37 +434,38 @@ func (oc *ovsController) ensureOvsPort(hostVeth, sandboxID, podIP string) (int, 
 	return ofport, err
 }
 
-func (oc *ovsController) setupPodFlows(ofport int, podIP net.IP, vnid uint32) error {
+func stringToCookie(str string) string {
+	hash := sha256.Sum256([]byte(str))
+	return fmt.Sprintf("0x%016x", binary.BigEndian.Uint64(hash[0:8]))
+}
+
+func (oc *ovsController) setupPodFlows(sandboxID string, ofport int, podIP net.IP, vnid uint32) error {
 	otx := oc.ovs.NewTransaction()
 
+	cookie := stringToCookie(sandboxID)
 	ipstr := podIP.String()
 	podIP = podIP.To4()
 	ipmac := fmt.Sprintf("00:00:%02x:%02x:%02x:%02x/00:00:ff:ff:ff:ff", podIP[0], podIP[1], podIP[2], podIP[3])
 
 	// ARP/IP traffic from container
-	otx.AddFlow("table=20, priority=100, in_port=%d, arp, nw_src=%s, arp_sha=%s, actions=load:%d->NXM_NX_REG0[], goto_table:21", ofport, ipstr, ipmac, vnid)
-	otx.AddFlow("table=20, priority=100, in_port=%d, ip, nw_src=%s, actions=load:%d->NXM_NX_REG0[], goto_table:21", ofport, ipstr, vnid)
+	otx.AddFlow("table=20, priority=100, cookie=%s, in_port=%d, arp, nw_src=%s, arp_sha=%s, actions=load:%d->NXM_NX_REG0[], goto_table:21", cookie, ofport, ipstr, ipmac, vnid)
+	otx.AddFlow("table=20, priority=100, cookie=%s, in_port=%d, ip, nw_src=%s, actions=load:%d->NXM_NX_REG0[], goto_table:21", cookie, ofport, ipstr, vnid)
 	if oc.useConnTrack {
-		otx.AddFlow("table=25, priority=100, ip, nw_src=%s, actions=load:%d->NXM_NX_REG0[], goto_table:30", ipstr, vnid)
+		otx.AddFlow("table=25, priority=100, cookie=%s, ip, nw_src=%s, actions=load:%d->NXM_NX_REG0[], goto_table:30", cookie, ipstr, vnid)
 	}
 
 	// ARP request/response to container (not isolated)
-	otx.AddFlow("table=40, priority=100, arp, nw_dst=%s, actions=output:%d", ipstr, ofport)
+	otx.AddFlow("table=40, priority=100, cookie=%s, arp, nw_dst=%s, actions=output:%d", cookie, ipstr, ofport)
 
 	// IP traffic to container
-	otx.AddFlow("table=70, priority=100, ip, nw_dst=%s, actions=load:%d->NXM_NX_REG1[], load:%d->NXM_NX_REG2[], goto_table:80", ipstr, vnid, ofport)
+	otx.AddFlow("table=70, priority=100, cookie=%s, ip, nw_dst=%s, actions=load:%d->NXM_NX_REG1[], load:%d->NXM_NX_REG2[], goto_table:80", cookie, ipstr, vnid, ofport)
 
 	return otx.Commit()
 }
 
-func (oc *ovsController) cleanupPodFlows(podIP net.IP) error {
-	ipstr := podIP.String()
-
+func (oc *ovsController) cleanupPodFlows(sandboxID string) error {
 	otx := oc.ovs.NewTransaction()
-	otx.DeleteFlows("ip, nw_dst=%s", ipstr)
-	otx.DeleteFlows("ip, nw_src=%s", ipstr)
-	otx.DeleteFlows("arp, nw_dst=%s", ipstr)
-	otx.DeleteFlows("arp, nw_src=%s", ipstr)
+	otx.DeleteFlows("cookie=%s/-1", stringToCookie(sandboxID))
 	return otx.Commit()
 }
 
@@ -472,7 +474,7 @@ func (oc *ovsController) SetUpPod(sandboxID, hostVeth string, podIP net.IP, vnid
 	if err != nil {
 		return -1, err
 	}
-	return ofport, oc.setupPodFlows(ofport, podIP, vnid)
+	return ofport, oc.setupPodFlows(sandboxID, ofport, podIP, vnid)
 }
 
 // Returned list can also be used for port names
@@ -573,22 +575,22 @@ func (oc *ovsController) UpdatePod(sandboxID string, vnid uint32) error {
 	} else if ofport == -1 {
 		return fmt.Errorf("can't update pod %q with missing veth interface", sandboxID)
 	}
-	err = oc.cleanupPodFlows(podIP)
+	err = oc.cleanupPodFlows(sandboxID)
 	if err != nil {
 		return err
 	}
-	return oc.setupPodFlows(ofport, podIP, vnid)
+	return oc.setupPodFlows(sandboxID, ofport, podIP, vnid)
 }
 
 func (oc *ovsController) TearDownPod(sandboxID string) error {
-	_, podIP, err := oc.getPodDetailsBySandboxID(sandboxID)
+	_, _, err := oc.getPodDetailsBySandboxID(sandboxID)
 	if err != nil {
 		// OVS flows related to sandboxID not found
 		// Nothing needs to be done in that case
 		return nil
 	}
 
-	if err := oc.cleanupPodFlows(podIP); err != nil {
+	if err := oc.cleanupPodFlows(sandboxID); err != nil {
 		return err
 	}
 
@@ -685,51 +687,52 @@ func (oc *ovsController) UpdateEgressNetworkPolicyRules(policies []osdnv1.Egress
 	return kerrors.NewAggregate(errs)
 }
 
-func hostSubnetCookie(subnet *osdnv1.HostSubnet) uint32 {
-	hash := sha256.Sum256([]byte(subnet.UID))
-	return (uint32(hash[0]) << 24) | (uint32(hash[1]) << 16) | (uint32(hash[2]) << 8) | uint32(hash[3])
-}
-
 func (oc *ovsController) AddHostSubnetRules(subnet *osdnv1.HostSubnet) error {
-	cookie := hostSubnetCookie(subnet)
+	cookie := stringToCookie(string(subnet.UID))
 	otx := oc.ovs.NewTransaction()
 
-	otx.AddFlow("table=10, priority=100, cookie=0x%08x, tun_src=%s, actions=goto_table:30", cookie, subnet.HostIP)
+	otx.AddFlow("table=10, priority=100, cookie=%s, tun_src=%s, actions=goto_table:30", cookie, subnet.HostIP)
 	if vnid, ok := subnet.Annotations[osdnv1.FixedVNIDHostAnnotation]; ok {
-		otx.AddFlow("table=50, priority=100, cookie=0x%08x, arp, nw_dst=%s, actions=load:%s->NXM_NX_TUN_ID[0..31],set_field:%s->tun_dst,output:1", cookie, subnet.Subnet, vnid, subnet.HostIP)
-		otx.AddFlow("table=90, priority=100, cookie=0x%08x, ip, nw_dst=%s, actions=load:%s->NXM_NX_TUN_ID[0..31],set_field:%s->tun_dst,output:1", cookie, subnet.Subnet, vnid, subnet.HostIP)
+		otx.AddFlow("table=50, priority=100, cookie=%s, arp, nw_dst=%s, actions=load:%s->NXM_NX_TUN_ID[0..31],set_field:%s->tun_dst,output:1", cookie, subnet.Subnet, vnid, subnet.HostIP)
+		otx.AddFlow("table=90, priority=100, cookie=%s, ip, nw_dst=%s, actions=load:%s->NXM_NX_TUN_ID[0..31],set_field:%s->tun_dst,output:1", cookie, subnet.Subnet, vnid, subnet.HostIP)
 	} else {
-		otx.AddFlow("table=50, priority=100, cookie=0x%08x, arp, nw_dst=%s, actions=move:NXM_NX_REG0[]->NXM_NX_TUN_ID[0..31],set_field:%s->tun_dst,output:1", cookie, subnet.Subnet, subnet.HostIP)
-		otx.AddFlow("table=90, priority=100, cookie=0x%08x, ip, nw_dst=%s, actions=move:NXM_NX_REG0[]->NXM_NX_TUN_ID[0..31],set_field:%s->tun_dst,output:1", cookie, subnet.Subnet, subnet.HostIP)
+		otx.AddFlow("table=50, priority=100, cookie=%s, arp, nw_dst=%s, actions=move:NXM_NX_REG0[]->NXM_NX_TUN_ID[0..31],set_field:%s->tun_dst,output:1", cookie, subnet.Subnet, subnet.HostIP)
+		otx.AddFlow("table=90, priority=100, cookie=%s, ip, nw_dst=%s, actions=move:NXM_NX_REG0[]->NXM_NX_TUN_ID[0..31],set_field:%s->tun_dst,output:1", cookie, subnet.Subnet, subnet.HostIP)
 	}
 
 	return otx.Commit()
 }
 
 func (oc *ovsController) DeleteHostSubnetRules(subnet *osdnv1.HostSubnet) error {
-	cookie := hostSubnetCookie(subnet)
-
 	otx := oc.ovs.NewTransaction()
-	otx.DeleteFlows("table=10, cookie=0x%08x/0xffffffff, tun_src=%s", cookie, subnet.HostIP)
-	otx.DeleteFlows("table=50, cookie=0x%08x/0xffffffff, arp, nw_dst=%s", cookie, subnet.Subnet)
-	otx.DeleteFlows("table=90, cookie=0x%08x/0xffffffff, ip, nw_dst=%s", cookie, subnet.Subnet)
+	otx.DeleteFlows("cookie=%s/-1", stringToCookie(string(subnet.UID)))
 	return otx.Commit()
 }
 
 func (oc *ovsController) AddServiceRules(service *corev1.Service, netID uint32) error {
 	otx := oc.ovs.NewTransaction()
 
-	action := fmt.Sprintf(", priority=100, actions=load:%d->NXM_NX_REG1[], load:2->NXM_NX_REG2[], goto_table:80", netID)
+	baseRule := fmt.Sprintf("table=60, priority=100, cookie=%s, ip, nw_dst=%s", stringToCookie(string(service.UID)), service.Spec.ClusterIP)
+
+	action := fmt.Sprintf("actions=load:%d->NXM_NX_REG1[], load:2->NXM_NX_REG2[], goto_table:80", netID)
 
 	// Add blanket rule allowing subsequent IP fragments
-	otx.AddFlow(generateBaseServiceRule(service.Spec.ClusterIP) + ", ip_frag=later" + action)
+	otx.AddFlow(baseRule + ", ip_frag=later, " + action)
 
 	for _, port := range service.Spec.Ports {
-		baseRule, err := generateBaseAddServiceRule(service.Spec.ClusterIP, port.Protocol, int(port.Port))
-		if err != nil {
-			klog.Errorf("Error creating OVS flow for service %v, netid %d: %v", service, netID, err)
+		var dst string
+		if port.Protocol == corev1.ProtocolUDP {
+			dst = fmt.Sprintf("udp, udp_dst=%d", port.Port)
+		} else if port.Protocol == corev1.ProtocolTCP {
+			dst = fmt.Sprintf("tcp, tcp_dst=%d", port.Port)
+		} else if port.Protocol == corev1.ProtocolSCTP {
+			dst = fmt.Sprintf("sctp, sctp_dst=%d", port.Port)
+		} else {
+			klog.Errorf("Unhandled protocol %q for service %s", port.Protocol, service.Name)
+			continue
 		}
-		otx.AddFlow(baseRule + action)
+
+		otx.AddFlow(baseRule + ", " + dst + ", " + action)
 	}
 
 	return otx.Commit()
@@ -737,26 +740,8 @@ func (oc *ovsController) AddServiceRules(service *corev1.Service, netID uint32) 
 
 func (oc *ovsController) DeleteServiceRules(service *corev1.Service) error {
 	otx := oc.ovs.NewTransaction()
-	otx.DeleteFlows(generateBaseServiceRule(service.Spec.ClusterIP))
+	otx.DeleteFlows("table=60, cookie=%s/-1", stringToCookie(string(service.UID)))
 	return otx.Commit()
-}
-
-func generateBaseServiceRule(IP string) string {
-	return fmt.Sprintf("table=60, ip, nw_dst=%s", IP)
-}
-
-func generateBaseAddServiceRule(IP string, protocol corev1.Protocol, port int) (string, error) {
-	var dst string
-	if protocol == corev1.ProtocolUDP {
-		dst = fmt.Sprintf(", udp, udp_dst=%d", port)
-	} else if protocol == corev1.ProtocolTCP {
-		dst = fmt.Sprintf(", tcp, tcp_dst=%d", port)
-	} else if protocol == corev1.ProtocolSCTP {
-		dst = fmt.Sprintf(", sctp, sctp_dst=%d", port)
-	} else {
-		return "", fmt.Errorf("unhandled protocol %v", protocol)
-	}
-	return generateBaseServiceRule(IP) + dst, nil
 }
 
 func (oc *ovsController) UpdateLocalMulticastFlows(vnid uint32, enabled bool, ofports []int) error {

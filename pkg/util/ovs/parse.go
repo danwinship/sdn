@@ -384,9 +384,13 @@ func fieldMatches(val, match string, ptype ParseType) bool {
 	// reach the final check.)
 	split := strings.Split(match, "/")
 	if len(split) == 2 {
-		matchNum, err1 := strconv.ParseUint(split[0], 0, 32)
-		mask, err2 := strconv.ParseUint(split[1], 0, 32)
-		valNum, err3 := strconv.ParseUint(val, 0, 32)
+		matchNum, err1 := strconv.ParseUint(split[0], 0, 64)
+		mask, err2 := strconv.ParseUint(split[1], 0, 64)
+		valNum, err3 := strconv.ParseUint(val, 0, 64)
+		if split[1] == "-1" {
+			err2 = nil
+			mask = 0xffffffffffffffff
+		}
 		if err1 == nil && err2 == nil && err3 == nil {
 			if (matchNum & mask) == (valNum & mask) {
 				return true
