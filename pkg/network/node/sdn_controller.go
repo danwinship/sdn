@@ -15,37 +15,33 @@ import (
 )
 
 func (node *OsdnNode) alreadySetUp() error {
-	var found bool
-
 	l, err := netlink.LinkByName(Tun0)
 	if err != nil {
 		return err
 	}
 
-	// IPV6FIXME: IPv4-specific
-	addrs, err := netlink.AddrList(l, netlink.FAMILY_V4)
+	addrs, err := netlink.AddrList(l, netlink.FAMILY_ALL)
 	if err != nil {
 		return err
 	}
-	found = false
+	found := 0
 	for _, addr := range addrs {
-		// IPV6FIXME: dual-stack check
-		if addr.IPNet.String() == node.nodeConfig.LocalGateways[0].String() {
-			found = true
-			break
+		for _, gwAddr := range node.nodeConfig.LocalGatewayIfAddrStrings {
+			if addr.IPNet.String() == gwAddr {
+				found++
+			}
 		}
 	}
-	if !found {
-		return errors.New("local subnet gateway CIDR not found")
+	if found != len(node.nodeConfig.LocalGateways) {
+		return errors.New("local subnet gateway CIDR(s) not found")
 	}
 
-	// IPV6FIXME: IPv4-specific
-	routes, err := netlink.RouteList(l, netlink.FAMILY_V4)
+	routes, err := netlink.RouteList(l, netlink.FAMILY_ALL)
 	if err != nil {
 		return err
 	}
 	for _, clusterCIDR := range node.sdnConfig.ClusterNetworkCIDRStrings {
-		found = false
+		found := false
 		for _, route := range routes {
 			if route.Dst != nil && route.Dst.String() == clusterCIDR {
 				found = true
@@ -53,7 +49,7 @@ func (node *OsdnNode) alreadySetUp() error {
 			}
 		}
 		if !found {
-			return errors.New("cluster CIDR not found")
+			return errors.New("cluster CIDR(s) not found")
 		}
 	}
 
@@ -76,8 +72,7 @@ func deleteLocalSubnetRoute(device, localSubnetCIDR string) {
 		if err != nil {
 			return false, fmt.Errorf("could not get interface %s: %v", device, err)
 		}
-		// IPV6FIXME: IPv4-specific
-		routes, err := netlink.RouteList(l, netlink.FAMILY_V4)
+		routes, err := netlink.RouteList(l, netlink.FAMILY_ALL)
 		if err != nil {
 			return false, fmt.Errorf("could not get routes: %v", err)
 		}
@@ -100,18 +95,18 @@ func deleteLocalSubnetRoute(device, localSubnetCIDR string) {
 
 func (node *OsdnNode) SetupSDN() (bool, map[string]podNetworkInfo, error) {
 	// Make sure IPv4 forwarding state is 1
-	// IPV6FIXME: not for single-stack IPv6
-	sysctl := sysctl.New()
-	val, err := sysctl.GetSysctl("net/ipv4/ip_forward")
-	if err != nil {
-		return false, nil, fmt.Errorf("could not get IPv4 forwarding state: %s", err)
-	}
-	if val != 1 {
-		return false, nil, fmt.Errorf("net/ipv4/ip_forward=0, it must be set to 1")
+	if node.sdnConfig.HasIPv4 {
+		sysctl := sysctl.New()
+		val, err := sysctl.GetSysctl("net/ipv4/ip_forward")
+		if err != nil {
+			return false, nil, fmt.Errorf("could not get IPv4 forwarding state: %s", err)
+		}
+		if val != 1 {
+			return false, nil, fmt.Errorf("net/ipv4/ip_forward=0, it must be set to 1")
+		}
 	}
 
-	// IPV6FIXME: dual
-	klog.V(5).Infof("[SDN setup] node pod subnet %s gateway %s", node.nodeConfig.LocalSubnets[0], node.nodeConfig.LocalGateways[0])
+	klog.V(5).Infof("[SDN setup] node pod subnet %v gateway %v", node.nodeConfig.LocalSubnetCIDRStrings, node.nodeConfig.LocalGatewayIPStrings)
 
 	if err := healthCheckOVS(); err != nil {
 		return false, nil, err
@@ -151,11 +146,12 @@ func (node *OsdnNode) setup() error {
 
 	l, err := netlink.LinkByName(Tun0)
 	if err == nil {
-		// IPV6FIXME: add dual addresses
-		err = netlink.AddrAdd(l, &netlink.Addr{IPNet: node.nodeConfig.LocalGateways[0]})
-		if err == nil {
-			// IPV6FIXME: dual deletions
-			defer deleteLocalSubnetRoute(Tun0, node.nodeConfig.LocalSubnetCIDRStrings[0])
+		for i, gw := range node.nodeConfig.LocalGateways {
+			err = netlink.AddrAdd(l, &netlink.Addr{IPNet: gw})
+			if err != nil {
+				break
+			}
+			defer deleteLocalSubnetRoute(Tun0, node.nodeConfig.LocalSubnetCIDRStrings[i])
 		}
 	}
 	if err == nil {
@@ -174,12 +170,16 @@ func (node *OsdnNode) setup() error {
 		}
 	}
 	if err == nil {
-		// IPV6FIXME: dual service networks
-		route := &netlink.Route{
-			LinkIndex: l.Attrs().Index,
-			Dst:       node.sdnConfig.ServiceNetworks[0],
+		for _, serviceCIDR := range node.sdnConfig.ServiceNetworks {
+			route := &netlink.Route{
+				LinkIndex: l.Attrs().Index,
+				Dst:       serviceCIDR,
+			}
+			err = netlink.RouteAdd(route)
+			if err != nil {
+				break
+			}
 		}
-		err = netlink.RouteAdd(route)
 	}
 	if err != nil {
 		return err

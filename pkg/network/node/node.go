@@ -31,6 +31,7 @@ import (
 	"k8s.io/kubernetes/pkg/util/iptables"
 	taints "k8s.io/kubernetes/pkg/util/taints"
 	kexec "k8s.io/utils/exec"
+	utilnet "k8s.io/utils/net"
 
 	osdnv1 "github.com/openshift/api/network/v1"
 	"github.com/openshift/library-go/pkg/network/networkutils"
@@ -140,7 +141,6 @@ func New(c *OsdnNodeConfig) (*OsdnNode, error) {
 }
 
 func (c *OsdnNodeConfig) validateNodeIP() error {
-	// IPV6FIXME: dual node IPs
 	if _, _, err := GetLinkDetails(c.NodeConfig.IPStrings[0]); err != nil {
 		if err == ErrorNetworkInterfaceNotFound {
 			err = fmt.Errorf("node IP %q is not a local/private address (hostname %q)", c.NodeConfig.IPStrings[0], c.NodeConfig.Name)
@@ -171,8 +171,7 @@ func GetLinkDetails(ip string) (netlink.Link, *net.IPNet, error) {
 	}
 
 	for _, link := range links {
-		// IPV6FIXME: ipv4-specific
-		addrs, err := netlink.AddrList(link, netlink.FAMILY_V4)
+		addrs, err := netlink.AddrList(link, netlink.FAMILY_ALL)
 		if err != nil {
 			klog.Warningf("Could not get addresses of interface %q: %v", link.Attrs().Name, err)
 			continue
@@ -195,9 +194,14 @@ func GetLinkDetails(ip string) (netlink.Link, *net.IPNet, error) {
 func (node *OsdnNode) validateMTU() error {
 	klog.V(2).Infof("Checking default interface MTU")
 
-	// Get the interface with the default route
-	// IPV6FIXME: ipv4-specific
-	routes, err := netlink.RouteList(nil, netlink.FAMILY_V4)
+	// Get the interface with the default route for the primary IP family
+	var family int
+	if utilnet.IsIPv4(node.nodeConfig.IPs[0]) {
+		family = netlink.FAMILY_V4
+	} else {
+		family = netlink.FAMILY_V6
+	}
+	routes, err := netlink.RouteList(nil, family)
 	if err != nil {
 		return fmt.Errorf("could not list routes while validating MTU: %v", err)
 	}
@@ -219,8 +223,7 @@ func (node *OsdnNode) validateMTU() error {
 
 		// we want to check the mtu only for the interface assigned to the node's primary ip
 		found := false
-		// IPV6FIXME: ipv4-specific
-		addresses, err := netlink.AddrList(link, netlink.FAMILY_V4)
+		addresses, err := netlink.AddrList(link, family)
 		for _, address := range addresses {
 			if node.nodeConfig.IPs[0].Equal(address.IP) {
 				found = true
