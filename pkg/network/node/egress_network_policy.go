@@ -14,122 +14,122 @@ import (
 	"k8s.io/apimachinery/pkg/watch"
 )
 
-func (plugin *OsdnNode) SetupEgressNetworkPolicy() error {
-	policies, err := plugin.osdnClient.NetworkV1().EgressNetworkPolicies(metav1.NamespaceAll).List(context.TODO(), metav1.ListOptions{})
+func (node *OsdnNode) SetupEgressNetworkPolicy() error {
+	policies, err := node.osdnClient.NetworkV1().EgressNetworkPolicies(metav1.NamespaceAll).List(context.TODO(), metav1.ListOptions{})
 	if err != nil {
 		return fmt.Errorf("could not get EgressNetworkPolicies: %s", err)
 	}
 
-	plugin.egressPoliciesLock.Lock()
-	defer plugin.egressPoliciesLock.Unlock()
+	node.egressPoliciesLock.Lock()
+	defer node.egressPoliciesLock.Unlock()
 
 	for _, policy := range policies.Items {
-		vnid, err := plugin.policy.GetVNID(policy.Namespace)
+		vnid, err := node.policy.GetVNID(policy.Namespace)
 		if err != nil {
 			klog.Warningf("Could not find netid for namespace %q: %v", policy.Namespace, err)
 			continue
 		}
-		plugin.egressPolicies[vnid] = append(plugin.egressPolicies[vnid], policy)
+		node.egressPolicies[vnid] = append(node.egressPolicies[vnid], policy)
 
-		plugin.egressDNS.Add(policy)
+		node.egressDNS.Add(policy)
 	}
 
-	for vnid := range plugin.egressPolicies {
-		plugin.updateEgressNetworkPolicyRules(vnid)
+	for vnid := range node.egressPolicies {
+		node.updateEgressNetworkPolicyRules(vnid)
 	}
 
-	go utilwait.Forever(plugin.syncEgressDNSPolicyRules, 0)
-	plugin.watchEgressNetworkPolicies()
+	go utilwait.Forever(node.syncEgressDNSPolicyRules, 0)
+	node.watchEgressNetworkPolicies()
 	return nil
 }
 
-func (plugin *OsdnNode) watchEgressNetworkPolicies() {
-	funcs := common.InformerFuncs(&osdnv1.EgressNetworkPolicy{}, plugin.handleAddOrUpdateEgressNetworkPolicy, plugin.handleDeleteEgressNetworkPolicy)
-	plugin.osdnInformers.Network().V1().EgressNetworkPolicies().Informer().AddEventHandler(funcs)
+func (node *OsdnNode) watchEgressNetworkPolicies() {
+	funcs := common.InformerFuncs(&osdnv1.EgressNetworkPolicy{}, node.handleAddOrUpdateEgressNetworkPolicy, node.handleDeleteEgressNetworkPolicy)
+	node.osdnInformers.Network().V1().EgressNetworkPolicies().Informer().AddEventHandler(funcs)
 }
 
-func (plugin *OsdnNode) handleAddOrUpdateEgressNetworkPolicy(obj, _ interface{}, eventType watch.EventType) {
+func (node *OsdnNode) handleAddOrUpdateEgressNetworkPolicy(obj, _ interface{}, eventType watch.EventType) {
 	policy := obj.(*osdnv1.EgressNetworkPolicy)
 	klog.V(5).Infof("Watch %s event for EgressNetworkPolicy %s/%s", eventType, policy.Namespace, policy.Name)
 
-	plugin.handleEgressNetworkPolicy(policy, eventType)
+	node.handleEgressNetworkPolicy(policy, eventType)
 }
 
-func (plugin *OsdnNode) handleDeleteEgressNetworkPolicy(obj interface{}) {
+func (node *OsdnNode) handleDeleteEgressNetworkPolicy(obj interface{}) {
 	policy := obj.(*osdnv1.EgressNetworkPolicy)
 	klog.V(5).Infof("Watch %s event for EgressNetworkPolicy %s/%s", watch.Deleted, policy.Namespace, policy.Name)
 
-	plugin.handleEgressNetworkPolicy(policy, watch.Deleted)
+	node.handleEgressNetworkPolicy(policy, watch.Deleted)
 }
 
-func (plugin *OsdnNode) handleEgressNetworkPolicy(policy *osdnv1.EgressNetworkPolicy, eventType watch.EventType) {
-	vnid, err := plugin.policy.GetVNID(policy.Namespace)
+func (node *OsdnNode) handleEgressNetworkPolicy(policy *osdnv1.EgressNetworkPolicy, eventType watch.EventType) {
+	vnid, err := node.policy.GetVNID(policy.Namespace)
 	if err != nil {
 		klog.Errorf("Could not find netid for namespace %q: %v", policy.Namespace, err)
 		return
 	}
 
-	plugin.egressPoliciesLock.Lock()
-	defer plugin.egressPoliciesLock.Unlock()
+	node.egressPoliciesLock.Lock()
+	defer node.egressPoliciesLock.Unlock()
 
-	policies := plugin.egressPolicies[vnid]
+	policies := node.egressPolicies[vnid]
 	for i, oldPolicy := range policies {
 		if oldPolicy.UID == policy.UID {
 			policies = append(policies[:i], policies[i+1:]...)
 			break
 		}
 	}
-	plugin.egressDNS.Delete(*policy)
+	node.egressDNS.Delete(*policy)
 
 	if eventType != watch.Deleted && len(policy.Spec.Egress) > 0 {
 		policies = append(policies, *policy)
-		plugin.egressDNS.Add(*policy)
+		node.egressDNS.Add(*policy)
 	}
-	plugin.egressPolicies[vnid] = policies
+	node.egressPolicies[vnid] = policies
 
-	plugin.updateEgressNetworkPolicyRules(vnid)
+	node.updateEgressNetworkPolicyRules(vnid)
 }
 
-func (plugin *OsdnNode) UpdateEgressNetworkPolicyVNID(namespace string, oldVnid, newVnid uint32) {
+func (node *OsdnNode) UpdateEgressNetworkPolicyVNID(namespace string, oldVnid, newVnid uint32) {
 	var policy *osdnv1.EgressNetworkPolicy
 
-	plugin.egressPoliciesLock.Lock()
-	defer plugin.egressPoliciesLock.Unlock()
+	node.egressPoliciesLock.Lock()
+	defer node.egressPoliciesLock.Unlock()
 
-	policies := plugin.egressPolicies[oldVnid]
+	policies := node.egressPolicies[oldVnid]
 	for i, oldPolicy := range policies {
 		if oldPolicy.Namespace == namespace {
 			policy = &oldPolicy
-			plugin.egressPolicies[oldVnid] = append(policies[:i], policies[i+1:]...)
-			plugin.updateEgressNetworkPolicyRules(oldVnid)
+			node.egressPolicies[oldVnid] = append(policies[:i], policies[i+1:]...)
+			node.updateEgressNetworkPolicyRules(oldVnid)
 			break
 		}
 	}
 
 	if policy != nil {
-		plugin.egressPolicies[newVnid] = append(plugin.egressPolicies[newVnid], *policy)
-		plugin.updateEgressNetworkPolicyRules(newVnid)
+		node.egressPolicies[newVnid] = append(node.egressPolicies[newVnid], *policy)
+		node.updateEgressNetworkPolicyRules(newVnid)
 	}
 }
 
-func (plugin *OsdnNode) syncEgressDNSPolicyRules() {
-	go utilwait.Forever(plugin.egressDNS.Sync, 0)
+func (node *OsdnNode) syncEgressDNSPolicyRules() {
+	go utilwait.Forever(node.egressDNS.Sync, 0)
 
 	for {
-		policyUpdates := <-plugin.egressDNS.Updates
+		policyUpdates := <-node.egressDNS.Updates
 		for _, policyUpdate := range policyUpdates {
 			klog.V(5).Infof("Egress dns sync: updating policy: %v", policyUpdate.UID)
-			vnid, err := plugin.policy.GetVNID(policyUpdate.Namespace)
+			vnid, err := node.policy.GetVNID(policyUpdate.Namespace)
 			if err != nil {
 				klog.Warningf("Could not find netid for namespace %q: %v", policyUpdate.Namespace, err)
 				continue
 			}
 
 			func() {
-				plugin.egressPoliciesLock.Lock()
-				defer plugin.egressPoliciesLock.Unlock()
+				node.egressPoliciesLock.Lock()
+				defer node.egressPoliciesLock.Unlock()
 
-				plugin.updateEgressNetworkPolicyRules(vnid)
+				node.updateEgressNetworkPolicyRules(vnid)
 			}()
 		}
 	}

@@ -110,7 +110,7 @@ type OsdnNode struct {
 	egressIP *egressIPWatcher
 }
 
-// Called by higher layers to create the plugin SDN node instance
+// Called by higher layers to create the SDN node instance
 func New(c *OsdnNodeConfig) (*OsdnNode, error) {
 	networkInfo, err := common.GetParsedClusterNetwork(c.OSDNClient)
 	if err != nil {
@@ -165,7 +165,7 @@ func New(c *OsdnNodeConfig) (*OsdnNode, error) {
 		return nil, err
 	}
 
-	plugin := &OsdnNode{
+	node := &OsdnNode{
 		policy:         policy,
 		kClient:        c.KClient,
 		osdnClient:     c.OSDNClient,
@@ -187,7 +187,7 @@ func New(c *OsdnNodeConfig) (*OsdnNode, error) {
 
 	metrics.RegisterMetrics()
 
-	return plugin, nil
+	return node, nil
 }
 
 func (c *OsdnNodeConfig) validateNodeIP(networkInfo *common.ParsedClusterNetwork) error {
@@ -348,7 +348,7 @@ func (node *OsdnNode) validateMTU() error {
 }
 
 func (node *OsdnNode) Start() error {
-	klog.V(2).Infof("Starting openshift-sdn network plugin")
+	klog.V(2).Infof("Starting openshift-sdn")
 
 	var err error
 	node.localSubnetCIDR, err = node.getLocalSubnet()

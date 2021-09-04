@@ -260,7 +260,7 @@ func (oc *ovsController) SetupOVS(clusterNetworkCIDR []string, serviceNetworkCID
 	otx.AddFlow("table=20, priority=300, udp, udp_dst=%d, actions=drop", vxlanPort)
 	otx.AddFlow("table=20, priority=0, actions=drop")
 
-	// Table 21: from OpenShift container; NetworkPolicy plugin uses this for connection tracking
+	// Table 21: from OpenShift container; NetworkPolicy mode uses this for connection tracking
 	otx.AddFlow("table=21, priority=0, actions=goto_table:30")
 
 	if oc.useConnTrack {

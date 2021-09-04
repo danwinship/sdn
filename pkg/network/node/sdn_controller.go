@@ -17,7 +17,7 @@ import (
 	"github.com/vishvananda/netlink"
 )
 
-func (plugin *OsdnNode) alreadySetUp() error {
+func (node *OsdnNode) alreadySetUp() error {
 	var found bool
 
 	l, err := netlink.LinkByName(Tun0)
@@ -31,7 +31,7 @@ func (plugin *OsdnNode) alreadySetUp() error {
 	}
 	found = false
 	for _, addr := range addrs {
-		if addr.IPNet.String() == plugin.localGatewayCIDR {
+		if addr.IPNet.String() == node.localGatewayCIDR {
 			found = true
 			break
 		}
@@ -44,7 +44,7 @@ func (plugin *OsdnNode) alreadySetUp() error {
 	if err != nil {
 		return err
 	}
-	for _, clusterCIDR := range plugin.clusterCIDRs {
+	for _, clusterCIDR := range node.clusterCIDRs {
 		found = false
 		for _, route := range routes {
 			if route.Dst != nil && route.Dst.String() == clusterCIDR {
@@ -57,8 +57,8 @@ func (plugin *OsdnNode) alreadySetUp() error {
 		}
 	}
 
-	if !plugin.oc.AlreadySetUp(plugin.networkInfo.VXLANPort) {
-		return errors.New("plugin is not setup")
+	if !node.oc.AlreadySetUp(node.networkInfo.VXLANPort) {
+		return errors.New("openshift-sdn is not setup")
 	}
 
 	return nil
@@ -97,7 +97,7 @@ func deleteLocalSubnetRoute(device, localSubnetCIDR string) {
 	}
 }
 
-func (plugin *OsdnNode) SetupSDN() (bool, map[string]podNetworkInfo, error) {
+func (node *OsdnNode) SetupSDN() (bool, map[string]podNetworkInfo, error) {
 	// Make sure IPv4 forwarding state is 1
 	sysctl := sysctl.New()
 	val, err := sysctl.GetSysctl("net/ipv4/ip_forward")
@@ -108,7 +108,7 @@ func (plugin *OsdnNode) SetupSDN() (bool, map[string]podNetworkInfo, error) {
 		return false, nil, fmt.Errorf("net/ipv4/ip_forward=0, it must be set to 1")
 	}
 
-	localSubnetCIDR := plugin.localSubnetCIDR
+	localSubnetCIDR := node.localSubnetCIDR
 	_, ipnet, err := net.ParseCIDR(localSubnetCIDR)
 	if err != nil {
 		return false, nil, fmt.Errorf("invalid local subnet CIDR: %v", err)
@@ -118,23 +118,23 @@ func (plugin *OsdnNode) SetupSDN() (bool, map[string]podNetworkInfo, error) {
 
 	klog.V(5).Infof("[SDN setup] node pod subnet %s gateway %s", ipnet.String(), localSubnetGateway)
 
-	plugin.localGatewayCIDR = fmt.Sprintf("%s/%d", localSubnetGateway, localSubnetMaskLength)
+	node.localGatewayCIDR = fmt.Sprintf("%s/%d", localSubnetGateway, localSubnetMaskLength)
 
 	if err := healthCheckOVS(); err != nil {
 		return false, nil, err
 	}
 
 	var changed bool
-	existingPods, err := plugin.oc.GetPodNetworkInfo()
+	existingPods, err := node.oc.GetPodNetworkInfo()
 	if err != nil {
 		klog.Warningf("[SDN setup] Could not get details of existing pods: %v", err)
 	}
 
-	if err := plugin.alreadySetUp(); err == nil {
+	if err := node.alreadySetUp(); err == nil {
 		klog.Infof("[SDN setup] SDN is already set up")
 	} else {
 		klog.Infof("[SDN setup] full SDN setup required (%v)", err)
-		if err := plugin.setup(localSubnetCIDR, localSubnetGateway); err != nil {
+		if err := node.setup(localSubnetCIDR, localSubnetGateway); err != nil {
 			return false, nil, err
 		}
 		changed = true
@@ -143,24 +143,24 @@ func (plugin *OsdnNode) SetupSDN() (bool, map[string]podNetworkInfo, error) {
 	return changed, existingPods, nil
 }
 
-func (plugin *OsdnNode) FinishSetupSDN() error {
-	err := plugin.oc.FinishSetupOVS()
+func (node *OsdnNode) FinishSetupSDN() error {
+	err := node.oc.FinishSetupOVS()
 	if err != nil {
 		return err
 	}
 	return nil
 }
 
-func (plugin *OsdnNode) setup(localSubnetCIDR, localSubnetGateway string) error {
-	serviceNetworkCIDR := plugin.networkInfo.ServiceNetwork.String()
+func (node *OsdnNode) setup(localSubnetCIDR, localSubnetGateway string) error {
+	serviceNetworkCIDR := node.networkInfo.ServiceNetwork.String()
 
-	if err := plugin.oc.SetupOVS(plugin.clusterCIDRs, serviceNetworkCIDR, localSubnetCIDR, localSubnetGateway, plugin.networkInfo.MTU, plugin.networkInfo.VXLANPort); err != nil {
+	if err := node.oc.SetupOVS(node.clusterCIDRs, serviceNetworkCIDR, localSubnetCIDR, localSubnetGateway, node.networkInfo.MTU, node.networkInfo.VXLANPort); err != nil {
 		return err
 	}
 
 	l, err := netlink.LinkByName(Tun0)
 	if err == nil {
-		gwIP, _ := netlink.ParseIPNet(plugin.localGatewayCIDR)
+		gwIP, _ := netlink.ParseIPNet(node.localGatewayCIDR)
 		err = netlink.AddrAdd(l, &netlink.Addr{IPNet: gwIP})
 		if err == nil {
 			defer deleteLocalSubnetRoute(Tun0, localSubnetCIDR)
@@ -170,7 +170,7 @@ func (plugin *OsdnNode) setup(localSubnetCIDR, localSubnetGateway string) error 
 		err = netlink.LinkSetUp(l)
 	}
 	if err == nil {
-		for _, clusterNetwork := range plugin.networkInfo.ClusterNetworks {
+		for _, clusterNetwork := range node.networkInfo.ClusterNetworks {
 			route := &netlink.Route{
 				LinkIndex: l.Attrs().Index,
 				Scope:     netlink.SCOPE_LINK,
@@ -184,7 +184,7 @@ func (plugin *OsdnNode) setup(localSubnetCIDR, localSubnetGateway string) error 
 	if err == nil {
 		route := &netlink.Route{
 			LinkIndex: l.Attrs().Index,
-			Dst:       plugin.networkInfo.ServiceNetwork,
+			Dst:       node.networkInfo.ServiceNetwork,
 		}
 		err = netlink.RouteAdd(route)
 	}
@@ -195,24 +195,24 @@ func (plugin *OsdnNode) setup(localSubnetCIDR, localSubnetGateway string) error 
 	return nil
 }
 
-func (plugin *OsdnNode) updateEgressNetworkPolicyRules(vnid uint32) {
-	policies := plugin.egressPolicies[vnid]
-	namespaces := plugin.policy.GetNamespaces(vnid)
-	if err := plugin.oc.UpdateEgressNetworkPolicyRules(policies, vnid, namespaces, plugin.egressDNS); err != nil {
+func (node *OsdnNode) updateEgressNetworkPolicyRules(vnid uint32) {
+	policies := node.egressPolicies[vnid]
+	namespaces := node.policy.GetNamespaces(vnid)
+	if err := node.oc.UpdateEgressNetworkPolicyRules(policies, vnid, namespaces, node.egressDNS); err != nil {
 		klog.Errorf("Error updating OVS flows for EgressNetworkPolicy: %v", err)
 	}
 }
 
-func (plugin *OsdnNode) AddServiceRules(service *corev1.Service, netID uint32) {
+func (node *OsdnNode) AddServiceRules(service *corev1.Service, netID uint32) {
 	klog.V(5).Infof("AddServiceRules for %v", service)
-	if err := plugin.oc.AddServiceRules(service, netID); err != nil {
+	if err := node.oc.AddServiceRules(service, netID); err != nil {
 		klog.Errorf("Error adding OVS flows for service %v, netid %d: %v", service, netID, err)
 	}
 }
 
-func (plugin *OsdnNode) DeleteServiceRules(service *corev1.Service) {
+func (node *OsdnNode) DeleteServiceRules(service *corev1.Service) {
 	klog.V(5).Infof("DeleteServiceRules for %v", service)
-	if err := plugin.oc.DeleteServiceRules(service); err != nil {
+	if err := node.oc.DeleteServiceRules(service); err != nil {
 		klog.Errorf("Error deleting OVS flows for service %v: %v", service, err)
 	}
 }
