@@ -446,8 +446,9 @@ func (np *networkPolicyPlugin) selectPodsFromNamespaces(nsLabelSel, podLabelSel 
 		}
 		for _, pod := range pods {
 			if isOnPodNetwork(pod) {
-				// IPV6FIXME: dual-stack pod IPs
-				peerFlows = append(peerFlows, fmt.Sprintf("reg0=%d, ip, nw_src=%s, ", vnid, pod.Status.PodIP))
+				for _, podIP := range pod.Status.PodIPs {
+					peerFlows = append(peerFlows, fmt.Sprintf("reg0=%d, ip, nw_src=%s, ", vnid, podIP.IP))
+				}
 			}
 		}
 	}
@@ -488,7 +489,9 @@ func (np *networkPolicyPlugin) selectPods(npns *npNamespace, lsel *metav1.LabelS
 	}
 	for _, pod := range pods {
 		if isOnPodNetwork(pod) {
-			ips = append(ips, pod.Status.PodIP)
+			for _, podIP := range pod.Status.PodIPs {
+				ips = append(ips, podIP.IP)
+			}
 		}
 	}
 	return ips
@@ -696,7 +699,6 @@ func isOnPodNetwork(pod *corev1.Pod) bool {
 	if pod.Spec.HostNetwork {
 		return false
 	}
-	// IPV6FIXME: PodIPs
 	return pod.Status.PodIP != ""
 }
 
@@ -710,7 +712,7 @@ func (np *networkPolicyPlugin) handleAddOrUpdatePod(obj, old interface{}, eventT
 
 	if old != nil {
 		oldPod := old.(*corev1.Pod)
-		if oldPod.Status.PodIP == pod.Status.PodIP && reflect.DeepEqual(oldPod.Labels, pod.Labels) {
+		if reflect.DeepEqual(oldPod.Status.PodIPs, pod.Status.PodIPs) && reflect.DeepEqual(oldPod.Labels, pod.Labels) {
 			return
 		}
 	}

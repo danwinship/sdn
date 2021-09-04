@@ -224,6 +224,9 @@ func addPods(np *networkPolicyPlugin, npns *npNamespace) {
 		},
 		Status: corev1.PodStatus{
 			PodIP: clientIP(npns),
+			PodIPs: []corev1.PodIP{
+				{ IP: clientIP(npns) },
+			},
 		},
 	}
 	server := &corev1.Pod{
@@ -237,6 +240,9 @@ func addPods(np *networkPolicyPlugin, npns *npNamespace) {
 		},
 		Status: corev1.PodStatus{
 			PodIP: serverIP(npns),
+			PodIPs: []corev1.PodIP{
+				{ IP: serverIP(npns) },
+			},
 		},
 	}
 
@@ -266,6 +272,9 @@ func addBadPods(np *networkPolicyPlugin, npns *npNamespace) {
 		},
 		Status: corev1.PodStatus{
 			PodIP: "1.2.3.4",
+			PodIPs: []corev1.PodIP{
+				{ IP: "1.2.3.4" },
+			},
 		},
 	}
 	// Pods that haven't yet received a PodIP should not show up
