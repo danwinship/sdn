@@ -112,38 +112,48 @@ type OsdnNode struct {
 
 // Called by higher layers to create the SDN node instance
 func New(c *OsdnNodeConfig) (*OsdnNode, error) {
+	node := &OsdnNode{
+		kClient:       c.KClient,
+		osdnClient:    c.OSDNClient,
+		recorder:      c.Recorder,
+		localIP:       c.NodeIP,
+		hostName:      c.NodeName,
+		ipt:           c.IPTables,
+		kubeInformers: c.KubeInformers,
+		osdnInformers: c.OSDNInformers,
+	}
+
 	networkInfo, err := common.GetParsedClusterNetwork(c.OSDNClient)
 	if err != nil {
 		return nil, fmt.Errorf("could not get ClusterNetwork resource: %v", err)
 	}
-
 	if err := c.validateNodeIP(networkInfo); err != nil {
 		return nil, err
 	}
 
-	var policy osdnPolicy
+	node.networkInfo = networkInfo
+
 	var pluginId int
-	var useConnTrack bool
 	switch strings.ToLower(networkInfo.PluginName) {
 	case networkutils.SingleTenantPluginName:
-		policy = NewSingleTenantPlugin()
+		node.policy = NewSingleTenantPlugin()
 		pluginId = 0
 	case networkutils.MultiTenantPluginName:
-		policy = NewMultiTenantPlugin()
+		node.policy = NewMultiTenantPlugin()
 		pluginId = 1
 		// Userspace proxy is incompatible with conntrack.
 		if c.ProxyMode != kubeproxyconfig.ProxyModeUserspace {
-			useConnTrack = true
+			node.useConnTrack = true
 		}
 	case networkutils.NetworkPolicyPluginName:
-		policy = NewNetworkPolicyPlugin()
+		node.policy = NewNetworkPolicyPlugin()
 		pluginId = 2
-		useConnTrack = true
+		node.useConnTrack = true
 	default:
 		return nil, fmt.Errorf("Unknown plugin name %q", networkInfo.PluginName)
 	}
 
-	if useConnTrack && c.ProxyMode == kubeproxyconfig.ProxyModeUserspace {
+	if node.useConnTrack && c.ProxyMode == kubeproxyconfig.ProxyModeUserspace {
 		return nil, fmt.Errorf("%q plugin is not compatible with proxy-mode %q", networkInfo.PluginName, c.ProxyMode)
 	}
 
@@ -153,37 +163,21 @@ func New(c *OsdnNodeConfig) (*OsdnNode, error) {
 	if err != nil {
 		return nil, err
 	}
-	oc := NewOVSController(ovsif, pluginId, useConnTrack, c.NodeIP)
+	node.oc = NewOVSController(ovsif, pluginId, node.useConnTrack, node.localIP)
 
-	masqBit := uint32(0)
+	node.podManager = newPodManager(c.KClient, node.policy, networkInfo.MTU, node.oc)
+
 	if c.MasqueradeBit != nil {
-		masqBit = uint32(*c.MasqueradeBit)
+		node.masqueradeBit = uint32(*c.MasqueradeBit)
 	}
 
-	egressDNS, err := common.NewEgressDNS(true, false)
+	node.egressPolicies = make(map[uint32][]osdnv1.EgressNetworkPolicy)
+	node.egressDNS, err = common.NewEgressDNS(true, false)
 	if err != nil {
 		return nil, err
 	}
 
-	node := &OsdnNode{
-		policy:         policy,
-		kClient:        c.KClient,
-		osdnClient:     c.OSDNClient,
-		recorder:       c.Recorder,
-		oc:             oc,
-		networkInfo:    networkInfo,
-		podManager:     newPodManager(c.KClient, policy, networkInfo.MTU, oc),
-		localIP:        c.NodeIP,
-		hostName:       c.NodeName,
-		useConnTrack:   useConnTrack,
-		ipt:            c.IPTables,
-		masqueradeBit:  masqBit,
-		egressPolicies: make(map[uint32][]osdnv1.EgressNetworkPolicy),
-		egressDNS:      egressDNS,
-		kubeInformers:  c.KubeInformers,
-		osdnInformers:  c.OSDNInformers,
-		egressIP:       newEgressIPWatcher(oc, c.NodeIP, c.MasqueradeBit),
-	}
+	node.egressIP = newEgressIPWatcher(node.oc, node.localIP, c.MasqueradeBit)
 
 	metrics.RegisterMetrics()
 
