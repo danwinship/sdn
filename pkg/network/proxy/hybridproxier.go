@@ -46,13 +46,17 @@ type HybridizableProxy interface {
 //     deleted, or else the next time it receives an Endpoints event more than 1 minute
 //     after becoming Unidling. (Alternatively it could also become Idled again.)
 type hybridProxierService struct {
-	// whether the Service/Endpoints are known to us
-	knownService   bool
-	knownEndpoints bool
-
-	// cached info about the Service/Endpoints
+	// What we know about the Service
+	knownService             bool
 	serviceHasIdleAnnotation bool
-	emptyEndpoints           *corev1.Endpoints
+
+	// What we know about the Endpoints/EndpointSlices; these are ints rather
+	// than booleans because a Service may have multiple slices
+	knownEndpoints int
+	emptyEndpoints int
+
+	// In the Unidling state, we only track the first EndpointSlice to have appeared
+	unidlingSlice string
 
 	// idling/unidling state
 	isIdled   bool
@@ -62,7 +66,7 @@ type hybridProxierService struct {
 const unidlingEndpointsLag = time.Minute
 
 func (hsvc *hybridProxierService) shouldBeIdled() bool {
-	return hsvc.serviceHasIdleAnnotation && hsvc.emptyEndpoints != nil
+	return hsvc.serviceHasIdleAnnotation && hsvc.knownEndpoints > 0 && (hsvc.emptyEndpoints == hsvc.knownEndpoints)
 }
 
 func (hsvc *hybridProxierService) unidlingProxyWantsEndpoints() bool {
@@ -129,6 +133,22 @@ func (proxier *HybridProxier) OnNodeSynced() {
 	// TODO implement https://github.com/kubernetes/enhancements/pull/640
 }
 
+func emptyEndpoints(meta *metav1.ObjectMeta) *corev1.Endpoints {
+	return &corev1.Endpoints{
+		TypeMeta: metav1.TypeMeta{
+			Kind:       "Endpoints",
+			APIVersion: "v1",
+		},
+		ObjectMeta: *meta,
+		Subsets: []corev1.EndpointSubset{
+			{
+				Addresses: []corev1.EndpointAddress{},
+				Ports:     []corev1.EndpointPort{},
+			},
+		},
+	}
+}
+
 // getService locks p.serviceLock and then gets/creates the hybridProxierService for
 // svcName. You must call p.releaseService(name) to unlock p.serviceLock.
 func (p *HybridProxier) getService(svcName types.NamespacedName) *hybridProxierService {
@@ -166,7 +186,7 @@ func (p *HybridProxier) releaseService(svcName types.NamespacedName) {
 			p.mainProxy.OnServiceDelete(service)
 			p.unidlingProxy.OnServiceAdd(service)
 			if !hsvc.unidlingProxyWantsEndpoints() {
-				p.unidlingProxy.OnEndpointsAdd(hsvc.emptyEndpoints)
+				p.unidlingProxy.OnEndpointsAdd(emptyEndpoints(&service.ObjectMeta))
 			}
 			hsvc.isIdled = true
 			hsvc.unidledAt = nil
@@ -180,7 +200,7 @@ func (p *HybridProxier) releaseService(svcName types.NamespacedName) {
 		}
 	}
 
-	if !hsvc.knownService && !hsvc.knownEndpoints {
+	if !hsvc.knownService && hsvc.knownEndpoints == 0 {
 		delete(p.services, svcName)
 	}
 }
@@ -323,13 +343,13 @@ func sliceToEndpoints(slice *discoveryv1.EndpointSlice) *corev1.Endpoints {
 	return endpoints
 }
 
-func endpointsIfEmptySlice(slice *discoveryv1.EndpointSlice) *corev1.Endpoints {
+func endpointSliceIsEmpty(slice *discoveryv1.EndpointSlice) bool {
 	for _, ep := range slice.Endpoints {
 		if len(ep.Addresses) > 0 {
-			return nil
+			return false
 		}
 	}
-	return sliceToEndpoints(slice)
+	return true
 }
 
 func (p *HybridProxier) OnEndpointSliceAdd(slice *discoveryv1.EndpointSlice) {
@@ -337,12 +357,20 @@ func (p *HybridProxier) OnEndpointSliceAdd(slice *discoveryv1.EndpointSlice) {
 	hsvc := p.getService(svcName)
 	defer p.releaseService(svcName)
 
-	hsvc.knownEndpoints = true
-	hsvc.emptyEndpoints = endpointsIfEmptySlice(slice)
+	hsvc.knownEndpoints++
+	if endpointSliceIsEmpty(slice) {
+		hsvc.emptyEndpoints++
+	}
 
 	klog.V(6).Infof("hybrid proxy: add slice %s", svcName)
 	p.mainProxy.OnEndpointSliceAdd(slice)
+
+	if hsvc.unidlingSlice != "" && hsvc.unidlingSlice != slice.Name {
+		return
+	}
+
 	if hsvc.unidlingProxyWantsEndpoints() {
+		hsvc.unidlingSlice = slice.Name
 		p.unidlingProxy.OnEndpointsAdd(sliceToEndpoints(slice))
 	}
 }
@@ -352,14 +380,28 @@ func (p *HybridProxier) OnEndpointSliceUpdate(oldSlice, slice *discoveryv1.Endpo
 	hsvc := p.getService(svcName)
 	defer p.releaseService(svcName)
 
-	hsvc.emptyEndpoints = endpointsIfEmptySlice(slice)
+	wasEmpty := endpointSliceIsEmpty(oldSlice)
+	isEmpty := endpointSliceIsEmpty(slice)
+
+	if wasEmpty && !isEmpty {
+		hsvc.emptyEndpoints--
+	} else if isEmpty && !wasEmpty {
+		hsvc.emptyEndpoints++
+	}
 
 	klog.V(6).Infof("hybrid proxy: update slice %s", svcName)
 	p.mainProxy.OnEndpointSliceUpdate(oldSlice, slice)
+
+	if hsvc.unidlingSlice != "" && hsvc.unidlingSlice != slice.Name {
+		return
+	}
+
 	if hsvc.unidlingProxyWantsEndpoints() {
+		hsvc.unidlingSlice = slice.Name
 		p.unidlingProxy.OnEndpointsUpdate(sliceToEndpoints(oldSlice), sliceToEndpoints(slice))
 	} else if hsvc.unidlingPeriodHasExpired() {
 		p.unidlingProxy.OnEndpointsDelete(sliceToEndpoints(oldSlice))
+		hsvc.unidlingSlice = ""
 		hsvc.unidledAt = nil
 	}
 }
@@ -369,13 +411,21 @@ func (p *HybridProxier) OnEndpointSliceDelete(slice *discoveryv1.EndpointSlice) 
 	hsvc := p.getService(svcName)
 	defer p.releaseService(svcName)
 
-	hsvc.knownEndpoints = false
-	hsvc.emptyEndpoints = nil
+	hsvc.knownEndpoints--
+	if endpointSliceIsEmpty(slice) {
+		hsvc.emptyEndpoints--
+	}
 
 	klog.V(6).Infof("hybrid proxy: del slice %s", svcName)
 	p.mainProxy.OnEndpointSliceDelete(slice)
+
+	if hsvc.unidlingSlice != "" && hsvc.unidlingSlice != slice.Name {
+		return
+	}
+
 	if hsvc.unidlingProxyWantsEndpoints() {
 		p.unidlingProxy.OnEndpointsDelete(sliceToEndpoints(slice))
+		hsvc.unidlingSlice = ""
 		hsvc.unidledAt = nil
 	}
 }

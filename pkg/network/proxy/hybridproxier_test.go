@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -661,6 +662,260 @@ func TestHybridProxyReIdling(t *testing.T) {
 		"delete service testns/re-idle",
 		"delete endpoints testns/re-idle -",
 	)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+}
+
+func TestHybridProxyMultiSlice(t *testing.T) {
+	proxy, mainProxy, unidlingProxy, err := newTestOsdnProxy(true)
+	if err != nil {
+		t.Fatalf("unexpected error creating OsdnProxy: %v", err)
+	}
+	hybridProxy := proxy.baseProxy.(*HybridProxier)
+
+	// *****
+
+	// Create a Service...
+	svc1 := makeService("testns", "one")
+	err = createServiceAndWait(svc1, proxy)
+	if err != nil {
+		t.Fatalf("unexpected error creating service: %v", err)
+	}
+	proxy.OnServiceAdd(svc1)
+
+	err = mainProxy.assertEvents("after creating first service",
+		"add service testns/one",
+	)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+	err = unidlingProxy.assertNoEvents("after creating first service")
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+
+	// Create its first endpoints.
+	_, slice1 := makeEndpoints("testns", "one", "1.2.3.4")
+	proxy.OnEndpointSliceAdd(slice1)
+
+	err = mainProxy.assertEvents("after creating first endpoints",
+		"add endpointslice testns/one-slice1 1.2.3.4",
+	)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+	err = unidlingProxy.assertNoEvents("after creating first endpoints")
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+
+	// Create its second endpoints.
+	_, slice2 := makeEndpoints("testns", "one", "5.6.7.8")
+	slice2.Name = strings.ReplaceAll(slice2.Name, "1", "2")
+	proxy.OnEndpointSliceAdd(slice2)
+
+	err = mainProxy.assertEvents("after creating second endpoints",
+		"add endpointslice testns/one-slice2 5.6.7.8",
+	)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+	err = unidlingProxy.assertNoEvents("after creating first endpoints")
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+
+	// Idle the service; both the service and the endpoints will be removed from the
+	// main proxy, and the service will be added to the unidling proxy.
+	svc1idled := svc1.DeepCopy()
+	svc1idled.Annotations[unidlingapi.IdledAtAnnotation] = "now"
+	proxy.OnServiceUpdate(svc1, svc1idled)
+
+	// Because a service needs both an annotation and empty endpoints in order to
+	// become idle, it should not be idle yet (which means also that the service
+	// update gets passed through).
+	err = mainProxy.assertEvents("after annotating service but not removing endpoints",
+		"update service testns/one",
+	)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+	err = unidlingProxy.assertNoEvents("after annotating service but not removing endpoints")
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+
+	// Remove the endpoints from slice1; because slice2 still has endpoint, this will
+	// not cause the service to be idled.
+	slice1idled := slice1.DeepCopy()
+	slice1idled.Endpoints[0].Addresses = nil
+	proxy.OnEndpointSliceUpdate(slice1, slice1idled)
+
+	err = mainProxy.assertEvents("after removing first endpoints",
+		"update endpointslice testns/one-slice1 -",
+	)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+	err = unidlingProxy.assertNoEvents("after removing first endpoints")
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+
+	// Now remove the endpoints from slice2 as well
+	slice2idled := slice2.DeepCopy()
+	slice2idled.Endpoints[0].Addresses = nil
+	proxy.OnEndpointSliceUpdate(slice2, slice2idled)
+
+	err = mainProxy.assertEvents("after idling first service",
+		"delete service testns/one",
+		"update endpointslice testns/one-slice2 -",
+	)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+	err = unidlingProxy.assertEvents("after idling first service",
+		"add service testns/one",
+		"add endpoints testns/one -",
+	)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+
+	// Unidle the service, reverting the previous change. This time neither proxy
+	// sees the "service update testns/one" because removing the annotation immediately
+	// unidles the service, so that event gets translated into the delete/add.
+	proxy.OnServiceUpdate(svc1idled, svc1)
+	proxy.OnEndpointSliceUpdate(slice2idled, slice2)
+
+	// We haven't restored slice1 yet, but this should still cause the service to
+	// unidle.
+	err = mainProxy.assertEvents("after unidling first service",
+		"add service testns/one",
+		"update endpointslice testns/one-slice2 5.6.7.8",
+	)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+	err = unidlingProxy.assertEvents("after unidling first service",
+		"delete service testns/one",
+		"update endpoints testns/one 5.6.7.8",
+	)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+
+	// Now re-add slice1; the hybrid proxier will ignore this because
+	// it is only tracking slice2 for the Unidling service since that
+	// appeared first.
+	proxy.OnEndpointSliceUpdate(slice1idled, slice1)
+
+	err = mainProxy.assertEvents("after readding slice1 while unidling",
+		"update endpointslice testns/one-slice1 1.2.3.4",
+	)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+	err = unidlingProxy.assertNoEvents("after readding slice1 while unidling")
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+
+	// Modify both slices; the unidling proxy will see the change for slice2
+	// but not slice1
+	_, slice1modified := makeEndpoints("testns", "one", "1.2.3.99")
+	proxy.OnEndpointSliceUpdate(slice1, slice1modified)
+
+	err = mainProxy.assertEvents("after modifying slice1",
+		"update endpointslice testns/one-slice1 1.2.3.99",
+	)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+	err = unidlingProxy.assertNoEvents("after modifying slice1")
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+
+	_, slice2modified := makeEndpoints("testns", "one", "5.6.7.99")
+	slice2modified.Name = slice2.Name
+	proxy.OnEndpointSliceUpdate(slice2, slice2modified)
+
+	err = mainProxy.assertEvents("after modifying slice2",
+		"update endpointslice testns/one-slice2 5.6.7.99",
+	)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+	err = unidlingProxy.assertEvents("after modifying slice2",
+		"update endpoints testns/one 5.6.7.99",
+	)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+
+	// Fake out the passage of time and do another update; the unidling
+	// proxy should still not see the change to slice1
+	svcName := ktypes.NamespacedName{Namespace: "testns", Name: "one"}
+	hsvc := hybridProxy.getService(svcName)
+	expiredTime := time.Now().Add(-time.Hour)
+	hsvc.unidledAt = &expiredTime
+	hybridProxy.releaseService(svcName)
+
+	_, slice1modified2 := makeEndpoints("testns", "one", "9.10.11.12")
+	proxy.OnEndpointSliceUpdate(slice1modified, slice1modified2)
+
+	err = mainProxy.assertEvents("after re-modifying slice1",
+		"update endpointslice testns/one-slice1 9.10.11.12",
+	)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+	err = unidlingProxy.assertEvents("after re-modifying slice1")
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+
+	// But modifying slice2 will cause the endpoint to be deleted from the unidling
+	// proxy.
+	proxy.OnEndpointSliceUpdate(slice2modified, slice2)
+
+	err = mainProxy.assertEvents("after re-modifying slice2",
+		"update endpointslice testns/one-slice2 5.6.7.8",
+	)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+	err = unidlingProxy.assertEvents("after re-modifying slice2",
+		"delete endpoints testns/one 5.6.7.99",
+	)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+
+	// ****
+
+	// Clean up
+	proxy.OnEndpointSliceDelete(slice1modified2)
+
+	err = deleteServiceAndWait(svc1, proxy)
+	if err != nil {
+		t.Fatalf("unexpected error deleting service: %v", err)
+	}
+	proxy.OnServiceDelete(svc1)
+
+	proxy.OnEndpointSliceDelete(slice2)
+
+	err = mainProxy.assertEvents("after cleanup",
+		"delete endpointslice testns/one-slice1 9.10.11.12",
+		"delete service testns/one",
+		"delete endpointslice testns/one-slice2 5.6.7.8",
+	)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+	err = unidlingProxy.assertNoEvents("after cleanup")
 	if err != nil {
 		t.Fatalf("%v", err)
 	}
