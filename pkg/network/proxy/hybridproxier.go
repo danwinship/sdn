@@ -13,13 +13,10 @@ import (
 	corev1listers "k8s.io/client-go/listers/core/v1"
 	"k8s.io/kubernetes/pkg/proxy"
 	"k8s.io/kubernetes/pkg/util/async"
+	utilnet "k8s.io/utils/net"
 
 	unidlingapi "github.com/openshift/api/unidling/v1alpha1"
 )
-
-// IPV6FIXME: in a dual-stack cluster, the mainProxy will be a dual-stack metaproxy, but
-// the unidling proxy is single-stack, so we will have to fake dual-stack-ness by sending
-// it a pair of Services/Endpoints for each dual-stack Service.
 
 // HybridizableProxy is an extra interface we layer on top of Provider
 type HybridizableProxy interface {
@@ -60,8 +57,8 @@ type hybridProxierService struct {
 	emptyEndpoints int
 
 	// In the Unidling state, we only track the first EndpointSlice to have appeared
-	// IPV6FIXME: dual unidlingSlices
-	unidlingSlice string
+	v4UnidlingSlice string
+	v6UnidlingSlice string
 
 	// idling/unidling state
 	isIdled   bool
@@ -82,12 +79,25 @@ func (hsvc *hybridProxierService) unidlingPeriodHasExpired() bool {
 	return hsvc.unidledAt != nil && !hsvc.unidlingProxyWantsEndpoints()
 }
 
+func (hsvc *hybridProxierService) unidlingSlicePtr(slice *discoveryv1.EndpointSlice) *string {
+	if slice.AddressType == discoveryv1.AddressTypeIPv4 {
+		return &hsvc.v4UnidlingSlice
+	} else if slice.AddressType == discoveryv1.AddressTypeIPv6 {
+		return &hsvc.v6UnidlingSlice
+	} else {
+		dummy := ""
+		return &dummy
+	}
+}
+
 // HybridProxier runs an unidling proxy and a primary proxy at the same time,
 // delegating idled services to the unidling proxy and other services to the
 // primary proxy.
 type HybridProxier struct {
-	mainProxy     HybridizableProxy
-	unidlingProxy HybridizableProxy
+	mainProxy       HybridizableProxy
+	unidlingProxies []HybridizableProxy
+	v4UnidlingProxy HybridizableProxy
+	v6UnidlingProxy HybridizableProxy
 
 	serviceLister corev1listers.ServiceLister
 	syncRunner    *async.BoundedFrequencyRunner
@@ -98,17 +108,25 @@ type HybridProxier struct {
 
 func NewHybridProxier(
 	mainProxy HybridizableProxy,
-	unidlingProxy HybridizableProxy,
+	v4UnidlingProxy HybridizableProxy,
+	v6UnidlingProxy HybridizableProxy,
 	minSyncPeriod time.Duration,
 	serviceLister corev1listers.ServiceLister,
 ) *HybridProxier {
 	p := &HybridProxier{
-		mainProxy:     mainProxy,
-		unidlingProxy: unidlingProxy,
+		mainProxy:       mainProxy,
+		v4UnidlingProxy: v4UnidlingProxy,
+		v6UnidlingProxy: v6UnidlingProxy,
 
 		serviceLister: serviceLister,
 
 		services: make(map[types.NamespacedName]*hybridProxierService),
+	}
+	if v4UnidlingProxy != nil {
+		p.unidlingProxies = append(p.unidlingProxies, v4UnidlingProxy)
+	}
+	if v6UnidlingProxy != nil {
+		p.unidlingProxies = append(p.unidlingProxies, v6UnidlingProxy)
 	}
 
 	p.syncRunner = async.NewBoundedFrequencyRunner("sync-runner", p.syncProxyRules, minSyncPeriod, time.Hour, 4)
@@ -117,7 +135,9 @@ func NewHybridProxier(
 	// to both proxies at approximately the same time. That means that we
 	// need to stop the two proxy's independent loops and take them over.
 	mainProxy.SetSyncRunner(p.syncRunner)
-	unidlingProxy.SetSyncRunner(p.syncRunner)
+	for _, unidlingProxy := range p.unidlingProxies {
+		unidlingProxy.SetSyncRunner(p.syncRunner)
+	}
 
 	return p
 }
@@ -151,6 +171,33 @@ func emptyEndpoints(meta *metav1.ObjectMeta) *corev1.Endpoints {
 				Ports:     []corev1.EndpointPort{},
 			},
 		},
+	}
+}
+
+// serviceForProxy returns either svc, a copy of it, or nil, ensuring that ClusterIP is of
+// the correct family for unidlingProxy. It does not make any attempt to fix up the other
+// dual-stack-related fields, so the returned Service may be invalid according to
+// present-day API standards.
+func (p *HybridProxier) serviceForProxy(svc *corev1.Service, proxy HybridizableProxy) *corev1.Service {
+	if p.rightFamilyForProxy(svc.Spec.ClusterIP, proxy) {
+		return svc
+	}
+
+	for _, clusterIP := range svc.Spec.ClusterIPs {
+		if p.rightFamilyForProxy(clusterIP, proxy) {
+			svcForProxy := svc.DeepCopy()
+			svcForProxy.Spec.ClusterIP = clusterIP
+			return svcForProxy
+		}
+	}
+	return nil
+}
+
+func (p *HybridProxier) rightFamilyForProxy(ip string, proxy HybridizableProxy) bool {
+	if proxy == p.v4UnidlingProxy {
+		return utilnet.IsIPv4String(ip)
+	} else {
+		return utilnet.IsIPv6String(ip)
 	}
 }
 
@@ -189,18 +236,27 @@ func (p *HybridProxier) releaseService(svcName types.NamespacedName) {
 		if hsvc.shouldBeIdled() {
 			klog.Infof("switching svc %s to unidling proxy", svcName)
 			p.mainProxy.OnServiceDelete(service)
-			// IPV6FIXME: may need to add dual services
-			p.unidlingProxy.OnServiceAdd(service)
+			for _, unidlingProxy := range p.unidlingProxies {
+				svcForProxy := p.serviceForProxy(service, unidlingProxy)
+				if svcForProxy != nil {
+					unidlingProxy.OnServiceAdd(svcForProxy)
+				}
+			}
 			if !hsvc.unidlingProxyWantsEndpoints() {
-				// IPV6FIXME: may need to add dual endpoints
-				p.unidlingProxy.OnEndpointsAdd(emptyEndpoints(&service.ObjectMeta))
+				for _, unidlingProxy := range p.unidlingProxies {
+					unidlingProxy.OnEndpointsAdd(emptyEndpoints(&service.ObjectMeta))
+				}
 			}
 			hsvc.isIdled = true
 			hsvc.unidledAt = nil
 		} else {
 			klog.Infof("switching svc %s to main proxy", svcName)
-			// IPV6FIXME: may need to delete dual services
-			p.unidlingProxy.OnServiceDelete(service)
+			for _, unidlingProxy := range p.unidlingProxies {
+				svcForProxy := p.serviceForProxy(service, unidlingProxy)
+				if svcForProxy != nil {
+					unidlingProxy.OnServiceDelete(svcForProxy)
+				}
+			}
 			p.mainProxy.OnServiceAdd(service)
 			hsvc.isIdled = false
 			now := time.Now()
@@ -244,8 +300,13 @@ func (p *HybridProxier) OnServiceUpdate(oldService, service *corev1.Service) {
 		// Send the Update to the proxy that already knows about the service
 		if hsvc.isIdled {
 			klog.V(6).Infof("update svc %s in unidling proxy", svcName)
-			// IPV6FIXME: may need to update dual services
-			p.unidlingProxy.OnServiceUpdate(oldService, service)
+			for _, unidlingProxy := range p.unidlingProxies {
+				svcForProxy := p.serviceForProxy(service, unidlingProxy)
+				if svcForProxy != nil {
+					oldSvcForProxy := p.serviceForProxy(oldService, unidlingProxy)
+					unidlingProxy.OnServiceUpdate(oldSvcForProxy, svcForProxy)
+				}
+			}
 		} else {
 			klog.V(6).Infof("update svc %s in main proxy", svcName)
 			p.mainProxy.OnServiceUpdate(oldService, service)
@@ -265,8 +326,12 @@ func (p *HybridProxier) OnServiceDelete(service *corev1.Service) {
 
 	if hsvc.isIdled {
 		klog.V(6).Infof("del svc %s in unidling proxy", svcName)
-		// IPV6FIXME: may need to delete dual services
-		p.unidlingProxy.OnServiceDelete(service)
+		for _, unidlingProxy := range p.unidlingProxies {
+			svcForProxy := p.serviceForProxy(service, unidlingProxy)
+			if svcForProxy != nil {
+				unidlingProxy.OnServiceDelete(svcForProxy)
+			}
+		}
 	} else {
 		klog.V(6).Infof("del svc %s in main proxy", svcName)
 		p.mainProxy.OnServiceDelete(service)
@@ -274,7 +339,9 @@ func (p *HybridProxier) OnServiceDelete(service *corev1.Service) {
 }
 
 func (p *HybridProxier) OnServiceSynced() {
-	p.unidlingProxy.OnServiceSynced()
+	for _, unidlingProxy := range p.unidlingProxies {
+		unidlingProxy.OnServiceSynced()
+	}
 	p.mainProxy.OnServiceSynced()
 }
 
@@ -304,9 +371,18 @@ func endpointSliceServiceName(slice *discoveryv1.EndpointSlice) string {
 	return serviceName
 }
 
-func sliceToEndpoints(slice *discoveryv1.EndpointSlice) *corev1.Endpoints {
+func (p *HybridProxier) sliceToEndpointsForProxy(slice *discoveryv1.EndpointSlice, unidlingProxy HybridizableProxy) *corev1.Endpoints {
 	if slice == nil {
 		return nil
+	}
+	if unidlingProxy == p.v4UnidlingProxy {
+		if slice.AddressType == discoveryv1.AddressTypeIPv6 {
+			return nil
+		}
+	} else {
+		if slice.AddressType == discoveryv1.AddressTypeIPv4 {
+			return nil
+		}
 	}
 
 	endpoints := &corev1.Endpoints{
@@ -362,7 +438,6 @@ func endpointSliceIsEmpty(slice *discoveryv1.EndpointSlice) bool {
 	return true
 }
 
-// IPV6FIXME: for a dual-stack Service, there will be separate IPv4 and IPv6 slices.
 func (p *HybridProxier) OnEndpointSliceAdd(slice *discoveryv1.EndpointSlice) {
 	svcName := types.NamespacedName{Namespace: slice.Namespace, Name: endpointSliceServiceName(slice)}
 	hsvc := p.getService(svcName)
@@ -376,17 +451,22 @@ func (p *HybridProxier) OnEndpointSliceAdd(slice *discoveryv1.EndpointSlice) {
 	klog.V(6).Infof("hybrid proxy: add slice %s", svcName)
 	p.mainProxy.OnEndpointSliceAdd(slice)
 
-	if hsvc.unidlingSlice != "" && hsvc.unidlingSlice != slice.Name {
+	unidlingSlice := hsvc.unidlingSlicePtr(slice)
+	if *unidlingSlice != "" && *unidlingSlice != slice.Name {
 		return
 	}
 
 	if hsvc.unidlingProxyWantsEndpoints() {
-		hsvc.unidlingSlice = slice.Name
-		p.unidlingProxy.OnEndpointsAdd(sliceToEndpoints(slice))
+		*unidlingSlice = slice.Name
+		for _, unidlingProxy := range p.unidlingProxies {
+			sliceForProxy := p.sliceToEndpointsForProxy(slice, unidlingProxy)
+			if sliceForProxy != nil {
+				unidlingProxy.OnEndpointsAdd(sliceForProxy)
+			}
+		}
 	}
 }
 
-// IPV6FIXME: for a dual-stack Service, there will be separate IPv4 and IPv6 slices.
 func (p *HybridProxier) OnEndpointSliceUpdate(oldSlice, slice *discoveryv1.EndpointSlice) {
 	svcName := types.NamespacedName{Namespace: slice.Namespace, Name: endpointSliceServiceName(slice)}
 	hsvc := p.getService(svcName)
@@ -404,21 +484,32 @@ func (p *HybridProxier) OnEndpointSliceUpdate(oldSlice, slice *discoveryv1.Endpo
 	klog.V(6).Infof("hybrid proxy: update slice %s", svcName)
 	p.mainProxy.OnEndpointSliceUpdate(oldSlice, slice)
 
-	if hsvc.unidlingSlice != "" && hsvc.unidlingSlice != slice.Name {
+	unidlingSlice := hsvc.unidlingSlicePtr(slice)
+	if *unidlingSlice != "" && *unidlingSlice != slice.Name {
 		return
 	}
 
 	if hsvc.unidlingProxyWantsEndpoints() {
-		hsvc.unidlingSlice = slice.Name
-		p.unidlingProxy.OnEndpointsUpdate(sliceToEndpoints(oldSlice), sliceToEndpoints(slice))
+		*unidlingSlice = slice.Name
+		for _, unidlingProxy := range p.unidlingProxies {
+			sliceForProxy := p.sliceToEndpointsForProxy(slice, unidlingProxy)
+			if sliceForProxy != nil {
+				oldSliceForProxy := p.sliceToEndpointsForProxy(oldSlice, unidlingProxy)
+				unidlingProxy.OnEndpointsUpdate(oldSliceForProxy, sliceForProxy)
+			}
+		}
 	} else if hsvc.unidlingPeriodHasExpired() {
-		p.unidlingProxy.OnEndpointsDelete(sliceToEndpoints(oldSlice))
-		hsvc.unidlingSlice = ""
+		for _, unidlingProxy := range p.unidlingProxies {
+			sliceForProxy := p.sliceToEndpointsForProxy(slice, unidlingProxy)
+			if sliceForProxy != nil {
+				unidlingProxy.OnEndpointsDelete(sliceForProxy)
+			}
+		}
+		*unidlingSlice = ""
 		hsvc.unidledAt = nil
 	}
 }
 
-// IPV6FIXME: for a dual-stack Service, there will be separate IPv4 and IPv6 slices.
 func (p *HybridProxier) OnEndpointSliceDelete(slice *discoveryv1.EndpointSlice) {
 	svcName := types.NamespacedName{Namespace: slice.Namespace, Name: endpointSliceServiceName(slice)}
 	hsvc := p.getService(svcName)
@@ -432,20 +523,28 @@ func (p *HybridProxier) OnEndpointSliceDelete(slice *discoveryv1.EndpointSlice) 
 	klog.V(6).Infof("hybrid proxy: del slice %s", svcName)
 	p.mainProxy.OnEndpointSliceDelete(slice)
 
-	if hsvc.unidlingSlice != "" && hsvc.unidlingSlice != slice.Name {
+	unidlingSlice := hsvc.unidlingSlicePtr(slice)
+	if *unidlingSlice != "" && *unidlingSlice != slice.Name {
 		return
 	}
 
 	if hsvc.unidlingProxyWantsEndpoints() {
-		p.unidlingProxy.OnEndpointsDelete(sliceToEndpoints(slice))
-		hsvc.unidlingSlice = ""
+		for _, unidlingProxy := range p.unidlingProxies {
+			sliceForProxy := p.sliceToEndpointsForProxy(slice, unidlingProxy)
+			if sliceForProxy != nil {
+				unidlingProxy.OnEndpointsDelete(sliceForProxy)
+			}
+		}
+		*unidlingSlice = ""
 		hsvc.unidledAt = nil
 	}
 }
 
 func (p *HybridProxier) OnEndpointSlicesSynced() {
 	klog.V(6).Infof("hybrid proxy: endpointslices synced")
-	p.unidlingProxy.OnEndpointsSynced()
+	for _, unidlingProxy := range p.unidlingProxies {
+		unidlingProxy.OnEndpointsSynced()
+	}
 	p.mainProxy.OnEndpointSlicesSynced()
 }
 
@@ -464,7 +563,9 @@ func (p *HybridProxier) syncProxyRules() {
 	klog.V(3).Infof("syncProxyRules start")
 
 	p.mainProxy.SyncProxyRules()
-	p.unidlingProxy.SyncProxyRules()
+	for _, unidlingProxy := range p.unidlingProxies {
+		unidlingProxy.SyncProxyRules()
+	}
 
 	klog.V(3).Infof("syncProxyRules finished")
 }
@@ -484,5 +585,7 @@ func (p *HybridProxier) SetSyncRunner(b *async.BoundedFrequencyRunner) {
 
 func (p *HybridProxier) ReloadIPTables() {
 	p.mainProxy.ReloadIPTables()
-	p.unidlingProxy.ReloadIPTables()
+	for _, unidlingProxy := range p.unidlingProxies {
+		unidlingProxy.ReloadIPTables()
+	}
 }

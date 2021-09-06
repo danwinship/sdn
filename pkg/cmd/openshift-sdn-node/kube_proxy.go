@@ -68,7 +68,6 @@ type ProxyServer struct {
 
 	// Not in the upstream version
 	enableUnidling bool
-	ipt            [2]utiliptables.Interface
 }
 
 // newProxyServer creates the service proxy. This is a modified version of
@@ -230,7 +229,6 @@ func newProxyServer(config *kubeproxyconfig.KubeProxyConfiguration, client clien
 		UseEndpointSlices:  useEndpointSlices,
 
 		enableUnidling: enableUnidling,
-		ipt:            ipt,
 	}, nil
 }
 

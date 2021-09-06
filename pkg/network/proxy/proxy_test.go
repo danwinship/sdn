@@ -310,7 +310,7 @@ func newTestOsdnProxy(usesEndpointSlices bool) (*OsdnProxy, *testProxy, *testPro
 
 	mainProxy := newTestProxy("main", usesEndpointSlices)
 	unidlingProxy := newTestProxy("unidling", false)
-	proxy.SetBaseProxies(mainProxy, unidlingProxy)
+	proxy.SetBaseProxies(mainProxy, unidlingProxy, nil)
 
 	stopCh := make(chan struct{})
 	proxy.clients.Start(stopCh)

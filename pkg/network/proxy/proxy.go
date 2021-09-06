@@ -83,12 +83,12 @@ func New(clients *common.SDNClients, sdnConfig *common.SDNConfig,
 	}, nil
 }
 
-func (proxy *OsdnProxy) SetBaseProxies(mainProxy, unidlingProxy HybridizableProxy) {
-	if unidlingProxy == nil {
+func (proxy *OsdnProxy) SetBaseProxies(mainProxy, v4UnidlingProxy, v6UnidlingProxy HybridizableProxy) {
+	if v4UnidlingProxy == nil && v6UnidlingProxy == nil {
 		proxy.baseProxy = mainProxy
 	} else {
 		proxy.baseProxy = NewHybridProxier(
-			mainProxy, unidlingProxy,
+			mainProxy, v4UnidlingProxy, v6UnidlingProxy,
 			proxy.minSyncPeriod,
 			proxy.clients.KubeInformers.Core().V1().Services().Lister(),
 		)

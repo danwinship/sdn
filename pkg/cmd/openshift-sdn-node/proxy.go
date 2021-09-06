@@ -11,10 +11,10 @@ import (
 	"k8s.io/client-go/tools/record"
 	"k8s.io/klog/v2"
 	kubeproxyoptions "k8s.io/kubernetes/cmd/kube-proxy/app"
-	"k8s.io/kubernetes/pkg/proxy"
 	kubeproxyconfig "k8s.io/kubernetes/pkg/proxy/apis/config"
 	"k8s.io/kubernetes/pkg/proxy/userspace"
 	proxyutiliptables "k8s.io/kubernetes/pkg/proxy/util/iptables"
+	utilsnet "k8s.io/utils/net"
 
 	sdnnode "github.com/openshift/sdn/pkg/network/node"
 	sdnproxy "github.com/openshift/sdn/pkg/network/proxy"
@@ -68,8 +68,7 @@ func (sdn *openShiftSDN) runProxy(waitChan chan<- bool) {
 
 // wrapProxy wraps the created proxier with the unidling and firewalling proxies
 func (sdn *openShiftSDN) wrapProxy(s *ProxyServer, waitChan chan<- bool) error {
-	var err error
-	var unidlingProxy proxy.Provider
+	var v4UnidlingProxy, v6UnidlingProxy sdnproxy.HybridizableProxy
 
 	if s.enableUnidling {
 		// FIXME: openshift-controller-manager assumes the LastTimestamp field in
@@ -82,24 +81,14 @@ func (sdn *openShiftSDN) wrapProxy(s *ProxyServer, waitChan chan<- bool) error {
 
 		signaler := unidler.NewEventSignaler(unidlingRecorder)
 
-		dualStack := len(sdn.nodeIPs) == 2
-
-		if dualStack {
-			unidlingProxy, err = unidler.NewDualStackUnidlerProxier(
+		for i, nodeIP := range sdn.nodeIPs {
+			var bindAddr net.IP
+			if i == 0 {
+				bindAddr = net.ParseIP(sdn.proxyConfig.BindAddress)
+			}
+			unidlingProxy, err := unidler.NewUnidlerProxier(
 				userspace.NewLoadBalancerRR(),
-				nodeIPTuple(sdn.proxyConfig.BindAddress),
-				s.ipt,
-				s.execer,
-				*utilnet.ParsePortRangeOrDie(sdn.proxyConfig.PortRange),
-				sdn.proxyConfig.IPTables.SyncPeriod.Duration,
-				sdn.proxyConfig.IPTables.MinSyncPeriod.Duration,
-				sdn.proxyConfig.UDPIdleTimeout.Duration,
-				sdn.proxyConfig.NodePortAddresses,
-				signaler)
-		} else {
-			unidlingProxy, err = unidler.NewUnidlerProxier(
-				userspace.NewLoadBalancerRR(),
-				net.ParseIP(sdn.proxyConfig.BindAddress),
+				bindAddr,
 				s.IptInterface,
 				s.execer,
 				*utilnet.ParsePortRangeOrDie(sdn.proxyConfig.PortRange),
@@ -108,18 +97,23 @@ func (sdn *openShiftSDN) wrapProxy(s *ProxyServer, waitChan chan<- bool) error {
 				sdn.proxyConfig.UDPIdleTimeout.Duration,
 				sdn.proxyConfig.NodePortAddresses,
 				signaler)
-		}
+			if err != nil {
+				return fmt.Errorf("could not create unidling proxy: %v", err)
+			}
 
-		if err != nil {
-			return fmt.Errorf("could not create unidling proxy: %v", err)
+			if utilsnet.IsIPv4String(nodeIP) {
+				v4UnidlingProxy = unidlingProxy
+			} else {
+				v6UnidlingProxy = unidlingProxy
+			}
 		}
 	}
 
 	sdn.osdnProxy.SetBaseProxies(
 		s.Proxier.(sdnproxy.HybridizableProxy),
-		unidlingProxy.(sdnproxy.HybridizableProxy),
+		v4UnidlingProxy, v6UnidlingProxy,
 	)
-	if err = sdn.osdnProxy.Start(waitChan); err != nil {
+	if err := sdn.osdnProxy.Start(waitChan); err != nil {
 		return err
 	}
 
