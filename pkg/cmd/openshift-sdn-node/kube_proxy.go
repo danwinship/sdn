@@ -36,11 +36,11 @@ import (
 	"k8s.io/kubernetes/pkg/proxy/iptables"
 	proxymetrics "k8s.io/kubernetes/pkg/proxy/metrics"
 	"k8s.io/kubernetes/pkg/proxy/userspace"
+	proxyutiliptables "k8s.io/kubernetes/pkg/proxy/util/iptables"
 	utiliptables "k8s.io/kubernetes/pkg/util/iptables"
 	utilsysctl "k8s.io/kubernetes/pkg/util/sysctl"
 	"k8s.io/utils/exec"
-
-	sdnproxy "github.com/openshift/sdn/pkg/network/proxy"
+	utilsnet "k8s.io/utils/net"
 )
 
 const (
@@ -67,14 +67,14 @@ type ProxyServer struct {
 	HealthzServer      healthcheck.ProxierHealthUpdater
 
 	// Not in the upstream version
-	baseProxy      sdnproxy.HybridizableProxy
 	enableUnidling bool
+	ipt            [2]utiliptables.Interface
 }
 
 // newProxyServer creates the service proxy. This is a modified version of
 // newProxyServer() from k8s.io/kubernetes/cmd/kube-proxy/app/server_others.go, and should
 // be kept in sync with that.
-func newProxyServer(config *kubeproxyconfig.KubeProxyConfiguration, client clientset.Interface, hostname, sdnNodeIP string) (*ProxyServer, error) {
+func newProxyServer(config *kubeproxyconfig.KubeProxyConfiguration, client clientset.Interface, hostname string, sdnNodeIPs []string) (*ProxyServer, error) {
 	var err error
 
 	var iptInterface utiliptables.Interface
@@ -82,7 +82,7 @@ func newProxyServer(config *kubeproxyconfig.KubeProxyConfiguration, client clien
 
 	// SDNMISSING: upstream implements --show-hidden-metrics-for-version here
 
-	nodeIP := detectNodeIP(config, sdnNodeIP)
+	nodeIP, secondaryNodeIP := detectNodeIPs(config, sdnNodeIPs)
 	klog.Infof("Detected node IP %s", nodeIP.String())
 
 	// Create event recorder
@@ -101,7 +101,7 @@ func newProxyServer(config *kubeproxyconfig.KubeProxyConfiguration, client clien
 		healthzServer = healthcheck.NewProxierHealthServer(config.HealthzBindAddress, 2*config.IPTables.SyncPeriod.Duration, recorder, nodeRef)
 	}
 
-	var proxier sdnproxy.HybridizableProxy
+	var proxier proxy.Provider
 	var enableUnidling bool
 
 	proxyMode := config.Mode
@@ -110,11 +110,30 @@ func newProxyServer(config *kubeproxyconfig.KubeProxyConfiguration, client clien
 		proxyMode = proxyModeIPTables
 	}
 
-	// SDNMISSING: upstream supports dual-stack
 	primaryProtocol := utiliptables.ProtocolIPv4
+	if utilsnet.IsIPv6(nodeIP) {
+		primaryProtocol = utiliptables.ProtocolIPv6
+	}
 	iptInterface = utiliptables.New(execer, primaryProtocol)
 
-	klog.V(0).Infof("kube-proxy running in single-stack %s mode", iptInterface.Protocol())
+	var ipt [2]utiliptables.Interface
+	dualStack := secondaryNodeIP != nil && proxyMode != proxyModeUserspace
+	if dualStack {
+		// Create iptables handlers for both families, one is already created
+		// Always ordered as IPv4, IPv6
+		if primaryProtocol == utiliptables.ProtocolIPv4 {
+			ipt[0] = iptInterface
+			ipt[1] = utiliptables.New(execer, utiliptables.ProtocolIPv6)
+		} else {
+			ipt[0] = utiliptables.New(execer, utiliptables.ProtocolIPv4)
+			ipt[1] = iptInterface
+		}
+	}
+	if dualStack {
+		klog.V(0).Infof("kube-proxy running in dual-stack mode, %s-primary", iptInterface.Protocol())
+	} else {
+		klog.V(0).Infof("kube-proxy running in single-stack %s mode", iptInterface.Protocol())
+	}
 
 	if proxyMode == proxyModeIPTables {
 		klog.V(0).Info("Using iptables Proxier.")
@@ -123,23 +142,48 @@ func newProxyServer(config *kubeproxyconfig.KubeProxyConfiguration, client clien
 			return nil, fmt.Errorf("unable to read IPTables MasqueradeBit from config")
 		}
 
-		localDetector := getLocalDetector()
+		if dualStack {
+			klog.V(0).Info("creating dualStackProxier for iptables.")
 
-		proxier, err = iptables.NewProxier(
-			iptInterface,
-			utilsysctl.New(),
-			execer,
-			config.IPTables.SyncPeriod.Duration,
-			config.IPTables.MinSyncPeriod.Duration,
-			config.IPTables.MasqueradeAll,
-			int(*config.IPTables.MasqueradeBit),
-			localDetector,
-			hostname,
-			nodeIP,
-			recorder,
-			healthzServer,
-			config.NodePortAddresses,
-		)
+			localDetectors := [2]proxyutiliptables.LocalTrafficDetector{
+				getLocalDetector(), getLocalDetector(),
+			}
+
+			proxier, err = iptables.NewDualStackProxier(
+				ipt,
+				utilsysctl.New(),
+				execer,
+				config.IPTables.SyncPeriod.Duration,
+				config.IPTables.MinSyncPeriod.Duration,
+				config.IPTables.MasqueradeAll,
+				int(*config.IPTables.MasqueradeBit),
+				localDetectors,
+				hostname,
+				nodeIPTuple(config.BindAddress),
+				recorder,
+				healthzServer,
+				config.NodePortAddresses,
+			)
+		} else { // Create a single-stack proxier.
+			localDetector := getLocalDetector()
+
+			proxier, err = iptables.NewProxier(
+				iptInterface,
+				utilsysctl.New(),
+				execer,
+				config.IPTables.SyncPeriod.Duration,
+				config.IPTables.MinSyncPeriod.Duration,
+				config.IPTables.MasqueradeAll,
+				int(*config.IPTables.MasqueradeBit),
+				localDetector,
+				hostname,
+				nodeIP,
+				recorder,
+				healthzServer,
+				config.NodePortAddresses,
+			)
+		}
+
 		if err != nil {
 			return nil, fmt.Errorf("unable to create proxier: %v", err)
 		}
@@ -176,6 +220,7 @@ func newProxyServer(config *kubeproxyconfig.KubeProxyConfiguration, client clien
 		Client:             client,
 		IptInterface:       iptInterface,
 		execer:             execer,
+		Proxier:            proxier,
 		Broadcaster:        eventBroadcaster,
 		ProxyMode:          string(proxyMode),
 		MetricsBindAddress: config.MetricsBindAddress,
@@ -184,8 +229,8 @@ func newProxyServer(config *kubeproxyconfig.KubeProxyConfiguration, client clien
 		HealthzServer:      healthzServer,
 		UseEndpointSlices:  useEndpointSlices,
 
-		baseProxy:      proxier,
 		enableUnidling: enableUnidling,
+		ipt:            ipt,
 	}, nil
 }
 
@@ -324,4 +369,19 @@ func startProxyServer(s *ProxyServer) error {
 	go s.Proxier.SyncLoop()
 
 	return nil
+}
+
+// nodeIPTuple takes an addresses and return a tuple (ipv4,ipv6). This is an exact copy of
+// nodeIPTuple from k8s.io/kubernetes/cmd/kube-proxy/app/server.go
+func nodeIPTuple(bindAddress string) [2]net.IP {
+	nodes := [2]net.IP{net.IPv4zero, net.IPv6zero}
+
+	adr := net.ParseIP(bindAddress)
+	if utilsnet.IsIPv6(adr) {
+		nodes[1] = adr
+	} else {
+		nodes[0] = adr
+	}
+
+	return nodes
 }

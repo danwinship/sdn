@@ -1,6 +1,7 @@
 package openshift_sdn_node
 
 import (
+	"fmt"
 	"net"
 
 	corev1 "k8s.io/api/core/v1"
@@ -10,6 +11,7 @@ import (
 	"k8s.io/client-go/tools/record"
 	"k8s.io/klog/v2"
 	kubeproxyoptions "k8s.io/kubernetes/cmd/kube-proxy/app"
+	"k8s.io/kubernetes/pkg/proxy"
 	kubeproxyconfig "k8s.io/kubernetes/pkg/proxy/apis/config"
 	"k8s.io/kubernetes/pkg/proxy/userspace"
 	proxyutiliptables "k8s.io/kubernetes/pkg/proxy/util/iptables"
@@ -46,7 +48,7 @@ func (sdn *openShiftSDN) runProxy(waitChan chan<- bool) {
 		return
 	}
 
-	s, err := newProxyServer(sdn.proxyConfig, sdn.clients.KubeClient, sdn.nodeName, sdn.nodeIPs[0])
+	s, err := newProxyServer(sdn.proxyConfig, sdn.clients.KubeClient, sdn.nodeName, sdn.nodeIPs)
 	if err != nil {
 		klog.Fatalf("Unable to create proxy server: %v", err)
 	}
@@ -67,7 +69,7 @@ func (sdn *openShiftSDN) runProxy(waitChan chan<- bool) {
 // wrapProxy wraps the created proxier with the unidling and firewalling proxies
 func (sdn *openShiftSDN) wrapProxy(s *ProxyServer, waitChan chan<- bool) error {
 	var err error
-	var unidlingProxy sdnproxy.HybridizableProxy
+	var unidlingProxy proxy.Provider
 
 	if s.enableUnidling {
 		// FIXME: openshift-controller-manager assumes the LastTimestamp field in
@@ -79,25 +81,45 @@ func (sdn *openShiftSDN) wrapProxy(s *ProxyServer, waitChan chan<- bool) error {
 		unidlingRecorder := unidlingBroadcaster.NewRecorder(scheme.Scheme, corev1.EventSource{Component: "kube-proxy", Host: sdn.nodeName})
 
 		signaler := unidler.NewEventSignaler(unidlingRecorder)
-		// IPV6FIXME: create two unidlers and a metaproxier, if dual-stack
-		unidlingProxy, err = unidler.NewUnidlerProxier(
-			userspace.NewLoadBalancerRR(),
-			net.ParseIP(sdn.proxyConfig.BindAddress),
-			s.IptInterface,
-			s.execer,
-			*utilnet.ParsePortRangeOrDie(sdn.proxyConfig.PortRange),
-			sdn.proxyConfig.IPTables.SyncPeriod.Duration,
-			sdn.proxyConfig.IPTables.MinSyncPeriod.Duration,
-			sdn.proxyConfig.UDPIdleTimeout.Duration,
-			sdn.proxyConfig.NodePortAddresses,
-			signaler)
+
+		dualStack := len(sdn.nodeIPs) == 2
+
+		if dualStack {
+			unidlingProxy, err = unidler.NewDualStackUnidlerProxier(
+				userspace.NewLoadBalancerRR(),
+				nodeIPTuple(sdn.proxyConfig.BindAddress),
+				s.ipt,
+				s.execer,
+				*utilnet.ParsePortRangeOrDie(sdn.proxyConfig.PortRange),
+				sdn.proxyConfig.IPTables.SyncPeriod.Duration,
+				sdn.proxyConfig.IPTables.MinSyncPeriod.Duration,
+				sdn.proxyConfig.UDPIdleTimeout.Duration,
+				sdn.proxyConfig.NodePortAddresses,
+				signaler)
+		} else {
+			unidlingProxy, err = unidler.NewUnidlerProxier(
+				userspace.NewLoadBalancerRR(),
+				net.ParseIP(sdn.proxyConfig.BindAddress),
+				s.IptInterface,
+				s.execer,
+				*utilnet.ParsePortRangeOrDie(sdn.proxyConfig.PortRange),
+				sdn.proxyConfig.IPTables.SyncPeriod.Duration,
+				sdn.proxyConfig.IPTables.MinSyncPeriod.Duration,
+				sdn.proxyConfig.UDPIdleTimeout.Duration,
+				sdn.proxyConfig.NodePortAddresses,
+				signaler)
+		}
+
 		if err != nil {
-			return err
+			return fmt.Errorf("could not create unidling proxy: %v", err)
 		}
 	}
 
-	sdn.osdnProxy.SetBaseProxies(s.baseProxy, unidlingProxy)
-	if err := sdn.osdnProxy.Start(waitChan); err != nil {
+	sdn.osdnProxy.SetBaseProxies(
+		s.Proxier.(sdnproxy.HybridizableProxy),
+		unidlingProxy.(sdnproxy.HybridizableProxy),
+	)
+	if err = sdn.osdnProxy.Start(waitChan); err != nil {
 		return err
 	}
 
@@ -105,15 +127,21 @@ func (sdn *openShiftSDN) wrapProxy(s *ProxyServer, waitChan chan<- bool) error {
 	return nil
 }
 
-func detectNodeIP(config *kubeproxyconfig.KubeProxyConfiguration, sdnNodeIP string) net.IP {
+func detectNodeIPs(config *kubeproxyconfig.KubeProxyConfiguration, sdnNodeIPs []string) (net.IP, net.IP) {
+	var secondaryNodeIP net.IP
+
+	if len(sdnNodeIPs) == 2 {
+		secondaryNodeIP = net.ParseIP(sdnNodeIPs[0])
+	}
+
 	if config.BindAddress != "" {
 		bindIP := net.ParseIP(config.BindAddress)
 		if bindIP != nil && !bindIP.IsUnspecified() {
-			return bindIP
+			return bindIP, secondaryNodeIP
 		}
 	}
 
-	return net.ParseIP(sdnNodeIP)
+	return net.ParseIP(sdnNodeIPs[0]), secondaryNodeIP
 }
 
 type sdnLocalDetector struct {

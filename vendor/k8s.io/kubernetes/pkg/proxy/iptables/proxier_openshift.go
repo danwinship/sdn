@@ -3,8 +3,11 @@ package iptables
 // Some extra hacking for openshift-specific stuff
 
 import (
+	"k8s.io/kubernetes/pkg/proxy"
 	"k8s.io/kubernetes/pkg/util/async"
 )
+
+var _ proxy.HybridizableProxy = &Proxier{}
 
 func (p *Proxier) SyncProxyRules() {
 	p.syncProxyRules()
