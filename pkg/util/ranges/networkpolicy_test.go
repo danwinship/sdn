@@ -20,35 +20,35 @@ func mustParseCIDR(cidrString string) *net.IPNet {
 func Test_rangeForCIDR(t *testing.T) {
 	var cidr *net.IPNet
 	var r intRange
-	var expectStart, expectEnd uint32
+	var expectStart, expectEnd uint64
 
 	cidr = mustParseCIDR("10.0.0.0/8")
 	r = rangeForCIDR(cidr)
 	expectStart = 10 * 256 * 256 * 256
 	expectEnd = 11*256*256*256 - 1
-	if r.start != expectStart {
-		t.Fatalf("bad start %d != %d", r.start, expectStart)
+	if r.start.low != expectStart {
+		t.Fatalf("bad start %d != %d", r.start.low, expectStart)
 	}
-	if r.end != expectEnd {
-		t.Fatalf("bad end %d != %d", r.end, expectEnd)
+	if r.end.low != expectEnd {
+		t.Fatalf("bad end %d != %d", r.end.low, expectEnd)
 	}
 
 	cidr = mustParseCIDR("192.168.0.0/24")
 	r = rangeForCIDR(cidr)
 	expectStart = 192*256*256*256 + 168*256*256
 	expectEnd = 192*256*256*256 + 168*256*256 + 255
-	if r.start != expectStart {
-		t.Fatalf("bad start %d != %d", r.start, expectStart)
+	if r.start.low != expectStart {
+		t.Fatalf("bad start %d != %d", r.start.low, expectStart)
 	}
-	if r.end != expectEnd {
-		t.Fatalf("bad end %d != %d", r.end, expectEnd)
+	if r.end.low != expectEnd {
+		t.Fatalf("bad end %d != %d", r.end.low, expectEnd)
 	}
 }
 
 func parseRange(start, end string) intRange {
 	r := intRange{
-		start: bytesToUint32(net.ParseIP(start)),
-		end:   bytesToUint32(net.ParseIP(end)),
+		start: newFixedIntFromIP(net.ParseIP(start)),
+		end:   newFixedIntFromIP(net.ParseIP(end)),
 	}
 	return r
 }
@@ -94,6 +94,23 @@ func Test_rangesForIPBlock(t *testing.T) {
 			result: []intRange{
 				parseRange("192.168.1.1", "192.168.1.8"),
 				parseRange("192.168.1.10", "192.168.1.254"),
+			},
+		},
+		{
+			// Make sure we're doing the math right in both 64-bit blocks
+			ipBlock: networkingv1.IPBlock{
+				CIDR: "fd01::/48",
+				Except: []string{
+					"fd01:0000:0000:1234::/64",
+					"fd01:0000:0000:5600::/56",
+					"fd01::7800/120",
+				},
+			},
+			result: []intRange{
+				parseRange("fd01::", "fd01::77ff"),
+				parseRange("fd01::7900", "fd01:0000:0000:1233:ffff:ffff:ffff:ffff"),
+				parseRange("fd01:0000:0000:1235::", "fd01:0000:0000:55ff:ffff:ffff:ffff:ffff"),
+				parseRange("fd01:0000:0000:5700::", "fd01:0000:0000:ffff:ffff:ffff:ffff:ffff"),
 			},
 		},
 	} {
@@ -190,6 +207,32 @@ func TestIPBlockToCIDRs(t *testing.T) {
 				"192.168.1.254/32", // 192.168.1.254 - 192.168.1.254
 			},
 		},
+		{
+			ipBlock: networkingv1.IPBlock{
+				CIDR: "fd01::/48",
+				Except: []string{
+					"fd01:0:0:1234::/64",
+				},
+			},
+			result: []string{
+				"fd01::/52",          // fd01::          - fd01::0fff:ffff:ffff:ffff:ffff
+				"fd01:0:0:1000::/55", // fd01:0:0:1000:: - fd01::11ff:ffff:ffff:ffff:ffff
+				"fd01:0:0:1200::/59", // fd01:0:0:1200:: - fd01::121f:ffff:ffff:ffff:ffff
+				"fd01:0:0:1220::/60", // fd01:0:0:1220:: - fd01::122f:ffff:ffff:ffff:ffff
+				"fd01:0:0:1230::/62", // fd01:0:0:1230:: - fd01::1233:ffff:ffff:ffff:ffff
+				"fd01:0:0:1235::/64", // fd01:0:0:1235:: - fd01::1235:ffff:ffff:ffff:ffff
+				"fd01:0:0:1236::/63", // fd01:0:0:1236:: - fd01::1237:ffff:ffff:ffff:ffff
+				"fd01:0:0:1238::/61", // fd01:0:0:1238:: - fd01::123f:ffff:ffff:ffff:ffff
+				"fd01:0:0:1240::/58", // fd01:0:0:1240:: - fd01::127f:ffff:ffff:ffff:ffff
+				"fd01:0:0:1280::/57", // fd01:0:0:1280:: - fd01::12ff:ffff:ffff:ffff:ffff
+				"fd01:0:0:1300::/56", // fd01:0:0:1300:: - fd01::13ff:ffff:ffff:ffff:ffff
+				"fd01:0:0:1400::/54", // fd01:0:0:1400:: - fd01::17ff:ffff:ffff:ffff:ffff
+				"fd01:0:0:1800::/53", // fd01:0:0:1800:: - fd01::1fff:ffff:ffff:ffff:ffff
+				"fd01:0:0:2000::/51", // fd01:0:0:2000:: - fd01::3fff:ffff:ffff:ffff:ffff
+				"fd01:0:0:4000::/50", // fd01:0:0:4000:: - fd01::7fff:ffff:ffff:ffff:ffff
+				"fd01:0:0:8000::/49", // fd01:0:0:8000:: - fd01::ffff:ffff:ffff:ffff:ffff
+			},
+		},
 	} {
 		cidrs := IPBlockToCIDRs(&tc.ipBlock)
 
@@ -199,8 +242,8 @@ func TestIPBlockToCIDRs(t *testing.T) {
 				r := rangeForCIDR(mustParseCIDR(cidr))
 				fmt.Printf("\t\t\t\t\"%s\", // %s - %s\n",
 					cidr,
-					net.IP(uint32ToBytes(r.start)),
-					net.IP(uint32ToBytes(r.end)),
+					net.IP(r.start.toBytes()),
+					net.IP(r.end.toBytes()),
 				)
 			}
 			fmt.Printf("\t\t\t}\n")

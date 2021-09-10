@@ -20,7 +20,6 @@ import (
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/klog/v2"
 	"k8s.io/kubernetes/pkg/util/async"
-	utilnet "k8s.io/utils/net"
 
 	osdnv1 "github.com/openshift/api/network/v1"
 	"github.com/openshift/library-go/pkg/network/networkutils"
@@ -728,11 +727,6 @@ func (np *networkPolicyPlugin) parsePeerFlows(npns *npNamespace, npp *npPolicy, 
 			peerFlows = append(peerFlows, np.selectPodsFromNamespaces(peer.NamespaceSelector, peer.PodSelector, dir)...)
 		} else if peer.IPBlock != nil {
 			// Network Policy has ipBlocks, allow traffic from/to those ips.
-			if !utilnet.IsIPv4CIDRString(peer.IPBlock.CIDR) {
-				// We don't support IPv6, so we don't need to do anything
-				// to allow IPv6 CIDRs.
-				continue
-			}
 			for _, cidr := range ranges.IPBlockToCIDRs(peer.IPBlock) {
 				if dir == ingressFlow {
 					peerFlows = append(peerFlows, fmt.Sprintf("ip, nw_src=%s, ", cidr))

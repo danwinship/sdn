@@ -8,8 +8,8 @@ import (
 func Test_intRange_except(t *testing.T) {
 	ranges := []intRange{
 		{
-			start: 17,
-			end:   135,
+			start: newFixedInt(17, 16),
+			end:   newFixedInt(135, 16),
 		},
 	}
 
@@ -20,105 +20,105 @@ func Test_intRange_except(t *testing.T) {
 	}{
 		{
 			except: intRange{
-				start: 20,
-				end:   40,
+				start: newFixedInt(20, 16),
+				end:   newFixedInt(40, 16),
 			},
 
 			result: []intRange{
 				{
-					start: 17,
-					end:   19,
+					start: newFixedInt(17, 16),
+					end:   newFixedInt(19, 16),
 				},
 				{
-					start: 41,
-					end:   135,
+					start: newFixedInt(41, 16),
+					end:   newFixedInt(135, 16),
 				},
 			},
 		},
 		{
 			except: intRange{
-				start: 130,
-				end:   140,
+				start: newFixedInt(130, 16),
+				end:   newFixedInt(140, 16),
 			},
 
 			result: []intRange{
 				{
-					start: 17,
-					end:   19,
+					start: newFixedInt(17, 16),
+					end:   newFixedInt(19, 16),
 				},
 				{
-					start: 41,
-					end:   129,
+					start: newFixedInt(41, 16),
+					end:   newFixedInt(129, 16),
 				},
 			},
 		},
 		{
 			except: intRange{
-				start: 100,
-				end:   109,
+				start: newFixedInt(100, 16),
+				end:   newFixedInt(109, 16),
 			},
 
 			result: []intRange{
 				{
-					start: 17,
-					end:   19,
+					start: newFixedInt(17, 16),
+					end:   newFixedInt(19, 16),
 				},
 				{
-					start: 41,
-					end:   99,
+					start: newFixedInt(41, 16),
+					end:   newFixedInt(99, 16),
 				},
 				{
-					start: 110,
-					end:   129,
+					start: newFixedInt(110, 16),
+					end:   newFixedInt(129, 16),
 				},
 			},
 		},
 		{
 			except: intRange{
-				start: 105,
-				end:   200,
+				start: newFixedInt(105, 16),
+				end:   newFixedInt(200, 16),
 			},
 
 			result: []intRange{
 				{
-					start: 17,
-					end:   19,
+					start: newFixedInt(17, 16),
+					end:   newFixedInt(19, 16),
 				},
 				{
-					start: 41,
-					end:   99,
-				},
-			},
-		},
-		{
-			except: intRange{
-				start: 80,
-				end:   99,
-			},
-			result: []intRange{
-				{
-					start: 17,
-					end:   19,
-				},
-				{
-					start: 41,
-					end:   79,
+					start: newFixedInt(41, 16),
+					end:   newFixedInt(99, 16),
 				},
 			},
 		},
 		{
 			except: intRange{
-				start: 100,
-				end:   200,
+				start: newFixedInt(80, 16),
+				end:   newFixedInt(99, 16),
 			},
 			result: []intRange{
 				{
-					start: 17,
-					end:   19,
+					start: newFixedInt(17, 16),
+					end:   newFixedInt(19, 16),
 				},
 				{
-					start: 41,
-					end:   79,
+					start: newFixedInt(41, 16),
+					end:   newFixedInt(79, 16),
+				},
+			},
+		},
+		{
+			except: intRange{
+				start: newFixedInt(100, 16),
+				end:   newFixedInt(200, 16),
+			},
+			result: []intRange{
+				{
+					start: newFixedInt(17, 16),
+					end:   newFixedInt(19, 16),
+				},
+				{
+					start: newFixedInt(41, 16),
+					end:   newFixedInt(79, 16),
 				},
 			},
 		},

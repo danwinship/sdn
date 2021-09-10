@@ -1,11 +1,11 @@
 package ranges
 
 import (
-	"encoding/binary"
 	"fmt"
 	"net"
 
 	networkingv1 "k8s.io/api/networking/v1"
+	utilnet "k8s.io/utils/net"
 )
 
 // IPBlockToCIDRs returns an array of CIDRs corresponding to ipBlock.
@@ -33,8 +33,8 @@ func IPBlockToCIDRs(ipBlock *networkingv1.IPBlock) []string {
 	for _, r := range rangesForIPBlock(ipBlock) {
 		for _, rangeMask := range r.toRangeMasks() {
 			cidr := &net.IPNet{
-				IP:   uint32ToBytes(rangeMask.start),
-				Mask: uint32ToBytes(rangeMask.mask),
+				IP:   net.IP(rangeMask.start.toBytes()),
+				Mask: net.IPMask(rangeMask.mask.toBytes()),
 			}
 			cidrs = append(cidrs, cidr.String())
 		}
@@ -42,29 +42,12 @@ func IPBlockToCIDRs(ipBlock *networkingv1.IPBlock) []string {
 	return cidrs
 }
 
-func uint32ToBytes(u uint32) []byte {
-	bytes := make([]byte, 4)
-	binary.BigEndian.PutUint32(bytes, u)
-	return bytes
-}
-
-func bytesToUint32(bytes []byte) uint32 {
-	if len(bytes) == 16 {
-		to4 := net.IP(bytes).To4()
-		if to4 != nil {
-			bytes = to4
-		}
-	}
-	return binary.BigEndian.Uint32(bytes)
-}
-
 // rangeForCIDR takes a net.IPNet and returns an intRange
 func rangeForCIDR(cidr *net.IPNet) intRange {
-	rangeMask := intRangeMask{
-		start: bytesToUint32(cidr.IP),
-		mask:  bytesToUint32(cidr.Mask),
-	}
-	return rangeMask.toRange()
+	start := newFixedIntFromIP(cidr.IP)
+	mask := newFixedIntFromBytes(cidr.Mask)
+	end := start.lastForMask(mask)
+	return intRange{start, end}
 }
 
 // rangesForIPBlock returns an array of ipRanges corresponding to ipBlock
@@ -74,6 +57,7 @@ func rangesForIPBlock(ipBlock *networkingv1.IPBlock) []intRange {
 		// can't happen
 		return nil
 	}
+	baseIsIPv4 := utilnet.IsIPv4CIDR(baseCIDR)
 	ranges := []intRange{rangeForCIDR(baseCIDR)}
 
 	for _, except := range ipBlock.Except {
@@ -81,6 +65,10 @@ func rangesForIPBlock(ipBlock *networkingv1.IPBlock) []intRange {
 		if exceptCIDR == nil {
 			// can't happen
 			return nil
+		}
+		if utilnet.IsIPv4CIDR(exceptCIDR) != baseIsIPv4 {
+			// wrong IP family, so no overlap
+			continue
 		}
 
 		newRanges := make([]intRange, 0, len(ranges)+2)
@@ -105,11 +93,11 @@ func rangesForIPBlock(ipBlock *networkingv1.IPBlock) []intRange {
 // generates the same number of rules as the naive implementation when start==end or when
 // start is odd and end==start+1, but in all other cases it generates fewer total rules.)
 func PortRangeToPortMasks(start, end int) []string {
-	portRange := intRange{uint32(start), uint32(end)}
+	portRange := intRange{newFixedInt(uint64(start), 16), newFixedInt(uint64(end), 16)}
 	rangeMasks := portRange.toRangeMasks()
 	masks := make([]string, len(rangeMasks))
 	for i, rm := range rangeMasks {
-		masks[i] = fmt.Sprintf("0x%04x/0x%04x", uint16(rm.start), uint16(rm.mask))
+		masks[i] = fmt.Sprintf("0x%04x/0x%04x", rm.start.low16(), rm.mask.low16())
 	}
 	return masks
 }

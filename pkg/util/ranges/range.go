@@ -2,41 +2,39 @@ package ranges
 
 import (
 	"fmt"
-	"math"
-	"math/bits"
 )
 
 // An intRange represents a range of ints by its start and end values (inclusive)
 type intRange struct {
-	start uint32
-	end   uint32
+	start *fixedInt
+	end   *fixedInt
 }
 
 // for debugging
 func (r intRange) String() string {
-	return fmt.Sprintf("[ 0x%x, 0x%x ]", r.start, r.end)
+	return fmt.Sprintf("[ %s, %s ]", r.start, r.end)
 }
 
 // An intRangeMask represents a range of ints by its start and a mask value
 type intRangeMask struct {
-	start uint32
-	mask  uint32
+	start *fixedInt
+	mask  *fixedInt
 }
 
 // for debugging
 func (r intRangeMask) String() string {
-	return fmt.Sprintf("0x%x/0x%x", r.start, r.mask)
+	return fmt.Sprintf("%s/%s", r.start, r.mask)
 }
 
 // except returns a set of ranges equivalent to r with except removed
 func (r intRange) except(except intRange) []intRange {
 	switch {
-	case r.start > except.end || r.end < except.start:
+	case r.start.greaterThan(except.end) || r.end.lessThan(except.start):
 		// The range is either entirely after or entirely before the exception, so
 		// keep the whole range.
 		return []intRange{r}
 
-	case r.start >= except.start && r.end <= except.end:
+	case r.start.greaterOrEqual(except.start) && r.end.lessOrEqual(except.end):
 		// The exception completely overlaps the range, so omit the whole range.
 		return nil
 	}
@@ -44,20 +42,20 @@ func (r intRange) except(except intRange) []intRange {
 	// At this point we know there is a partial, but not complete, overlap
 
 	switch {
-	case except.start <= r.start:
+	case except.start.lessOrEqual(r.start):
 		// The exception starts before (or at) the range start, but does not
 		// completely overlap the range, so keep the portion of the range after
 		// the exception.
 		return []intRange{
-			{except.end + 1, r.end},
+			{except.end.plusOne(), r.end},
 		}
 
-	case except.end >= r.end:
+	case except.end.greaterOrEqual(r.end):
 		// The exception ends after (or at) the range end, but does not completely
 		// overlap the range, so keep the portion of the range before the
 		// exception.
 		return []intRange{
-			{r.start, except.start - 1},
+			{r.start, except.start.minusOne()},
 		}
 	}
 
@@ -66,8 +64,8 @@ func (r intRange) except(except intRange) []intRange {
 	// it), so split the range into the segment before the exception and the segment
 	// after it.
 	return []intRange{
-		{r.start, except.start - 1},
-		{except.end + 1, r.end},
+		{r.start, except.start.minusOne()},
+		{except.end.plusOne(), r.end},
 	}
 }
 
@@ -83,11 +81,11 @@ func (r intRange) toRangeMasks() []intRangeMask {
 		rangeMask, rangeEnd := nextMask(start, r.end)
 		rangeMasks = append(rangeMasks, rangeMask)
 
-		if rangeEnd == r.end {
+		if rangeEnd.equal(r.end) {
 			// Reached the end
 			break
 		}
-		start = rangeEnd + 1
+		start = rangeEnd.plusOne()
 	}
 
 	return rangeMasks
@@ -95,7 +93,7 @@ func (r intRange) toRangeMasks() []intRangeMask {
 
 // nextMask computes the mask and end value for the largest intRangeMask starting at start
 // and ending at or before end.
-func nextMask(start, end uint32) (intRangeMask, uint32) {
+func nextMask(start, end *fixedInt) (intRangeMask, *fixedInt) {
 	// An intRangeMask covers a range from a starting value, to that value with some
 	// consecutive number of its trailing "0" bits flipped to "1". Eg, if start is
 	// 0xa120, then the intRangeMasks we can generate are:
@@ -117,11 +115,11 @@ func nextMask(start, end uint32) (intRangeMask, uint32) {
 	//
 	// (Any mask that doesn't have "1" bits up to the last "1" bit in start would
 	// allow generating values that are *less than* start.)
-	mask := uint32(math.MaxUint32) << bits.TrailingZeros32(start)
-	rangeEnd := start ^ ^mask
+	mask := newFixedIntMask(start.bitlen-start.trailingZeroBits(), start.bitlen)
+	rangeEnd := start.lastForMask(mask)
 
-	// If that ends within our range, then use it
-	if rangeEnd <= end {
+	// If that ends within r, then use it
+	if rangeEnd.lessOrEqual(end) {
 		return intRangeMask{start, mask}, rangeEnd
 	}
 
@@ -140,9 +138,9 @@ func nextMask(start, end uint32) (intRangeMask, uint32) {
 	//     rangeLength = 0x0008 = 0b0000000000001000
 	//     mask        = 0xfff8 = 0b1111111111111000
 	//     rangeEnd    = 0xa127 = 0b1010000100100111
-	maskLen := bits.LeadingZeros32(end-start+1) + 1
-	mask = math.MaxUint32 << (32 - maskLen)
-	rangeEnd = start ^ ^mask
+	diffPlusOne := end.sub(start).plusOne()
+	mask = newFixedIntMask(diffPlusOne.leadingZeroBits()+1, start.bitlen)
+	rangeEnd = start.lastForMask(mask)
 	return intRangeMask{start, mask}, rangeEnd
 }
 
@@ -150,6 +148,6 @@ func nextMask(start, end uint32) (intRangeMask, uint32) {
 func (r intRangeMask) toRange() intRange {
 	return intRange{
 		start: r.start,
-		end:   r.start ^ ^r.mask,
+		end:   r.start.lastForMask(r.mask),
 	}
 }
