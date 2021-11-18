@@ -45,7 +45,7 @@ func setupHostSubnetWatcher(t *testing.T) (*hostSubnetWatcher, []string) {
 		t.Fatalf("unexpected error parsing network info: %v", err)
 	}
 
-	hsw := newHostSubnetWatcher(oc, oc.localIP, networkInfo)
+	hsw := newHostSubnetWatcher(common.NewFakeSDNClients(), oc, oc.localIP, networkInfo)
 
 	flows, err := hsw.oc.ovs.DumpFlows("")
 	if err != nil {

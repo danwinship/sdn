@@ -147,8 +147,8 @@ func (proxy *OsdnProxy) maybeGarbageCollectNamespace(name string, ns *proxyNames
 }
 
 func (proxy *OsdnProxy) watchEgressNetworkPolicies() {
-	funcs := common.InformerFuncs(&osdnv1.EgressNetworkPolicy{}, proxy.handleAddOrUpdateEgressNetworkPolicy, proxy.handleDeleteEgressNetworkPolicy)
-	proxy.clients.OSDNInformers.Network().V1().EgressNetworkPolicies().Informer().AddEventHandler(funcs)
+	informer := proxy.clients.OSDNInformers.Network().V1().EgressNetworkPolicies().Informer()
+	proxy.clients.AddEventHandler(informer, &osdnv1.EgressNetworkPolicy{}, proxy.handleAddOrUpdateEgressNetworkPolicy, proxy.handleDeleteEgressNetworkPolicy)
 }
 
 func (proxy *OsdnProxy) handleAddOrUpdateEgressNetworkPolicy(obj, _ interface{}, eventType watch.EventType) {
@@ -176,8 +176,8 @@ func (proxy *OsdnProxy) handleDeleteEgressNetworkPolicy(obj interface{}) {
 }
 
 func (proxy *OsdnProxy) watchNetNamespaces() {
-	funcs := common.InformerFuncs(&osdnv1.NetNamespace{}, proxy.handleAddOrUpdateNetNamespace, proxy.handleDeleteNetNamespace)
-	proxy.clients.OSDNInformers.Network().V1().NetNamespaces().Informer().AddEventHandler(funcs)
+	informer := proxy.clients.OSDNInformers.Network().V1().NetNamespaces().Informer()
+	proxy.clients.AddEventHandler(informer, &osdnv1.NetNamespace{}, proxy.handleAddOrUpdateNetNamespace, proxy.handleDeleteNetNamespace)
 }
 
 func (proxy *OsdnProxy) handleAddOrUpdateNetNamespace(obj, _ interface{}, eventType watch.EventType) {

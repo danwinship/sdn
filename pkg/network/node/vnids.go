@@ -205,8 +205,8 @@ func (vmap *nodeVNIDMap) Start() error {
 }
 
 func (vmap *nodeVNIDMap) watchNetNamespaces() {
-	funcs := common.InformerFuncs(&osdnv1.NetNamespace{}, vmap.handleAddOrUpdateNetNamespace, vmap.handleDeleteNetNamespace)
-	vmap.clients.OSDNInformers.Network().V1().NetNamespaces().Informer().AddEventHandler(funcs)
+	informer := vmap.clients.OSDNInformers.Network().V1().NetNamespaces().Informer()
+	vmap.clients.AddEventHandler(informer, &osdnv1.NetNamespace{}, vmap.handleAddOrUpdateNetNamespace, vmap.handleDeleteNetNamespace)
 }
 
 func (vmap *nodeVNIDMap) handleAddOrUpdateNetNamespace(obj, _ interface{}, eventType watch.EventType) {

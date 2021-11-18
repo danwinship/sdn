@@ -897,8 +897,8 @@ func (np *networkPolicyPlugin) updateNetworkPolicy(npns *npNamespace, policy *ne
 }
 
 func (np *networkPolicyPlugin) watchNetworkPolicies() {
-	funcs := common.InformerFuncs(&networkingv1.NetworkPolicy{}, np.handleAddOrUpdateNetworkPolicy, np.handleDeleteNetworkPolicy)
-	np.node.clients.KubeInformers.Networking().V1().NetworkPolicies().Informer().AddEventHandler(funcs)
+	informer := np.node.clients.KubeInformers.Networking().V1().NetworkPolicies().Informer()
+	np.node.clients.AddEventHandler(informer, &networkingv1.NetworkPolicy{}, np.handleAddOrUpdateNetworkPolicy, np.handleDeleteNetworkPolicy)
 }
 
 func (np *networkPolicyPlugin) handleAddOrUpdateNetworkPolicy(obj, _ interface{}, eventType watch.EventType) {
@@ -948,8 +948,8 @@ func (np *networkPolicyPlugin) handleDeleteNetworkPolicy(obj interface{}) {
 }
 
 func (np *networkPolicyPlugin) watchPods() {
-	funcs := common.InformerFuncs(&corev1.Pod{}, np.handleAddOrUpdatePod, np.handleDeletePod)
-	np.node.clients.KubeInformers.Core().V1().Pods().Informer().AddEventHandler(funcs)
+	informer := np.node.clients.KubeInformers.Core().V1().Pods().Informer()
+	np.node.clients.AddEventHandler(informer, &corev1.Pod{}, np.handleAddOrUpdatePod, np.handleDeletePod)
 }
 
 func isOnPodNetwork(pod *corev1.Pod) bool {
@@ -998,8 +998,8 @@ func (np *networkPolicyPlugin) handleDeletePod(obj interface{}) {
 }
 
 func (np *networkPolicyPlugin) watchNamespaces() {
-	funcs := common.InformerFuncs(&corev1.Namespace{}, np.handleAddOrUpdateNamespace, np.handleDeleteNamespace)
-	np.node.clients.KubeInformers.Core().V1().Namespaces().Informer().AddEventHandler(funcs)
+	informer := np.node.clients.KubeInformers.Core().V1().Namespaces().Informer()
+	np.node.clients.AddEventHandler(informer, &corev1.Namespace{}, np.handleAddOrUpdateNamespace, np.handleDeleteNamespace)
 }
 
 func (np *networkPolicyPlugin) handleAddOrUpdateNamespace(obj, _ interface{}, eventType watch.EventType) {

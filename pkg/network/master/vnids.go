@@ -292,8 +292,8 @@ func (master *OsdnMaster) initNetIDAllocator() error {
 }
 
 func (master *OsdnMaster) watchNamespaces() {
-	funcs := common.InformerFuncs(&corev1.Namespace{}, master.handleAddOrUpdateNamespace, master.handleDeleteNamespace)
-	master.namespaceInformer.Informer().AddEventHandler(funcs)
+	informer := master.clients.KubeInformers.Core().V1().Namespaces().Informer()
+	master.clients.AddEventHandler(informer, &corev1.Namespace{}, master.handleAddOrUpdateNamespace, master.handleDeleteNamespace)
 }
 
 func (master *OsdnMaster) handleAddOrUpdateNamespace(obj, _ interface{}, eventType watch.EventType) {
@@ -314,8 +314,8 @@ func (master *OsdnMaster) handleDeleteNamespace(obj interface{}) {
 }
 
 func (master *OsdnMaster) watchNetNamespaces() {
-	funcs := common.InformerFuncs(&osdnv1.NetNamespace{}, master.handleAddOrUpdateNetNamespace, nil)
-	master.netNamespaceInformer.Informer().AddEventHandler(funcs)
+	informer := master.clients.OSDNInformers.Network().V1().NetNamespaces().Informer()
+	master.clients.AddEventHandler(informer, &osdnv1.NetNamespace{}, master.handleAddOrUpdateNetNamespace, nil)
 }
 
 func (master *OsdnMaster) handleAddOrUpdateNetNamespace(obj, _ interface{}, eventType watch.EventType) {

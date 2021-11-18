@@ -66,15 +66,10 @@ func newEgressIPManager(clients *common.SDNClients) *egressIPManager {
 func (eim *egressIPManager) Start() {
 	if eim.cloudPrivateIPConfigInformer != nil {
 		eim.cloudPrivateIPConfigCreationQueue = make(map[string]osdcnv1.CloudPrivateIPConfig)
-		eim.watchCloudPrivateIPConfig(eim.cloudPrivateIPConfigInformer)
+		eim.clients.AddEventHandler(eim.cloudPrivateIPConfigInformer.Informer(), &osdcnv1.CloudPrivateIPConfig{}, nil, eim.handleDeleteCloudPrivateIPConfig)
 	}
 
 	eim.tracker.Start()
-}
-
-func (eim *egressIPManager) watchCloudPrivateIPConfig(cloudPrivateIPConfigInformer cloudnetworkinformerv1.CloudPrivateIPConfigInformer) {
-	funcs := common.InformerFuncs(&osdcnv1.CloudPrivateIPConfig{}, nil, eim.handleDeleteCloudPrivateIPConfig)
-	eim.cloudPrivateIPConfigInformer.Informer().AddEventHandler(funcs)
 }
 
 func (eim *egressIPManager) handleDeleteCloudPrivateIPConfig(obj interface{}) {

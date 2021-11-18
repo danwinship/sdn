@@ -38,6 +38,9 @@ func (master *OsdnMaster) startSubnetMaster() error {
 		}
 	}
 
+	master.nodeLister = master.clients.KubeInformers.Core().V1().Nodes().Lister()
+	master.hostSubnetLister = master.clients.OSDNInformers.Network().V1().HostSubnets().Lister()
+
 	master.watchNodes()
 	master.watchSubnets()
 
@@ -45,8 +48,8 @@ func (master *OsdnMaster) startSubnetMaster() error {
 }
 
 func (master *OsdnMaster) watchNodes() {
-	funcs := common.InformerFuncs(&corev1.Node{}, master.handleAddOrUpdateNode, master.handleDeleteNode)
-	master.nodeInformer.Informer().AddEventHandler(funcs)
+	informer := master.clients.KubeInformers.Core().V1().Nodes().Informer()
+	master.clients.AddEventHandler(informer, &corev1.Node{}, master.handleAddOrUpdateNode, master.handleDeleteNode)
 }
 
 func (master *OsdnMaster) handleAddOrUpdateNode(obj, _ interface{}, eventType watch.EventType) {
@@ -153,7 +156,7 @@ func (master *OsdnMaster) deleteNode(nodeName string) error {
 	// If create and delete events for the same node are called in quick succession,
 	// hostsubnet informer cache may not have corresponding item. We fetch the object just for logging.
 	// So if we get the object we will log in detail otherwise will log in brief.
-	if sub, err := master.hostSubnetInformer.Lister().Get(nodeName); err == nil {
+	if sub, err := master.hostSubnetLister.Get(nodeName); err == nil {
 		subInfo = common.HostSubnetToString(sub)
 	}
 	if err := master.clients.OSDNClient.NetworkV1().HostSubnets().Delete(context.TODO(), nodeName, metav1.DeleteOptions{}); err != nil {
@@ -179,7 +182,7 @@ func (master *OsdnMaster) clearInitialNodeNetworkUnavailableCondition(origNode *
 		var err error
 
 		if knode != node {
-			knode, err = master.nodeInformer.Lister().Get(node.Name)
+			knode, err = master.nodeLister.Get(node.Name)
 			if err != nil {
 				return err
 			}
@@ -211,8 +214,8 @@ func (master *OsdnMaster) clearInitialNodeNetworkUnavailableCondition(origNode *
 }
 
 func (master *OsdnMaster) watchSubnets() {
-	funcs := common.InformerFuncs(&osdnv1.HostSubnet{}, master.handleAddOrUpdateSubnet, master.handleDeleteSubnet)
-	master.hostSubnetInformer.Informer().AddEventHandler(funcs)
+	informer := master.clients.OSDNInformers.Network().V1().HostSubnets().Informer()
+	master.clients.AddEventHandler(informer, &osdnv1.HostSubnet{}, master.handleAddOrUpdateSubnet, master.handleDeleteSubnet)
 }
 
 func (master *OsdnMaster) handleAddOrUpdateSubnet(obj, _ interface{}, eventType watch.EventType) {
@@ -259,7 +262,7 @@ func (master *OsdnMaster) handleDeleteSubnet(obj interface{}) {
 func (master *OsdnMaster) reconcileHostSubnet(subnet *osdnv1.HostSubnet) error {
 	var node *corev1.Node
 	var err error
-	node, err = master.nodeInformer.Lister().Get(subnet.Name)
+	node, err = master.nodeLister.Get(subnet.Name)
 	if err != nil {
 		node, err = master.clients.KubeClient.CoreV1().Nodes().Get(context.TODO(), subnet.Name, metav1.GetOptions{})
 		if err != nil {

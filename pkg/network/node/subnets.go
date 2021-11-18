@@ -15,11 +15,11 @@ import (
 	"k8s.io/apimachinery/pkg/watch"
 
 	osdnv1 "github.com/openshift/api/network/v1"
-	osdninformers "github.com/openshift/client-go/network/informers/externalversions"
 	"github.com/openshift/sdn/pkg/network/common"
 )
 
 type hostSubnetWatcher struct {
+	clients     *common.SDNClients
 	oc          *ovsController
 	localIP     string
 	networkInfo *common.ParsedClusterNetwork
@@ -27,8 +27,9 @@ type hostSubnetWatcher struct {
 	hostSubnetMap map[ktypes.UID]*osdnv1.HostSubnet
 }
 
-func newHostSubnetWatcher(oc *ovsController, localIP string, networkInfo *common.ParsedClusterNetwork) *hostSubnetWatcher {
+func newHostSubnetWatcher(clients *common.SDNClients, oc *ovsController, localIP string, networkInfo *common.ParsedClusterNetwork) *hostSubnetWatcher {
 	return &hostSubnetWatcher{
+		clients:     clients,
 		oc:          oc,
 		localIP:     localIP,
 		networkInfo: networkInfo,
@@ -37,9 +38,9 @@ func newHostSubnetWatcher(oc *ovsController, localIP string, networkInfo *common
 	}
 }
 
-func (hsw *hostSubnetWatcher) Start(osdnInformers osdninformers.SharedInformerFactory) {
-	funcs := common.InformerFuncs(&osdnv1.HostSubnet{}, hsw.handleAddOrUpdateHostSubnet, hsw.handleDeleteHostSubnet)
-	osdnInformers.Network().V1().HostSubnets().Informer().AddEventHandler(funcs)
+func (hsw *hostSubnetWatcher) Start() {
+	informer := hsw.clients.OSDNInformers.Network().V1().HostSubnets().Informer()
+	hsw.clients.AddEventHandler(informer, &osdnv1.HostSubnet{}, hsw.handleAddOrUpdateHostSubnet, hsw.handleDeleteHostSubnet)
 }
 
 func (hsw *hostSubnetWatcher) handleAddOrUpdateHostSubnet(obj, _ interface{}, eventType watch.EventType) {

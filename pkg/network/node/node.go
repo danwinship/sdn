@@ -318,8 +318,8 @@ func (node *OsdnNode) Start() error {
 		return fmt.Errorf("node SDN setup failed: %v", err)
 	}
 
-	hsw := newHostSubnetWatcher(node.oc, node.localIP, node.networkInfo)
-	hsw.Start(node.clients.OSDNInformers)
+	hsw := newHostSubnetWatcher(node.clients, node.oc, node.localIP, node.networkInfo)
+	hsw.Start()
 
 	if err = node.policy.Start(node); err != nil {
 		return err
@@ -483,8 +483,8 @@ func isServiceChanged(oldsvc, newsvc *corev1.Service) bool {
 }
 
 func (node *OsdnNode) watchServices() {
-	funcs := common.InformerFuncs(&kapi.Service{}, node.handleAddOrUpdateService, node.handleDeleteService)
-	node.clients.KubeInformers.Core().V1().Services().Informer().AddEventHandler(funcs)
+	informer := node.clients.KubeInformers.Core().V1().Services().Informer()
+	node.clients.AddEventHandler(informer, &kapi.Service{}, node.handleAddOrUpdateService, node.handleDeleteService)
 }
 
 func (node *OsdnNode) handleAddOrUpdateService(obj, oldObj interface{}, eventType watch.EventType) {

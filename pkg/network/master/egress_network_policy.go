@@ -20,8 +20,7 @@ func newEgressNetworkPolicyManager(clients *common.SDNClients) *egressNetworkPol
 
 func (enp *egressNetworkPolicyManager) start() {
 	informer := enp.clients.OSDNInformers.Network().V1().EgressNetworkPolicies().Informer()
-	funcs := common.InformerFuncs(&osdnv1.EgressNetworkPolicy{}, enp.handleAddUpdate, enp.handleDelete)
-	informer.AddEventHandler(funcs)
+	enp.clients.AddEventHandler(informer, &osdnv1.EgressNetworkPolicy{}, enp.handleAddUpdate, enp.handleDelete)
 }
 
 func (enp *egressNetworkPolicyManager) handleAddUpdate(current, old interface{}, event watch.EventType) {
