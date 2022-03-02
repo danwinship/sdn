@@ -901,26 +901,10 @@ func (proxier *Proxier) syncProxyRules() {
 	// Below this point we will not return until we try to write the iptables rules.
 	//
 
-	// Get iptables-save output so we can check for existing chains and rules.
-	// This will be a map of chain name to chain with rules as stored in iptables-save/iptables-restore
+	// HACK: don't iptables-save. This means the packet/byte counts on all of the
+	// chains we update will be reset to 0.
 	existingFilterChains := make(map[utiliptables.Chain][]byte)
-	proxier.existingFilterChainsData.Reset()
-	err := proxier.iptables.SaveInto(utiliptables.TableFilter, proxier.existingFilterChainsData)
-	if err != nil { // if we failed to get any rules
-		klog.ErrorS(err, "Failed to execute iptables-save, syncing all rules")
-	} else { // otherwise parse the output
-		existingFilterChains = utiliptables.GetChainLines(utiliptables.TableFilter, proxier.existingFilterChainsData.Bytes())
-	}
-
-	// IMPORTANT: existingNATChains may share memory with proxier.iptablesData.
 	existingNATChains := make(map[utiliptables.Chain][]byte)
-	proxier.iptablesData.Reset()
-	err = proxier.iptables.SaveInto(utiliptables.TableNAT, proxier.iptablesData)
-	if err != nil { // if we failed to get any rules
-		klog.ErrorS(err, "Failed to execute iptables-save, syncing all rules")
-	} else { // otherwise parse the output
-		existingNATChains = utiliptables.GetChainLines(utiliptables.TableNAT, proxier.iptablesData.Bytes())
-	}
 
 	// Reset all buffers used later.
 	// This is to avoid memory reallocations and thus improve performance.
