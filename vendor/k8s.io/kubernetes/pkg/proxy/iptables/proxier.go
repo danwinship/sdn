@@ -1292,9 +1292,18 @@ func (proxier *Proxier) syncProxyRules() {
 					}
 				}
 
-				// If the packet was able to reach the end of firewall chain, then it did not get DNATed.
-				// It means the packet cannot go thru the firewall, then mark it for DROP
-				proxier.natRules.Write(args, "-j", string(KubeMarkDropChain))
+				// Finally add a DROP rule to KUBE-FIREWALL. Anything
+				// that was accepted by the fwChain will have been
+				// DNATed before this rule is reached, so it won't match
+				// the {"-d", lbip}
+				proxier.filterRules.Write(
+					"-A", string(kubeExternalServicesChain),
+					"-m", "comment", "--comment", fmt.Sprintf(`"%s traffic not accepted by %s"`, svcNameString, fwChain),
+					"-m", protocol, "-p", protocol,
+					"-d", ingress,
+					"--dport", strconv.Itoa(svcInfo.Port()),
+					"-j", "DROP")
+				}
 			} else {
 				// No endpoints.
 				proxier.filterRules.Write(
