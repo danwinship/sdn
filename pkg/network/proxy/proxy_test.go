@@ -5,7 +5,6 @@ import (
 	"net"
 	"strings"
 	"testing"
-	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
@@ -13,8 +12,6 @@ import (
 	ktypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/watch"
-	"k8s.io/client-go/informers"
-	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/kubernetes/pkg/util/async"
 
 	osdnv1 "github.com/openshift/api/network/v1"
@@ -301,12 +298,7 @@ func makeEndpoints(namespace, name string, ips ...string) (*corev1.Endpoints, *d
 }
 
 func newTestOsdnProxy(usesEndpointSlices bool) (*OsdnProxy, *testProxy, *testProxy, error) {
-	kubeClient := fake.NewSimpleClientset()
-	clients := &common.SDNClients{
-		KubeClient:    kubeClient,
-		KubeInformers: informers.NewSharedInformerFactory(kubeClient, time.Hour),
-	}
-	proxy, err := New(clients, 0)
+	proxy, err := New(common.NewFakeSDNClients(), 0)
 	if err != nil {
 		return nil, nil, nil, err
 	}
