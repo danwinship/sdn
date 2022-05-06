@@ -111,6 +111,7 @@ type EgressIPTracker struct {
 	CloudEgressIP bool
 
 	watcher EgressIPWatcher
+	clients *SDNClients
 
 	kubeClient kubernetes.Interface
 
@@ -125,9 +126,10 @@ type EgressIPTracker struct {
 	updateEgressCIDRs bool
 }
 
-func NewEgressIPTracker(watcher EgressIPWatcher, cloudEgressIP bool) *EgressIPTracker {
+func NewEgressIPTracker(watcher EgressIPWatcher, clients *SDNClients, cloudEgressIP bool) *EgressIPTracker {
 	return &EgressIPTracker{
 		watcher: watcher,
+		clients: clients,
 
 		CloudEgressIP: cloudEgressIP,
 
@@ -141,13 +143,16 @@ func NewEgressIPTracker(watcher EgressIPWatcher, cloudEgressIP bool) *EgressIPTr
 	}
 }
 
-func (eit *EgressIPTracker) Start(kubeClient kubernetes.Interface, hostSubnetInformer osdninformers.HostSubnetInformer, netNamespaceInformer osdninformers.NetNamespaceInformer, nodeInformer kcoreinformers.NodeInformer) {
+func (eit *EgressIPTracker) Start() {
+	hostSubnetInformer := eit.clients.OSDNInformers.Network().V1().HostSubnets()
+	netNamespaceInformer := eit.clients.OSDNInformers.Network().V1().NetNamespaces()
 
 	eit.watchHostSubnets(hostSubnetInformer)
 	eit.watchNetNamespaces(netNamespaceInformer)
 
-	if nodeInformer != nil {
-		eit.kubeClient = kubeClient
+	var nodeInformer kcoreinformers.NodeInformer
+	if eit.CloudEgressIP {
+		nodeInformer = eit.clients.KubeInformers.Core().V1().Nodes()
 		eit.watchNodes(nodeInformer)
 	}
 

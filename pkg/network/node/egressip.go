@@ -69,17 +69,13 @@ func newEgressIPWatcher(clients *common.SDNClients, oc *ovsController, cloudEgre
 		eip.masqueradeBit = 1 << uint32(*masqueradeBit)
 	}
 
-	eip.tracker = common.NewEgressIPTracker(eip, cloudEgressIP)
+	eip.tracker = common.NewEgressIPTracker(eip, clients, cloudEgressIP)
 	return eip
 }
 
 func (eip *egressIPWatcher) Start(iptables *NodeIPTables) error {
 	eip.iptables = iptables
-	if eip.tracker.CloudEgressIP {
-		eip.tracker.Start(eip.clients.KubeClient, eip.clients.OSDNInformers.Network().V1().HostSubnets(), eip.clients.OSDNInformers.Network().V1().NetNamespaces(), eip.clients.KubeInformers.Core().V1().Nodes())
-	} else {
-		eip.tracker.Start(eip.clients.KubeClient, eip.clients.OSDNInformers.Network().V1().HostSubnets(), eip.clients.OSDNInformers.Network().V1().NetNamespaces(), nil)
-	}
+	eip.tracker.Start()
 	return nil
 }
 

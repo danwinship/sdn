@@ -59,27 +59,17 @@ func newEgressIPManager(clients *common.SDNClients) *egressIPManager {
 	if clients.CloudNetworkInformers != nil {
 		eim.cloudPrivateIPConfigInformer = clients.CloudNetworkInformers.Cloud().V1().CloudPrivateIPConfigs()
 	}
-	eim.tracker = common.NewEgressIPTracker(eim, clients.CloudNetworkClient != nil)
+	eim.tracker = common.NewEgressIPTracker(eim, clients, clients.CloudNetworkClient != nil)
 	return eim
 }
 
-func (eim *egressIPManager) Start(cloudPrivateIPConfigInformer cloudnetworkinformerv1.CloudPrivateIPConfigInformer,
-	hostSubnetInformer osdninformers.HostSubnetInformer,
-	netNamespaceInformer osdninformers.NetNamespaceInformer,
-	nodeInformer kcoreinformers.NodeInformer) {
-
-	eim.hostSubnetInformer = hostSubnetInformer
-	eim.nodeInformer = nodeInformer
-
-	if eim.tracker.CloudEgressIP {
-		eim.cloudPrivateIPConfigInformer = cloudPrivateIPConfigInformer
+func (eim *egressIPManager) Start() {
+	if eim.cloudPrivateIPConfigInformer != nil {
 		eim.cloudPrivateIPConfigCreationQueue = make(map[string]osdcnv1.CloudPrivateIPConfig)
-		eim.watchCloudPrivateIPConfig(cloudPrivateIPConfigInformer)
-		eim.tracker.Start(eim.clients.KubeClient, hostSubnetInformer, netNamespaceInformer, nodeInformer)
-		return
+		eim.watchCloudPrivateIPConfig(eim.cloudPrivateIPConfigInformer)
 	}
 
-	eim.tracker.Start(nil, hostSubnetInformer, netNamespaceInformer, nil)
+	eim.tracker.Start()
 }
 
 func (eim *egressIPManager) watchCloudPrivateIPConfig(cloudPrivateIPConfigInformer cloudnetworkinformerv1.CloudPrivateIPConfigInformer) {

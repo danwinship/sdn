@@ -116,7 +116,7 @@ func (master *OsdnMaster) startSubSystems(pluginName string) {
 	}
 
 	eim := newEgressIPManager(master.clients)
-	eim.Start(master.cloudPrivateIPConfigInformer, master.hostSubnetInformer, master.netNamespaceInformer, master.nodeInformer)
+	eim.Start()
 	enp := newEgressNetworkPolicyManager(master.clients)
 	enp.start()
 }
