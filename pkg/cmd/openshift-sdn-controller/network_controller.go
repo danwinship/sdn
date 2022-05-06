@@ -39,22 +39,15 @@ func RunOpenShiftNetworkController(platformType string) error {
 	}
 
 	originControllerManager := func(ctx context.Context) {
-		controllerContext, err := newControllerContext(platformType, clientConfig)
+		sdnClients, err := newSDNClients(platformType, clientConfig)
 		if err != nil {
 			klog.Fatal(err)
 		}
-		if err := sdnmaster.Start(
-			controllerContext.kubernetesClient,
-			controllerContext.kubernetesInformers,
-			controllerContext.osdnClient,
-			controllerContext.osdnInformers,
-			controllerContext.cloudNetworkClient,
-			controllerContext.cloudNetworkInformer,
-		); err != nil {
+		if err := sdnmaster.Start(sdnClients); err != nil {
 			klog.Fatalf("Error starting OpenShift Network Controller: %v", err)
 		}
 		klog.Infof("Started OpenShift Network Controller")
-		controllerContext.StartInformers()
+		sdnClients.Start(nil)
 	}
 
 	eventBroadcaster := record.NewBroadcaster()

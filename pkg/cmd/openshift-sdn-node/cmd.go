@@ -21,6 +21,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"github.com/openshift/library-go/pkg/serviceability"
+	sdncommon "github.com/openshift/sdn/pkg/network/common"
 	sdnnode "github.com/openshift/sdn/pkg/network/node"
 	sdnproxy "github.com/openshift/sdn/pkg/network/proxy"
 	"github.com/openshift/sdn/pkg/version"
@@ -40,7 +41,7 @@ type openShiftSDN struct {
 	overrideMTU         uint32
 	routableMTU         uint32
 
-	informers   *sdnInformers
+	clients     *sdncommon.SDNClients
 	osdnNode    *sdnnode.OsdnNode
 	sdnRecorder record.EventRecorder
 	osdnProxy   *sdnproxy.OsdnProxy
@@ -180,7 +181,7 @@ func (sdn *openShiftSDN) start(stopCh <-chan struct{}) error {
 	}
 	proxyInitChan := make(chan bool)
 	sdn.runProxy(proxyInitChan)
-	sdn.informers.start(stopCh)
+	sdn.clients.Start(stopCh)
 
 	klog.V(2).Infof("openshift-sdn network plugin waiting for proxy startup to complete")
 	<-proxyInitChan

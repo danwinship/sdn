@@ -72,21 +72,16 @@ type OsdnProxy struct {
 }
 
 // Called by higher layers to create the proxy plugin instance
-func New(kClient kubernetes.Interface,
-	kubeInformers informers.SharedInformerFactory,
-	osdnClient osdnclient.Interface,
-	osdnInformers osdninformers.SharedInformerFactory,
-	minSyncPeriod time.Duration) (*OsdnProxy, error) {
-
+func New(clients *common.SDNClients, minSyncPeriod time.Duration) (*OsdnProxy, error) {
 	egressDNS, err := common.NewEgressDNS(true, false)
 	if err != nil {
 		return nil, err
 	}
 	return &OsdnProxy{
-		kClient:       kClient,
-		kubeInformers: kubeInformers,
-		osdnClient:    osdnClient,
-		osdnInformers: osdnInformers,
+		kClient:       clients.KubeClient,
+		kubeInformers: clients.KubeInformers,
+		osdnClient:    clients.OSDNClient,
+		osdnInformers: clients.OSDNInformers,
 		minSyncPeriod: minSyncPeriod,
 		egressDNS:     egressDNS,
 		namespaces:    make(map[string]*proxyNamespace),

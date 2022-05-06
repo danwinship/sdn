@@ -31,12 +31,7 @@ func readProxyConfig(filename string) (*kubeproxyconfig.KubeProxyConfiguration, 
 // initProxy sets up the proxy process.
 func (sdn *openShiftSDN) initProxy() error {
 	var err error
-	sdn.osdnProxy, err = sdnproxy.New(
-		sdn.informers.kubeClient,
-		sdn.informers.kubeInformers,
-		sdn.informers.osdnClient,
-		sdn.informers.osdnInformers,
-		sdn.proxyConfig.IPTables.MinSyncPeriod.Duration)
+	sdn.osdnProxy, err = sdnproxy.New(sdn.clients, sdn.proxyConfig.IPTables.MinSyncPeriod.Duration)
 	return err
 }
 
@@ -50,7 +45,7 @@ func (sdn *openShiftSDN) runProxy(waitChan chan<- bool) {
 		return
 	}
 
-	s, err := newProxyServer(sdn.proxyConfig, sdn.informers.kubeClient, sdn.nodeName, sdn.nodeIP)
+	s, err := newProxyServer(sdn.proxyConfig, sdn.clients.KubeClient, sdn.nodeName, sdn.nodeIP)
 	if err != nil {
 		klog.Fatalf("Unable to create proxy server: %v", err)
 	}
@@ -79,7 +74,7 @@ func (sdn *openShiftSDN) wrapProxy(s *ProxyServer, waitChan chan<- bool) error {
 		// corev1.Event API rather than the new eventsv1.Event API. So we need a
 		// legacy event recorder.
 		unidlingBroadcaster := record.NewBroadcaster()
-		unidlingBroadcaster.StartRecordingToSink(&corev1client.EventSinkImpl{Interface: sdn.informers.kubeClient.CoreV1().Events("")})
+		unidlingBroadcaster.StartRecordingToSink(&corev1client.EventSinkImpl{Interface: sdn.clients.KubeClient.CoreV1().Events("")})
 		unidlingRecorder := unidlingBroadcaster.NewRecorder(scheme.Scheme, corev1.EventSource{Component: "kube-proxy", Host: sdn.nodeName})
 
 		unidlingProxy, err = unidler.NewUnidlerProxier(

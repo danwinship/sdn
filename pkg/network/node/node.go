@@ -62,14 +62,10 @@ type OsdnNodeConfig struct {
 	NodeIP       string
 	PlatformType string
 
-	OSDNClient osdnclient.Interface
-	KClient    kubernetes.Interface
-	Recorder   record.EventRecorder
+	Clients  *common.SDNClients
+	Recorder record.EventRecorder
+	IPTables iptables.Interface
 
-	KubeInformers informers.SharedInformerFactory
-	OSDNInformers osdninformers.SharedInformerFactory
-
-	IPTables      iptables.Interface
 	ProxyMode     kubeproxyconfig.ProxyMode
 	MasqueradeBit *int32
 
@@ -114,7 +110,7 @@ type OsdnNode struct {
 
 // Called by higher layers to create the plugin SDN node instance
 func New(c *OsdnNodeConfig) (*OsdnNode, error) {
-	networkInfo, err := common.GetParsedClusterNetwork(c.OSDNClient)
+	networkInfo, err := common.GetParsedClusterNetwork(c.Clients.OSDNClient)
 	if err != nil {
 		return nil, fmt.Errorf("could not get ClusterNetwork resource: %v", err)
 	}
@@ -176,12 +172,12 @@ func New(c *OsdnNodeConfig) (*OsdnNode, error) {
 
 	plugin := &OsdnNode{
 		policy:         policy,
-		kClient:        c.KClient,
-		osdnClient:     c.OSDNClient,
+		kClient:        c.Clients.KubeClient,
+		osdnClient:     c.Clients.OSDNClient,
 		recorder:       c.Recorder,
 		oc:             oc,
 		networkInfo:    networkInfo,
-		podManager:     newPodManager(c.KClient, policy, overlayMTU, routableMTU, oc),
+		podManager:     newPodManager(c.Clients.KubeClient, policy, overlayMTU, routableMTU, oc),
 		localIP:        c.NodeIP,
 		hostName:       c.NodeName,
 		useConnTrack:   useConnTrack,
@@ -189,8 +185,8 @@ func New(c *OsdnNodeConfig) (*OsdnNode, error) {
 		masqueradeBit:  masqBit,
 		egressPolicies: make(map[uint32][]osdnv1.EgressNetworkPolicy),
 		egressDNS:      egressDNS,
-		kubeInformers:  c.KubeInformers,
-		osdnInformers:  c.OSDNInformers,
+		kubeInformers:  c.Clients.KubeInformers,
+		osdnInformers:  c.Clients.OSDNInformers,
 		platformType:   c.PlatformType,
 		overlayMTU:     overlayMTU,
 		routableMTU:    routableMTU,

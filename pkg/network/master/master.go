@@ -5,17 +5,14 @@ import (
 
 	ktypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
-	"k8s.io/client-go/informers"
 	kcoreinformers "k8s.io/client-go/informers/core/v1"
 	kclientset "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog/v2"
 
 	cloudnetworkclient "github.com/openshift/client-go/cloudnetwork/clientset/versioned"
-	cloudnetworkinformer "github.com/openshift/client-go/cloudnetwork/informers/externalversions"
 	cloudnetworkinformerv1 "github.com/openshift/client-go/cloudnetwork/informers/externalversions/cloudnetwork/v1"
 	osdnclient "github.com/openshift/client-go/network/clientset/versioned"
-	osdninformers "github.com/openshift/client-go/network/informers/externalversions"
 	osdninformersv1 "github.com/openshift/client-go/network/informers/externalversions/network/v1"
 	"github.com/openshift/library-go/pkg/network/networkutils"
 	"github.com/openshift/sdn/pkg/network/common"
@@ -47,36 +44,31 @@ type OsdnMaster struct {
 	hostSubnetNodeIPs map[ktypes.UID]string
 }
 
-func Start(kClient kclientset.Interface,
-	kubeInformers informers.SharedInformerFactory,
-	osdnClient osdnclient.Interface,
-	osdnInformers osdninformers.SharedInformerFactory,
-	cloudNetworkClient cloudnetworkclient.Interface,
-	cloudNetworkInformer cloudnetworkinformer.SharedInformerFactory) error {
+func Start(clients *common.SDNClients) error {
 	klog.Infof("Initializing SDN master")
 
-	networkInfo, err := common.GetParsedClusterNetwork(osdnClient)
+	networkInfo, err := common.GetParsedClusterNetwork(clients.OSDNClient)
 	if err != nil {
 		return err
 	}
 
 	master := &OsdnMaster{
-		kClient:     kClient,
-		osdnClient:  osdnClient,
+		kClient:     clients.KubeClient,
+		osdnClient:  clients.OSDNClient,
 		networkInfo: networkInfo,
 
-		nodeInformer:         kubeInformers.Core().V1().Nodes(),
-		namespaceInformer:    kubeInformers.Core().V1().Namespaces(),
-		hostSubnetInformer:   osdnInformers.Network().V1().HostSubnets(),
-		netNamespaceInformer: osdnInformers.Network().V1().NetNamespaces(),
-		egressNetPolInformer: osdnInformers.Network().V1().EgressNetworkPolicies(),
+		nodeInformer:         clients.KubeInformers.Core().V1().Nodes(),
+		namespaceInformer:    clients.KubeInformers.Core().V1().Namespaces(),
+		hostSubnetInformer:   clients.OSDNInformers.Network().V1().HostSubnets(),
+		netNamespaceInformer: clients.OSDNInformers.Network().V1().NetNamespaces(),
+		egressNetPolInformer: clients.OSDNInformers.Network().V1().EgressNetworkPolicies(),
 
 		hostSubnetNodeIPs: map[ktypes.UID]string{},
 	}
 
-	if cloudNetworkClient != nil {
-		master.cloudNetworkClient = cloudNetworkClient
-		master.cloudPrivateIPConfigInformer = cloudNetworkInformer.Cloud().V1().CloudPrivateIPConfigs()
+	if clients.CloudNetworkClient != nil {
+		master.cloudNetworkClient = clients.CloudNetworkClient
+		master.cloudPrivateIPConfigInformer = clients.CloudNetworkInformers.Cloud().V1().CloudPrivateIPConfigs()
 		master.cloudPrivateIPConfigInformer.Informer().GetController()
 	}
 

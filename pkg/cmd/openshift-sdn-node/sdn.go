@@ -16,7 +16,7 @@ const openshiftCNIFile string = "/etc/cni/net.d/80-openshift-network.conf"
 // initSDN sets up the sdn process.
 func (sdn *openShiftSDN) initSDN() error {
 	eventBroadcaster := record.NewBroadcaster()
-	eventBroadcaster.StartRecordingToSink(&corev1client.EventSinkImpl{Interface: sdn.informers.kubeClient.CoreV1().Events("")})
+	eventBroadcaster.StartRecordingToSink(&corev1client.EventSinkImpl{Interface: sdn.clients.KubeClient.CoreV1().Events("")})
 	sdn.sdnRecorder = eventBroadcaster.NewRecorder(scheme.Scheme, corev1.EventSource{Component: "openshift-sdn", Host: sdn.nodeName})
 
 	var err error
@@ -24,10 +24,7 @@ func (sdn *openShiftSDN) initSDN() error {
 		NodeName:      sdn.nodeName,
 		NodeIP:        sdn.nodeIP,
 		PlatformType:  sdn.platformType,
-		OSDNClient:    sdn.informers.osdnClient,
-		KClient:       sdn.informers.kubeClient,
-		KubeInformers: sdn.informers.kubeInformers,
-		OSDNInformers: sdn.informers.osdnInformers,
+		Clients:       sdn.clients,
 		IPTables:      sdn.ipt,
 		MasqueradeBit: sdn.proxyConfig.IPTables.MasqueradeBit,
 		ProxyMode:     sdn.proxyConfig.Mode,

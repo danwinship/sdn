@@ -302,9 +302,11 @@ func makeEndpoints(namespace, name string, ips ...string) (*corev1.Endpoints, *d
 
 func newTestOsdnProxy(usesEndpointSlices bool) (*OsdnProxy, *testProxy, *testProxy, error) {
 	kubeClient := fake.NewSimpleClientset()
-	kubeInformers := informers.NewSharedInformerFactory(kubeClient, time.Hour)
-
-	proxy, err := New(kubeClient, kubeInformers, nil, nil, 0)
+	clients := &common.SDNClients{
+		KubeClient:    kubeClient,
+		KubeInformers: informers.NewSharedInformerFactory(kubeClient, time.Hour),
+	}
+	proxy, err := New(clients, 0)
 	if err != nil {
 		return nil, nil, nil, err
 	}
