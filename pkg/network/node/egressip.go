@@ -8,14 +8,11 @@ import (
 	"syscall"
 	"time"
 
-	"k8s.io/client-go/informers"
-	"k8s.io/client-go/kubernetes"
 	"k8s.io/klog/v2"
 
 	"k8s.io/apimachinery/pkg/util/sets"
 	utilwait "k8s.io/apimachinery/pkg/util/wait"
 
-	osdninformers "github.com/openshift/client-go/network/informers/externalversions"
 	"github.com/openshift/sdn/pkg/network/common"
 	"github.com/vishvananda/netlink"
 )
@@ -40,6 +37,7 @@ type egressIPWatcher struct {
 
 	tracker *common.EgressIPTracker
 
+	clients       *common.SDNClients
 	oc            *ovsController
 	localIP       string
 	masqueradeBit uint32
@@ -59,8 +57,9 @@ type egressIPMetaData struct {
 	packetMark string
 }
 
-func newEgressIPWatcher(oc *ovsController, cloudEgressIP bool, localIP string, masqueradeBit *int32) *egressIPWatcher {
+func newEgressIPWatcher(clients *common.SDNClients, oc *ovsController, cloudEgressIP bool, localIP string, masqueradeBit *int32) *egressIPWatcher {
 	eip := &egressIPWatcher{
+		clients:      clients,
 		oc:           oc,
 		localIP:      localIP,
 		monitorNodes: make(map[string]*egressNode),
@@ -74,12 +73,12 @@ func newEgressIPWatcher(oc *ovsController, cloudEgressIP bool, localIP string, m
 	return eip
 }
 
-func (eip *egressIPWatcher) Start(osdnInformers osdninformers.SharedInformerFactory, kubeInformers informers.SharedInformerFactory, kubeClient kubernetes.Interface, iptables *NodeIPTables) error {
+func (eip *egressIPWatcher) Start(iptables *NodeIPTables) error {
 	eip.iptables = iptables
 	if eip.tracker.CloudEgressIP {
-		eip.tracker.Start(kubeClient, osdnInformers.Network().V1().HostSubnets(), osdnInformers.Network().V1().NetNamespaces(), kubeInformers.Core().V1().Nodes())
+		eip.tracker.Start(eip.clients.KubeClient, eip.clients.OSDNInformers.Network().V1().HostSubnets(), eip.clients.OSDNInformers.Network().V1().NetNamespaces(), eip.clients.KubeInformers.Core().V1().Nodes())
 	} else {
-		eip.tracker.Start(kubeClient, osdnInformers.Network().V1().HostSubnets(), osdnInformers.Network().V1().NetNamespaces(), nil)
+		eip.tracker.Start(eip.clients.KubeClient, eip.clients.OSDNInformers.Network().V1().HostSubnets(), eip.clients.OSDNInformers.Network().V1().NetNamespaces(), nil)
 	}
 	return nil
 }

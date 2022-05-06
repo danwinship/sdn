@@ -15,15 +15,12 @@ import (
 	"k8s.io/apimachinery/pkg/watch"
 
 	osdnv1 "github.com/openshift/api/network/v1"
-	osdnclient "github.com/openshift/client-go/network/clientset/versioned"
-	osdninformers "github.com/openshift/client-go/network/informers/externalversions"
 	"github.com/openshift/sdn/pkg/network/common"
 )
 
 type nodeVNIDMap struct {
-	policy        osdnPolicy
-	osdnClient    osdnclient.Interface
-	osdnInformers osdninformers.SharedInformerFactory
+	policy  osdnPolicy
+	clients *common.SDNClients
 
 	// Synchronizes add or remove ids/namespaces
 	lock       sync.Mutex
@@ -32,10 +29,11 @@ type nodeVNIDMap struct {
 	namespaces map[uint32]sets.String
 }
 
-func newNodeVNIDMap(policy osdnPolicy, osdnClient osdnclient.Interface) *nodeVNIDMap {
+func newNodeVNIDMap(policy osdnPolicy, clients *common.SDNClients) *nodeVNIDMap {
 	return &nodeVNIDMap{
-		policy:     policy,
-		osdnClient: osdnClient,
+		policy:  policy,
+		clients: clients,
+
 		ids:        make(map[string]uint32),
 		mcEnabled:  make(map[string]bool),
 		namespaces: make(map[uint32]sets.String),
@@ -114,7 +112,7 @@ func (vmap *nodeVNIDMap) WaitAndGetVNID(name string) (uint32, error) {
 		// So that we can imply insufficient timeout if we see many VnidNotFoundErrors.
 		metrics.VnidNotFoundErrors.Inc()
 
-		netns, err := vmap.osdnClient.NetworkV1().NetNamespaces().Get(context.TODO(), name, metav1.GetOptions{})
+		netns, err := vmap.clients.OSDNClient.NetworkV1().NetNamespaces().Get(context.TODO(), name, metav1.GetOptions{})
 		if err != nil {
 			return 0, fmt.Errorf("failed to find netid for namespace: %s, %v", name, err)
 		}
@@ -184,7 +182,7 @@ func netnsIsMulticastEnabled(netns *osdnv1.NetNamespace) bool {
 }
 
 func (vmap *nodeVNIDMap) populateVNIDs() error {
-	nets, err := common.ListAllNetNamespaces(context.TODO(), vmap.osdnClient)
+	nets, err := common.ListAllNetNamespaces(context.TODO(), vmap.clients.OSDNClient)
 	if err != nil {
 		return err
 	}
@@ -195,9 +193,7 @@ func (vmap *nodeVNIDMap) populateVNIDs() error {
 	return nil
 }
 
-func (vmap *nodeVNIDMap) Start(osdnInformers osdninformers.SharedInformerFactory) error {
-	vmap.osdnInformers = osdnInformers
-
+func (vmap *nodeVNIDMap) Start() error {
 	// Populate vnid map synchronously so that existing services can fetch vnid
 	err := vmap.populateVNIDs()
 	if err != nil {
@@ -210,7 +206,7 @@ func (vmap *nodeVNIDMap) Start(osdnInformers osdninformers.SharedInformerFactory
 
 func (vmap *nodeVNIDMap) watchNetNamespaces() {
 	funcs := common.InformerFuncs(&osdnv1.NetNamespace{}, vmap.handleAddOrUpdateNetNamespace, vmap.handleDeleteNetNamespace)
-	vmap.osdnInformers.Network().V1().NetNamespaces().Informer().AddEventHandler(funcs)
+	vmap.clients.OSDNInformers.Network().V1().NetNamespaces().Informer().AddEventHandler(funcs)
 }
 
 func (vmap *nodeVNIDMap) handleAddOrUpdateNetNamespace(obj, _ interface{}, eventType watch.EventType) {

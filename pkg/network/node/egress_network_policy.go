@@ -14,7 +14,7 @@ import (
 )
 
 func (plugin *OsdnNode) SetupEgressNetworkPolicy() error {
-	policies, err := common.ListAllEgressNetworkPolicies(context.TODO(), plugin.osdnClient)
+	policies, err := common.ListAllEgressNetworkPolicies(context.TODO(), plugin.clients.OSDNClient)
 	if err != nil {
 		return fmt.Errorf("could not get EgressNetworkPolicies: %s", err)
 	}
@@ -44,7 +44,7 @@ func (plugin *OsdnNode) SetupEgressNetworkPolicy() error {
 
 func (plugin *OsdnNode) watchEgressNetworkPolicies() {
 	funcs := common.InformerFuncs(&osdnv1.EgressNetworkPolicy{}, plugin.handleAddOrUpdateEgressNetworkPolicy, plugin.handleDeleteEgressNetworkPolicy)
-	plugin.osdnInformers.Network().V1().EgressNetworkPolicies().Informer().AddEventHandler(funcs)
+	plugin.clients.OSDNInformers.Network().V1().EgressNetworkPolicies().Informer().AddEventHandler(funcs)
 }
 
 func (plugin *OsdnNode) handleAddOrUpdateEgressNetworkPolicy(obj, _ interface{}, eventType watch.EventType) {

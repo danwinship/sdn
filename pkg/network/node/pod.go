@@ -18,7 +18,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	kerrors "k8s.io/apimachinery/pkg/util/errors"
-	"k8s.io/client-go/kubernetes"
 	kruntimeapi "k8s.io/cri-api/pkg/apis/runtime/v1"
 	"k8s.io/klog/v2"
 	kcontainer "k8s.io/kubernetes/pkg/kubelet/container"
@@ -59,7 +58,7 @@ type podManager struct {
 	runningPodsLock sync.Mutex
 
 	// Live pod setup/teardown stuff not used in testing code
-	kClient     kubernetes.Interface
+	clients     *common.SDNClients
 	policy      osdnPolicy
 	overlayMTU  uint32
 	routableMTU uint32
@@ -71,9 +70,9 @@ type podManager struct {
 }
 
 // Creates a new live podManager; used by node code0
-func newPodManager(kClient kubernetes.Interface, policy osdnPolicy, overlayMTU uint32, routableMTU uint32, ovs *ovsController) *podManager {
+func newPodManager(clients *common.SDNClients, policy osdnPolicy, overlayMTU uint32, routableMTU uint32, ovs *ovsController) *podManager {
 	pm := newDefaultPodManager()
-	pm.kClient = kClient
+	pm.clients = clients
 	pm.policy = policy
 	pm.overlayMTU = overlayMTU
 	pm.routableMTU = routableMTU
@@ -479,7 +478,7 @@ func (m *podManager) setup(req *cniserver.PodRequest) (cnitypes.Result, *running
 		}
 	}()
 
-	v1Pod, err := m.kClient.CoreV1().Pods(req.PodNamespace).Get(context.TODO(), req.PodName, metav1.GetOptions{})
+	v1Pod, err := m.clients.KubeClient.CoreV1().Pods(req.PodNamespace).Get(context.TODO(), req.PodName, metav1.GetOptions{})
 	if err != nil {
 		return nil, nil, err
 	}

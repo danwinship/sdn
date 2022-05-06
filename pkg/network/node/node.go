@@ -16,8 +16,6 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	kwait "k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/apimachinery/pkg/watch"
-	"k8s.io/client-go/informers"
-	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/record"
 	kubeletapi "k8s.io/cri-api/pkg/apis"
 	kruntimeapi "k8s.io/cri-api/pkg/apis/runtime/v1"
@@ -29,8 +27,6 @@ import (
 	kexec "k8s.io/utils/exec"
 
 	osdnv1 "github.com/openshift/api/network/v1"
-	osdnclient "github.com/openshift/client-go/network/clientset/versioned"
-	osdninformers "github.com/openshift/client-go/network/informers/externalversions"
 	"github.com/openshift/library-go/pkg/network/networkutils"
 	"github.com/openshift/sdn/pkg/network/common"
 	"github.com/openshift/sdn/pkg/network/common/cniserver"
@@ -75,8 +71,7 @@ type OsdnNodeConfig struct {
 
 type OsdnNode struct {
 	policy           osdnPolicy
-	kClient          kubernetes.Interface
-	osdnClient       osdnclient.Interface
+	clients          *common.SDNClients
 	recorder         record.EventRecorder
 	oc               *ovsController
 	networkInfo      *common.ParsedClusterNetwork
@@ -98,9 +93,6 @@ type OsdnNode struct {
 	egressPoliciesLock sync.Mutex
 	egressPolicies     map[uint32][]osdnv1.EgressNetworkPolicy
 	egressDNS          *common.EgressDNS
-
-	kubeInformers informers.SharedInformerFactory
-	osdnInformers osdninformers.SharedInformerFactory
 
 	// Holds runtime endpoint shim to make SDN <-> runtime communication
 	runtimeService kubeletapi.RuntimeService
@@ -172,12 +164,11 @@ func New(c *OsdnNodeConfig) (*OsdnNode, error) {
 
 	plugin := &OsdnNode{
 		policy:         policy,
-		kClient:        c.Clients.KubeClient,
-		osdnClient:     c.Clients.OSDNClient,
+		clients:        c.Clients,
 		recorder:       c.Recorder,
 		oc:             oc,
 		networkInfo:    networkInfo,
-		podManager:     newPodManager(c.Clients.KubeClient, policy, overlayMTU, routableMTU, oc),
+		podManager:     newPodManager(c.Clients, policy, overlayMTU, routableMTU, oc),
 		localIP:        c.NodeIP,
 		hostName:       c.NodeName,
 		useConnTrack:   useConnTrack,
@@ -185,12 +176,10 @@ func New(c *OsdnNodeConfig) (*OsdnNode, error) {
 		masqueradeBit:  masqBit,
 		egressPolicies: make(map[uint32][]osdnv1.EgressNetworkPolicy),
 		egressDNS:      egressDNS,
-		kubeInformers:  c.Clients.KubeInformers,
-		osdnInformers:  c.Clients.OSDNInformers,
 		platformType:   c.PlatformType,
 		overlayMTU:     overlayMTU,
 		routableMTU:    routableMTU,
-		egressIP:       newEgressIPWatcher(oc, common.PlatformUsesCloudEgressIP(c.PlatformType), c.NodeIP, c.MasqueradeBit),
+		egressIP:       newEgressIPWatcher(c.Clients, oc, common.PlatformUsesCloudEgressIP(c.PlatformType), c.NodeIP, c.MasqueradeBit),
 	}
 
 	metrics.RegisterMetrics()
@@ -330,7 +319,7 @@ func (node *OsdnNode) Start() error {
 	}
 
 	hsw := newHostSubnetWatcher(node.oc, node.localIP, node.networkInfo)
-	hsw.Start(node.osdnInformers)
+	hsw.Start(node.clients.OSDNInformers)
 
 	if err = node.policy.Start(node); err != nil {
 		return err
@@ -339,7 +328,7 @@ func (node *OsdnNode) Start() error {
 		if err := node.SetupEgressNetworkPolicy(); err != nil {
 			return err
 		}
-		if err := node.egressIP.Start(node.osdnInformers, node.kubeInformers, node.kClient, node.nodeIPTables); err != nil {
+		if err := node.egressIP.Start(node.nodeIPTables); err != nil {
 			return err
 		}
 	}
@@ -465,7 +454,7 @@ func (node *OsdnNode) UpdatePod(pod corev1.Pod) error {
 }
 
 func (node *OsdnNode) GetRunningPods(namespace string) ([]corev1.Pod, error) {
-	podList, err := common.ListPodsInNodeAndNamespace(context.TODO(), node.kClient, node.hostName, namespace)
+	podList, err := common.ListPodsInNodeAndNamespace(context.TODO(), node.clients.KubeClient, node.hostName, namespace)
 	if err != nil {
 		return nil, err
 	}
@@ -495,7 +484,7 @@ func isServiceChanged(oldsvc, newsvc *corev1.Service) bool {
 
 func (node *OsdnNode) watchServices() {
 	funcs := common.InformerFuncs(&kapi.Service{}, node.handleAddOrUpdateService, node.handleDeleteService)
-	node.kubeInformers.Core().V1().Services().Informer().AddEventHandler(funcs)
+	node.clients.KubeInformers.Core().V1().Services().Informer().AddEventHandler(funcs)
 }
 
 func (node *OsdnNode) handleAddOrUpdateService(obj, oldObj interface{}, eventType watch.EventType) {
