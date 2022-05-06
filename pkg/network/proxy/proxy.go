@@ -14,13 +14,9 @@ import (
 	ktypes "k8s.io/apimachinery/pkg/types"
 	utilwait "k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/apimachinery/pkg/watch"
-	"k8s.io/client-go/informers"
-	"k8s.io/client-go/kubernetes"
 	"k8s.io/kubernetes/pkg/proxy/config"
 
 	osdnv1 "github.com/openshift/api/network/v1"
-	osdnclient "github.com/openshift/client-go/network/clientset/versioned"
-	osdninformers "github.com/openshift/client-go/network/informers/externalversions"
 	"github.com/openshift/sdn/pkg/network/common"
 )
 
@@ -52,10 +48,7 @@ type proxyNamespace struct {
 type OsdnProxy struct {
 	sync.Mutex
 
-	kClient       kubernetes.Interface
-	kubeInformers informers.SharedInformerFactory
-	osdnClient    osdnclient.Interface
-	osdnInformers osdninformers.SharedInformerFactory
+	clients       *common.SDNClients
 	networkInfo   *common.ParsedClusterNetwork
 	egressDNS     *common.EgressDNS
 	minSyncPeriod time.Duration
@@ -78,10 +71,7 @@ func New(clients *common.SDNClients, minSyncPeriod time.Duration) (*OsdnProxy, e
 		return nil, err
 	}
 	return &OsdnProxy{
-		kClient:       clients.KubeClient,
-		kubeInformers: clients.KubeInformers,
-		osdnClient:    clients.OSDNClient,
-		osdnInformers: clients.OSDNInformers,
+		clients:       clients,
 		minSyncPeriod: minSyncPeriod,
 		egressDNS:     egressDNS,
 		namespaces:    make(map[string]*proxyNamespace),
@@ -95,7 +85,7 @@ func (proxy *OsdnProxy) SetBaseProxies(mainProxy, unidlingProxy HybridizableProx
 		proxy.baseProxy = NewHybridProxier(
 			mainProxy, unidlingProxy,
 			proxy.minSyncPeriod,
-			proxy.kubeInformers.Core().V1().Services().Lister(),
+			proxy.clients.KubeInformers.Core().V1().Services().Lister(),
 		)
 	}
 }
@@ -104,13 +94,13 @@ func (proxy *OsdnProxy) Start(waitChan chan<- bool) error {
 	klog.Infof("Starting multitenant SDN proxy endpoint filter")
 
 	var err error
-	proxy.networkInfo, err = common.GetParsedClusterNetwork(proxy.osdnClient)
+	proxy.networkInfo, err = common.GetParsedClusterNetwork(proxy.clients.OSDNClient)
 	if err != nil {
 		return fmt.Errorf("could not get network info: %s", err)
 	}
 	proxy.waitChan = waitChan
 
-	policies, err := common.ListAllEgressNetworkPolicies(context.TODO(), proxy.osdnClient)
+	policies, err := common.ListAllEgressNetworkPolicies(context.TODO(), proxy.clients.OSDNClient)
 	if err != nil {
 		return fmt.Errorf("could not get EgressNetworkPolicies: %s", err)
 	}
@@ -158,7 +148,7 @@ func (proxy *OsdnProxy) maybeGarbageCollectNamespace(name string, ns *proxyNames
 
 func (proxy *OsdnProxy) watchEgressNetworkPolicies() {
 	funcs := common.InformerFuncs(&osdnv1.EgressNetworkPolicy{}, proxy.handleAddOrUpdateEgressNetworkPolicy, proxy.handleDeleteEgressNetworkPolicy)
-	proxy.osdnInformers.Network().V1().EgressNetworkPolicies().Informer().AddEventHandler(funcs)
+	proxy.clients.OSDNInformers.Network().V1().EgressNetworkPolicies().Informer().AddEventHandler(funcs)
 }
 
 func (proxy *OsdnProxy) handleAddOrUpdateEgressNetworkPolicy(obj, _ interface{}, eventType watch.EventType) {
@@ -187,7 +177,7 @@ func (proxy *OsdnProxy) handleDeleteEgressNetworkPolicy(obj interface{}) {
 
 func (proxy *OsdnProxy) watchNetNamespaces() {
 	funcs := common.InformerFuncs(&osdnv1.NetNamespace{}, proxy.handleAddOrUpdateNetNamespace, proxy.handleDeleteNetNamespace)
-	proxy.osdnInformers.Network().V1().NetNamespaces().Informer().AddEventHandler(funcs)
+	proxy.clients.OSDNInformers.Network().V1().NetNamespaces().Informer().AddEventHandler(funcs)
 }
 
 func (proxy *OsdnProxy) handleAddOrUpdateNetNamespace(obj, _ interface{}, eventType watch.EventType) {
@@ -609,7 +599,7 @@ func (proxy *OsdnProxy) SyncLoop() {
 }
 
 func (proxy *OsdnProxy) syncEgressDNSProxyFirewall() {
-	policies, err := common.ListAllEgressNetworkPolicies(context.TODO(), proxy.osdnClient)
+	policies, err := common.ListAllEgressNetworkPolicies(context.TODO(), proxy.clients.OSDNClient)
 	if err != nil {
 		klog.Errorf("Could not get EgressNetworkPolicies: %v", err)
 		return
@@ -624,7 +614,7 @@ func (proxy *OsdnProxy) syncEgressDNSProxyFirewall() {
 
 			policy, ok := getPolicy(policyUpdate.UID, policies)
 			if !ok {
-				policies, err = common.ListAllEgressNetworkPolicies(context.TODO(), proxy.osdnClient)
+				policies, err = common.ListAllEgressNetworkPolicies(context.TODO(), proxy.clients.OSDNClient)
 				if err != nil {
 					klog.Errorf("Failed to update proxy firewall for policy: %v, Could not get EgressNetworkPolicies: %v", policyUpdate.UID, err)
 					continue

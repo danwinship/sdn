@@ -315,7 +315,7 @@ func newTestOsdnProxy(usesEndpointSlices bool) (*OsdnProxy, *testProxy, *testPro
 	proxy.SetBaseProxies(mainProxy, unidlingProxy)
 
 	stopCh := make(chan struct{})
-	proxy.kubeInformers.Start(stopCh)
+	proxy.clients.Start(stopCh)
 
 	return proxy, mainProxy, unidlingProxy, nil
 }

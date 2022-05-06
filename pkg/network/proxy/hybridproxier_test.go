@@ -27,12 +27,12 @@ func makeService(namespace, name string) *corev1.Service {
 }
 
 func createServiceAndWait(svc *corev1.Service, proxy *OsdnProxy) error {
-	_, err := proxy.kClient.CoreV1().Services(svc.Namespace).Create(context.TODO(), svc, metav1.CreateOptions{})
+	_, err := proxy.clients.KubeClient.CoreV1().Services(svc.Namespace).Create(context.TODO(), svc, metav1.CreateOptions{})
 	if err != nil {
 		return err
 	}
 
-	serviceLister := proxy.kubeInformers.Core().V1().Services().Lister()
+	serviceLister := proxy.clients.KubeInformers.Core().V1().Services().Lister()
 	return utilwait.Poll(10*time.Millisecond, time.Second, func() (bool, error) {
 		_, err := serviceLister.Services(svc.Namespace).Get(svc.Name)
 		if err != nil {
@@ -43,12 +43,12 @@ func createServiceAndWait(svc *corev1.Service, proxy *OsdnProxy) error {
 }
 
 func deleteServiceAndWait(svc *corev1.Service, proxy *OsdnProxy) error {
-	err := proxy.kClient.CoreV1().Services(svc.Namespace).Delete(context.TODO(), svc.Name, metav1.DeleteOptions{})
+	err := proxy.clients.KubeClient.CoreV1().Services(svc.Namespace).Delete(context.TODO(), svc.Name, metav1.DeleteOptions{})
 	if err != nil {
 		return err
 	}
 
-	serviceLister := proxy.kubeInformers.Core().V1().Services().Lister()
+	serviceLister := proxy.clients.KubeInformers.Core().V1().Services().Lister()
 	return utilwait.Poll(10*time.Millisecond, time.Second, func() (bool, error) {
 		_, err := serviceLister.Services(svc.Namespace).Get(svc.Name)
 		if err == nil {
