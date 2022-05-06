@@ -4,23 +4,24 @@ import (
 	"k8s.io/apimachinery/pkg/watch"
 
 	osdnv1 "github.com/openshift/api/network/v1"
-	osdninformers "github.com/openshift/client-go/network/informers/externalversions/network/v1"
 	"github.com/openshift/sdn/pkg/network/common"
 	"github.com/openshift/sdn/pkg/network/master/metrics"
 )
 
 type egressNetworkPolicyManager struct {
+	clients     *common.SDNClients
 	policyCount int
 	ruleCount   int
 }
 
-func newEgressNetworkPolicyManager() *egressNetworkPolicyManager {
-	return &egressNetworkPolicyManager{}
+func newEgressNetworkPolicyManager(clients *common.SDNClients) *egressNetworkPolicyManager {
+	return &egressNetworkPolicyManager{clients: clients}
 }
 
-func (enp *egressNetworkPolicyManager) start(informer osdninformers.EgressNetworkPolicyInformer) {
-	informer.Informer().AddEventHandler(
-		common.InformerFuncs(&osdnv1.EgressNetworkPolicy{}, enp.handleAddUpdate, enp.handleDelete))
+func (enp *egressNetworkPolicyManager) start() {
+	informer := enp.clients.OSDNInformers.Network().V1().EgressNetworkPolicies().Informer()
+	funcs := common.InformerFuncs(&osdnv1.EgressNetworkPolicy{}, enp.handleAddUpdate, enp.handleDelete)
+	informer.AddEventHandler(funcs)
 }
 
 func (enp *egressNetworkPolicyManager) handleAddUpdate(current, old interface{}, event watch.EventType) {

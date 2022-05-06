@@ -6,13 +6,10 @@ import (
 	ktypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 	kcoreinformers "k8s.io/client-go/informers/core/v1"
-	kclientset "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/klog/v2"
 
-	cloudnetworkclient "github.com/openshift/client-go/cloudnetwork/clientset/versioned"
 	cloudnetworkinformerv1 "github.com/openshift/client-go/cloudnetwork/informers/externalversions/cloudnetwork/v1"
-	osdnclient "github.com/openshift/client-go/network/clientset/versioned"
 	osdninformersv1 "github.com/openshift/client-go/network/informers/externalversions/network/v1"
 	"github.com/openshift/library-go/pkg/network/networkutils"
 	"github.com/openshift/sdn/pkg/network/common"
@@ -24,11 +21,9 @@ const (
 )
 
 type OsdnMaster struct {
-	kClient            kclientset.Interface
-	osdnClient         osdnclient.Interface
-	cloudNetworkClient cloudnetworkclient.Interface
-	networkInfo        *common.ParsedClusterNetwork
-	vnids              *masterVNIDMap
+	clients     *common.SDNClients
+	networkInfo *common.ParsedClusterNetwork
+	vnids       *masterVNIDMap
 
 	nodeInformer                 kcoreinformers.NodeInformer
 	namespaceInformer            kcoreinformers.NamespaceInformer
@@ -53,8 +48,7 @@ func Start(clients *common.SDNClients) error {
 	}
 
 	master := &OsdnMaster{
-		kClient:     clients.KubeClient,
-		osdnClient:  clients.OSDNClient,
+		clients:     clients,
 		networkInfo: networkInfo,
 
 		nodeInformer:         clients.KubeInformers.Core().V1().Nodes(),
@@ -67,7 +61,6 @@ func Start(clients *common.SDNClients) error {
 	}
 
 	if clients.CloudNetworkClient != nil {
-		master.cloudNetworkClient = clients.CloudNetworkClient
 		master.cloudPrivateIPConfigInformer = clients.CloudNetworkInformers.Cloud().V1().CloudPrivateIPConfigs()
 		master.cloudPrivateIPConfigInformer.Informer().GetController()
 	}
@@ -102,7 +95,7 @@ func (master *OsdnMaster) startSubSystems(pluginName string) {
 		master.egressNetPolInformer.Informer().GetController().HasSynced) {
 		klog.Fatalf("failed to sync SDN master informers")
 	}
-	if master.cloudNetworkClient != nil && !cache.WaitForCacheSync(wait.NeverStop, master.cloudPrivateIPConfigInformer.Informer().HasSynced) {
+	if master.cloudPrivateIPConfigInformer != nil && !cache.WaitForCacheSync(wait.NeverStop, master.cloudPrivateIPConfigInformer.Informer().HasSynced) {
 		klog.Fatalf("failed to sync CloudPrivateIPConfig informer")
 	}
 
@@ -122,10 +115,10 @@ func (master *OsdnMaster) startSubSystems(pluginName string) {
 		}
 	}
 
-	eim := newEgressIPManager(master.cloudNetworkClient != nil)
-	eim.Start(master.kClient, master.osdnClient, master.cloudNetworkClient, master.cloudPrivateIPConfigInformer, master.hostSubnetInformer, master.netNamespaceInformer, master.nodeInformer)
-	enp := newEgressNetworkPolicyManager()
-	enp.start(master.egressNetPolInformer)
+	eim := newEgressIPManager(master.clients)
+	eim.Start(master.cloudPrivateIPConfigInformer, master.hostSubnetInformer, master.netNamespaceInformer, master.nodeInformer)
+	enp := newEgressNetworkPolicyManager(master.clients)
+	enp.start()
 }
 
 func (master *OsdnMaster) checkClusterNetworkAgainstLocalNetworks() error {
@@ -137,17 +130,17 @@ func (master *OsdnMaster) checkClusterNetworkAgainstLocalNetworks() error {
 }
 
 func (master *OsdnMaster) checkClusterNetworkAgainstClusterObjects() error {
-	subnets, err := common.ListAllHostSubnets(context.TODO(), master.osdnClient)
+	subnets, err := common.ListAllHostSubnets(context.TODO(), master.clients.OSDNClient)
 	if err != nil {
 		klog.Warningf("Failed to list subnets: %v", err)
 	}
 
-	pods, err := common.ListAllPods(context.TODO(), master.kClient)
+	pods, err := common.ListAllPods(context.TODO(), master.clients.KubeClient)
 	if err != nil {
 		klog.Warningf("Failed to list pods: %v", err)
 	}
 
-	services, err := common.ListAllServices(context.TODO(), master.kClient)
+	services, err := common.ListAllServices(context.TODO(), master.clients.KubeClient)
 	if err != nil {
 		klog.Warningf("Failed to list services: %v", err)
 	}

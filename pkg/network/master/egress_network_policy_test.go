@@ -6,6 +6,7 @@ import (
 	"k8s.io/apimachinery/pkg/watch"
 
 	osdnv1 "github.com/openshift/api/network/v1"
+	"github.com/openshift/sdn/pkg/network/common"
 )
 
 func Test_handleAddUpdate(t *testing.T) {
@@ -66,7 +67,7 @@ func Test_handleAddUpdate(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.testCaseName, func(t *testing.T) {
-			pm := newEgressNetworkPolicyManager()
+			pm := newEgressNetworkPolicyManager(common.NewFakeSDNClients())
 			pm.ruleCount = tc.initialRulesCount
 			pm.policyCount = tc.initialPoliciesCount
 			pm.handleAddUpdate(tc.current, tc.old, tc.event)
@@ -107,7 +108,7 @@ func Test_handleDelete(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.testCaseName, func(t *testing.T) {
-			pm := newEgressNetworkPolicyManager()
+			pm := newEgressNetworkPolicyManager(common.NewFakeSDNClients())
 			pm.ruleCount = tc.initialRulesCount
 			pm.policyCount = tc.initialPoliciesCount
 			pm.handleDelete(tc.obj)

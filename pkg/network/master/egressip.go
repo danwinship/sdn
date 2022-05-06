@@ -15,12 +15,9 @@ import (
 	"k8s.io/apimachinery/pkg/util/sets"
 	utilwait "k8s.io/apimachinery/pkg/util/wait"
 	kcoreinformers "k8s.io/client-go/informers/core/v1"
-	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/util/retry"
 
-	cloudnetworkclient "github.com/openshift/client-go/cloudnetwork/clientset/versioned"
 	cloudnetworkinformerv1 "github.com/openshift/client-go/cloudnetwork/informers/externalversions/cloudnetwork/v1"
-	osdnclient "github.com/openshift/client-go/network/clientset/versioned"
 	osdninformers "github.com/openshift/client-go/network/informers/externalversions/network/v1"
 	"github.com/openshift/sdn/pkg/network/common"
 )
@@ -28,9 +25,9 @@ import (
 type egressIPManager struct {
 	sync.Mutex
 
-	tracker                      *common.EgressIPTracker
-	osdnClient                   osdnclient.Interface
-	cloudNetworkClient           cloudnetworkclient.Interface
+	tracker *common.EgressIPTracker
+	clients *common.SDNClients
+
 	hostSubnetInformer           osdninformers.HostSubnetInformer
 	nodeInformer                 kcoreinformers.NodeInformer
 	cloudPrivateIPConfigInformer cloudnetworkinformerv1.CloudPrivateIPConfigInformer
@@ -53,30 +50,32 @@ type egressNode struct {
 	retries int
 }
 
-func newEgressIPManager(cloudEgressIP bool) *egressIPManager {
-	eim := &egressIPManager{}
-	eim.tracker = common.NewEgressIPTracker(eim, cloudEgressIP)
+func newEgressIPManager(clients *common.SDNClients) *egressIPManager {
+	eim := &egressIPManager{
+		clients:            clients,
+		hostSubnetInformer: clients.OSDNInformers.Network().V1().HostSubnets(),
+		nodeInformer:       clients.KubeInformers.Core().V1().Nodes(),
+	}
+	if clients.CloudNetworkInformers != nil {
+		eim.cloudPrivateIPConfigInformer = clients.CloudNetworkInformers.Cloud().V1().CloudPrivateIPConfigs()
+	}
+	eim.tracker = common.NewEgressIPTracker(eim, clients.CloudNetworkClient != nil)
 	return eim
 }
 
-func (eim *egressIPManager) Start(kubeClient kubernetes.Interface,
-	osdnClient osdnclient.Interface,
-	cloudNetworkClient cloudnetworkclient.Interface,
-	cloudPrivateIPConfigInformer cloudnetworkinformerv1.CloudPrivateIPConfigInformer,
+func (eim *egressIPManager) Start(cloudPrivateIPConfigInformer cloudnetworkinformerv1.CloudPrivateIPConfigInformer,
 	hostSubnetInformer osdninformers.HostSubnetInformer,
 	netNamespaceInformer osdninformers.NetNamespaceInformer,
 	nodeInformer kcoreinformers.NodeInformer) {
 
-	eim.osdnClient = osdnClient
 	eim.hostSubnetInformer = hostSubnetInformer
 	eim.nodeInformer = nodeInformer
 
 	if eim.tracker.CloudEgressIP {
-		eim.cloudNetworkClient = cloudNetworkClient
 		eim.cloudPrivateIPConfigInformer = cloudPrivateIPConfigInformer
 		eim.cloudPrivateIPConfigCreationQueue = make(map[string]osdcnv1.CloudPrivateIPConfig)
 		eim.watchCloudPrivateIPConfig(cloudPrivateIPConfigInformer)
-		eim.tracker.Start(kubeClient, hostSubnetInformer, netNamespaceInformer, nodeInformer)
+		eim.tracker.Start(eim.clients.KubeClient, hostSubnetInformer, netNamespaceInformer, nodeInformer)
 		return
 	}
 
@@ -102,7 +101,7 @@ func (eim *egressIPManager) handleDeleteCloudPrivateIPConfig(obj interface{}) {
 		err := retry.OnError(retry.DefaultBackoff, func(err error) bool {
 			return kerrors.IsAlreadyExists(err)
 		}, func() error {
-			_, err := eim.cloudNetworkClient.CloudV1().CloudPrivateIPConfigs().Create(context.TODO(), &queuedCloudPrivateIPConfig, metav1.CreateOptions{})
+			_, err := eim.clients.CloudNetworkClient.CloudV1().CloudPrivateIPConfigs().Create(context.TODO(), &queuedCloudPrivateIPConfig, metav1.CreateOptions{})
 			return err
 		})
 		if err != nil {
@@ -171,7 +170,7 @@ func (eim *egressIPManager) maybeDoUpdateEgressCIDRs() (bool, error) {
 			newIPs := sets.NewString(egressIPs...)
 			if !oldIPs.Equal(newIPs) {
 				hs.EgressIPs = common.StringsToHSEgressIPs(egressIPs)
-				_, err = eim.osdnClient.NetworkV1().HostSubnets().Update(context.TODO(), hs, metav1.UpdateOptions{})
+				_, err = eim.clients.OSDNClient.NetworkV1().HostSubnets().Update(context.TODO(), hs, metav1.UpdateOptions{})
 			}
 			return err
 		})
@@ -312,7 +311,7 @@ func (eim *egressIPManager) ClaimEgressIP(vnid uint32, egressIP, nodeIP, sdnIP s
 				Node: nodeName,
 			},
 		}
-		if existingCloudPrivateIPConfig, err := eim.cloudNetworkClient.CloudV1().CloudPrivateIPConfigs().Create(context.TODO(), &cloudPrivateIPConfig, metav1.CreateOptions{}); err != nil {
+		if existingCloudPrivateIPConfig, err := eim.clients.CloudNetworkClient.CloudV1().CloudPrivateIPConfigs().Create(context.TODO(), &cloudPrivateIPConfig, metav1.CreateOptions{}); err != nil {
 			if kerrors.IsAlreadyExists(err) && existingCloudPrivateIPConfig.Spec.Node != nodeName {
 				klog.Infof("CloudPrivateIPConfig: %s is being moved and still exists, enqueuing its creation", egressIP)
 				eim.cloudPrivateIPConfigCreationQueue[egressIP] = cloudPrivateIPConfig
@@ -336,7 +335,7 @@ func (eim *egressIPManager) ReleaseEgressIP(egressIP, nodeIP string) {
 	}
 	eim.cloudPrivateIPConfigCreationQueueLock.Lock()
 	defer eim.cloudPrivateIPConfigCreationQueueLock.Unlock()
-	if err := eim.cloudNetworkClient.CloudV1().CloudPrivateIPConfigs().Delete(context.TODO(), egressIP, metav1.DeleteOptions{}); err != nil {
+	if err := eim.clients.CloudNetworkClient.CloudV1().CloudPrivateIPConfigs().Delete(context.TODO(), egressIP, metav1.DeleteOptions{}); err != nil {
 		klog.Errorf("Error deleting CloudPrivateIPConfig: %s, err: %v", egressIP, err)
 	}
 	if _, exists := eim.cloudPrivateIPConfigCreationQueue[egressIP]; exists {

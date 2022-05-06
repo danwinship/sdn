@@ -276,7 +276,7 @@ func (master *OsdnMaster) startVNIDMaster() error {
 }
 
 func (master *OsdnMaster) initNetIDAllocator() error {
-	netnsList, err := common.ListAllNetNamespaces(context.TODO(), master.osdnClient)
+	netnsList, err := common.ListAllNetNamespaces(context.TODO(), master.clients.OSDNClient)
 	if err != nil {
 		return err
 	}
@@ -300,7 +300,7 @@ func (master *OsdnMaster) handleAddOrUpdateNamespace(obj, _ interface{}, eventTy
 	ns := obj.(*corev1.Namespace)
 	klog.V(5).Infof("Watch %s event for Namespace %q", eventType, ns.Name)
 
-	if err := master.vnids.assignVNID(master.osdnClient, ns.Name); err != nil {
+	if err := master.vnids.assignVNID(master.clients.OSDNClient, ns.Name); err != nil {
 		klog.Errorf("Error assigning netid: %v", err)
 	}
 }
@@ -308,7 +308,7 @@ func (master *OsdnMaster) handleAddOrUpdateNamespace(obj, _ interface{}, eventTy
 func (master *OsdnMaster) handleDeleteNamespace(obj interface{}) {
 	ns := obj.(*corev1.Namespace)
 	klog.V(5).Infof("Watch %s event for Namespace %q", watch.Deleted, ns.Name)
-	if err := master.vnids.revokeVNID(master.osdnClient, ns.Name); err != nil {
+	if err := master.vnids.revokeVNID(master.clients.OSDNClient, ns.Name); err != nil {
 		klog.Errorf("Error revoking netid: %v", err)
 	}
 }
@@ -322,7 +322,7 @@ func (master *OsdnMaster) handleAddOrUpdateNetNamespace(obj, _ interface{}, even
 	netns := obj.(*osdnv1.NetNamespace)
 	klog.V(5).Infof("Watch %s event for NetNamespace %q", eventType, netns.Name)
 
-	if err := master.vnids.updateVNID(master.osdnClient, netns); err != nil {
+	if err := master.vnids.updateVNID(master.clients.OSDNClient, netns); err != nil {
 		klog.Errorf("Error updating netid: %v", err)
 	}
 }
